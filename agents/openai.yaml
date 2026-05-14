@@ -1,2 +1,3 @@
 interface:
   display_name: "Pre Commit Review"
+  short_description: "Review Git diffs before commit for risk and readiness."

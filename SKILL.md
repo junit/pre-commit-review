@@ -35,15 +35,16 @@ Resolve the diff source in this priority order:
 Use this only when the helper script is unavailable:
 
 ```bash
-base=$(
-  git symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null \
-    | sed 's|^origin/||'
-)
+base=$(git symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null | sed 's|^origin/||')
 
 if [ -z "$base" ]; then
   if git rev-parse --verify --quiet origin/main >/dev/null; then
     base="main"
   elif git rev-parse --verify --quiet origin/master >/dev/null; then
+    base="master"
+  elif git rev-parse --verify --quiet main >/dev/null; then
+    base="main"
+  elif git rev-parse --verify --quiet master >/dev/null; then
     base="master"
   else
     base="main"
@@ -61,12 +62,21 @@ If staged changes exist, treat only the staged diff as the commit candidate. Sti
 - If unstaged changes touch the same files as the staged commit candidate, mark this as a review limitation because tests and local runtime behavior may include uncommitted code that is not part of the commit.
 - Do not merge staged and unstaged diffs into one review unless the user explicitly asks for all uncommitted changes.
 
+## Depth Scaling
+
+Scale detail to the size and risk of the diff:
+
+- **Tiny diffs (<5 changed lines)**: Keep each dimension to 1-2 sentences. Use the shortest honest answer for empty sections, such as `Self-contained - no external impact` or `No logic change`.
+- **Normal diffs**: Work through all six dimensions with concise but specific analysis.
+- **Large diffs (50+ changed lines or 3+ files)**: Prioritize high-signal areas: security, auth, public APIs, migrations, data correctness, dependencies, config/deployment, concurrency, resource lifecycle, and changed tests. Still fill every output section, but group low-risk mechanical changes.
+- **Too-large diffs**: Use the Large Diff Handling rules and mark `Review limits` as partial. Do not imply a full safety guarantee.
+
 ## Large Diff Handling
 
 If the diff cannot fit in context or the helper reports truncation:
 
 1. Start from diff stat, file list, and changed file types.
-2. Prioritize security, auth, permissions, API/public interfaces, database migrations, payment/billing, data deletion, concurrency, async retry logic, configuration, deployment, and dependency changes.
+2. Prioritize security, auth, permissions, API/public interfaces, database migrations, payment/billing, data deletion, concurrency, async retry logic, configuration, deployment, dependency changes, and resource lifecycle changes.
 3. Review generated, vendored, minified, and lock files only for source/config consistency, version changes, and suspicious major upgrades unless they are small and clearly relevant.
 4. Use file-specific diffs when possible, such as `git diff -- path/to/file`, to inspect high-risk files deeply.
 5. Set `Review limits` to partial and list any material unreviewed areas.
@@ -80,30 +90,30 @@ Work through these dimensions in order. For every checkbox, replace `[ ]` with `
 
 Account for every reviewed hunk or every reviewed file group.
 
-- [ ] **Modified code**: Summarize each meaningful modified segment. If nothing was modified, write `None — pure additions.`
-- [ ] **New code**: Summarize each meaningful new segment. If nothing was added, write `None — modifications only.`
+- [ ] **Modified code**: Summarize each meaningful modified segment. If nothing was modified, write `None - pure additions.`
+- [ ] **New code**: Summarize each meaningful new segment. If nothing was added, write `None - modifications only.`
 
 For large diffs, group low-risk repeated changes, but do not hide important logic changes inside a broad summary.
 
 ### 2. Code Hygiene
 
-Scan changed hunks for issues that are embarrassing or risky to commit:
+Scan changed hunks for issues that are embarrassing, unsafe, or operationally risky to commit:
 
-- [ ] **Unused imports and dead code**: Flag imports, variables, branches, functions, feature flags, or TODO scaffolding that the diff makes unused.
-- [ ] **Hardcoded secrets**: Flag API keys, tokens, passwords, private certificates, connection strings, internal hostnames, `.internal.` domains, and credentials. Redact values.
-- [ ] **Pattern consistency**: Compare adjacent code and existing project conventions. Flag inconsistent error handling, return shapes, naming, logging, authorization checks, or validation.
-- [ ] **New code quality**: For new functions/classes/files, check edge cases, input validation, null handling, idempotency, error paths, and domain-specific requirements.
+- [ ] **Dead code & imports**: Flag unused imports, variables, unreachable branches, commented-out code, debug prints/logs, stale TODO scaffolding, feature flags, or code made unused by this diff.
+- [ ] **Security scan**: Check hardcoded secrets, tokens, credentials, private hosts, production endpoints, connection strings, auth coverage on new or changed entry points, input validation at trust boundaries, injection/XSS vectors, unsafe deserialization, insecure defaults, and information leakage in logs, errors, telemetry, or API responses. Redact sensitive values.
+- [ ] **Consistency & conventions**: Compare adjacent code and project conventions. Check naming, return shapes, error handling, authorization checks, validation style, logging style, transaction patterns, framework best practices, and resource lifecycle patterns for clients, sessions, connections, files, locks, background tasks, and other infrastructure resources.
+- [ ] **New code completeness**: For new functions/classes/files, check edge cases, null/empty/zero handling, validation, idempotency, error paths, domain requirements, timeout/retry behavior, cancellation, cleanup, and graceful degradation.
 
-If clean, write `Clean — no hygiene issues found.` Do not pad this section.
+If clean, write `Clean - no hygiene issues found.` Do not pad this section.
 
 ### 3. Why It Changed
 
-Infer intent from the diff, filenames, commit messages, tests, surrounding code, and user context.
+Infer intent from the diff, filenames, commit messages, tests, surrounding code, and user context. Try to infer before falling back to unclear, but do not invent unsupported intent.
 
-- [ ] **Business intent**: State the user-facing or product outcome. If unknown, say `Intent unclear — no commit message or user context provided.`
-- [ ] **Technical intent**: State the engineering goal, such as refactor, API contract change, performance, reliability, security, testability, dependency update, or migration.
+- [ ] **Business intent**: State the likely user-facing or product outcome. If inferred, use cautious language such as `Likely...` or `Appears to...`.
+- [ ] **Technical intent**: State the engineering goal, such as refactor, API contract change, performance, reliability, security, testability, dependency update, migration, or operational hardening.
 
-Do not invent intent that the evidence does not support.
+Use `Intent unclear` only after checking available evidence.
 
 ### 4. Logic Shifts
 
@@ -113,7 +123,7 @@ Trace the core execution paths affected by the diff.
 - [ ] **After**: Describe the new path at the same level of detail.
 - [ ] **Delta**: State the precise behavior difference.
 
-For formatting, renames, comments, or mechanical refactors, say `No logic change — cosmetic/refactor only` when supported. For pure additions, describe what did not exist before and assess whether the new code is correct and complete enough before callers depend on it.
+For formatting, renames, comments, or mechanical refactors, say `No logic change - cosmetic/refactor only` when supported. For pure additions, describe what did not exist before and assess whether the new code is correct and complete enough before callers depend on it.
 
 ### 5. Blast Radius
 
@@ -143,6 +153,7 @@ Apply these only when relevant to the diff:
 - **Async/concurrency changes**: Check idempotency, retries, ordering, cancellation, timeouts, race conditions, and duplicate processing.
 - **Dependency or lockfile changes**: Check major versions, transitive risk, package manager consistency, runtime compatibility, and whether source changes match lockfile changes.
 - **Config/env/deployment changes**: Check defaults, missing environment variables, local vs production differences, feature flag behavior, and rollback safety.
+- **Infrastructure/resource lifecycle changes**: Check client/session/connection creation and reuse, timeouts, retries, cancellation, cleanup, context managers, file handles, transaction scope, locks, and graceful degradation against nearby code conventions.
 - **Generated/vendor/minified files**: Check whether the generating source/config also changed. Flag generated output without a matching source change unless the reason is clear.
 - **Observability changes**: Check whether failures remain diagnosable through logs, metrics, traces, alerts, and useful error messages.
 
@@ -154,11 +165,23 @@ Produce exactly one verdict:
 VERDICT: PASS | PASS_WITH_NOTES | NEEDS_WORK
 ```
 
-- **PASS**: No issues found within the reviewed scope. Safe to commit.
-- **PASS_WITH_NOTES**: Safe to commit, but there are non-blocking observations, technical debt, follow-up tests, or review limitations that do not make the commit unsafe.
-- **NEEDS_WORK**: Blocking issue found. Do not commit until fixed. Use this for runtime errors, data corruption risk, hardcoded secrets, missing required caller protection, security regressions, unsafe migrations, or behavior changes that likely break existing users.
+### Decision guide
 
-When deciding between `PASS_WITH_NOTES` and `NEEDS_WORK`, ask whether the commit can cause a runtime failure, security issue, data loss/corruption, broken compatibility, or irreversible bad state if committed as-is. If yes, use `NEEDS_WORK`.
+- **PASS**: No issues found within the reviewed scope. Safe to commit.
+- **PASS_WITH_NOTES**: Safe to commit, but there are observations worth reading. Key test: if someone commits or deploys without reading the review, nothing breaks, nothing leaks, and no irreversible bad state is created.
+- **NEEDS_WORK**: Do not commit until fixed. Key test: if someone commits or deploys without reading the review, something can break, leak, corrupt data, bypass security, or create an irreversible bad state.
+
+Use `NEEDS_WORK` for blocking issues including:
+
+1. Hardcoded secrets, credentials, private keys, production endpoints, or sensitive internal hosts in source.
+2. Security vulnerabilities such as missing auth checks, injection/XSS paths, unsafe input handling, unsafe deserialization, or information leakage.
+3. Functional bugs in code that will be called, including unhandled runtime exceptions and incorrect core logic.
+4. Breaking API, schema, contract, or behavior changes without caller protection, compatibility handling, migration, or rollout safety.
+5. Data loss/corruption risk, unsafe migrations, unsafe retries, non-idempotent duplicate processing, or irreversible side effects.
+
+**New code with zero callers:** bugs in core logic, security-sensitive implementation, data handling, migrations, or operational infrastructure still mean `NEEDS_WORK`; style, readability, naming, or non-blocking completeness issues usually mean `PASS_WITH_NOTES`.
+
+For `NEEDS_WORK`, list each blocking issue with file:line when available and what to fix. For `PASS_WITH_NOTES`, list non-blocking observations. Review limitations can justify `PASS_WITH_NOTES`; risky unreviewed areas can justify `NEEDS_WORK`.
 
 ## Output Format
 
@@ -173,18 +196,18 @@ Use this structure exactly. Keep each checkbox concise; one or two sentences is 
 **Unreviewed changes:** <none | unstaged/generated/too-large files or other limits>
 
 ## 1. What Changed
-- [x] **Modified:** <summary or "None — pure additions.">
-- [x] **New:** <summary or "None — modifications only.">
+- [x] **Modified:** <summary or "None - pure additions.">
+- [x] **New:** <summary or "None - modifications only.">
 
 ## 2. Code Hygiene
-- [x] **Unused imports/dead code:** <found issues or "Clean">
-- [x] **Hardcoded secrets:** <found issues with redacted values or "Clean">
-- [x] **Pattern consistency:** <found issues or "Clean">
-- [x] **New code quality:** <found issues or "N/A — modifications only">
+- [x] **Dead code & imports:** <issues or "Clean">
+- [x] **Security scan:** <issues with redacted values or "Clean">
+- [x] **Consistency & conventions:** <issues or "Clean">
+- [x] **New code completeness:** <issues or "N/A - modifications only">
 
 ## 3. Why It Changed
-- [x] **Business:** <intent or "Intent unclear.">
-- [x] **Technical:** <intent or "Intent unclear.">
+- [x] **Business:** <intent, cautious inference, or "Intent unclear.">
+- [x] **Technical:** <intent, cautious inference, or "Intent unclear.">
 
 ## 4. Logic Shifts
 - [x] **Before:** <path description>
