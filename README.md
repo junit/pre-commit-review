@@ -45,11 +45,14 @@ This repository is not an application or framework. It is a small, portable skil
 
 ```text
 .
+├── install.sh
 ├── SKILL.md
 ├── agents/
 │   └── openai.yaml
-└── scripts/
-    └── collect_diff_context.sh
+├── scripts/
+│   └── collect_diff_context.sh
+└── tests/
+    └── install_smoke_test.sh
 ```
 
 ### `SKILL.md`
@@ -78,6 +81,46 @@ It does not fetch, stage, reset, install, or modify files.
 
 Provides lightweight agent metadata for environments that expose skills through an agent registry.
 
+### `install.sh`
+
+Installs this skill package into a host-specific skills directory for Codex, Claude Code, or Gemini CLI.
+
+### `tests/install_smoke_test.sh`
+
+Runs a small end-to-end installer smoke test against temporary directories.
+
+## Quick Install
+
+From a clone of this repository:
+
+```bash
+./install.sh codex
+./install.sh claude
+./install.sh gemini
+```
+
+Defaults:
+
+- `codex` installs to `CODEX_SKILLS_DIR`, then `AGENT_SKILLS_DIR`, then `${CODEX_HOME}/skills`, then `~/.codex/skills`
+- `claude` installs to `CLAUDE_SKILLS_DIR`, then `~/.claude/skills`
+- `gemini` installs to `GEMINI_SKILLS_DIR`, then `AGENT_SKILLS_DIR`, then `~/.agents/skills`
+
+Useful flags:
+
+- `--copy` copies the skill into the target directory and is the default mode
+- `--link` creates a symlink to this repository, which is useful for local development
+- `--dir PATH` overrides the target skills directory
+- `--force` replaces an existing non-managed target
+- `--dry-run` prints what would happen without changing anything
+
+Examples:
+
+```bash
+./install.sh codex --link
+./install.sh codex --dir .agents/skills
+./install.sh gemini --dir .agents/skills
+```
+
 ## How It Works
 
 The skill resolves review input in this order:
@@ -98,7 +141,24 @@ When local repository access is available, the workflow prefers using `scripts/c
 
 ## Usage
 
-### Option 1: Use as a standalone repository
+### Option 1: Use the installer
+
+Clone this repository, then run the installer for your host:
+
+```bash
+./install.sh codex
+```
+
+or:
+
+```bash
+./install.sh claude
+./install.sh gemini
+```
+
+Restart the agent or start a new session after installing so it can discover the new skill.
+
+### Option 2: Use as a standalone repository
 
 Clone or copy this repository into the place where your agent runtime expects custom skills.
 
@@ -114,7 +174,7 @@ your-skills/
 
 Then register or expose the skill according to your agent platform's skill-loading mechanism.
 
-### Option 2: Merge into an existing skills collection
+### Option 3: Merge into an existing skills collection
 
 If you already maintain a larger skills repository, copy this directory in as one skill package and preserve the relative paths:
 
@@ -153,7 +213,7 @@ This package is intentionally conservative:
 ## Limitations
 
 - This repository does not include the runtime that loads or executes the skill.
-- The exact installation method depends on your agent platform.
+- The included installer covers common Codex, Claude Code, and Gemini CLI locations, but some local setups may still require `--dir` overrides.
 - The helper script expects a working `git` executable in the environment.
 - The current repository itself may be used outside Git, but local diff collection only works inside a Git repository.
 

@@ -45,11 +45,14 @@
 
 ```text
 .
+├── install.sh
 ├── SKILL.md
 ├── agents/
 │   └── openai.yaml
-└── scripts/
-    └── collect_diff_context.sh
+├── scripts/
+│   └── collect_diff_context.sh
+└── tests/
+    └── install_smoke_test.sh
 ```
 
 ### `SKILL.md`
@@ -78,6 +81,46 @@
 
 为通过 agent 注册表暴露 skill 的环境提供轻量级元信息。
 
+### `install.sh`
+
+把这个 skill 包安装到 Codex、Claude Code 或 Gemini CLI 的 skills 目录。
+
+### `tests/install_smoke_test.sh`
+
+对安装器做一个基于临时目录的端到端 smoke test。
+
+## 快速安装
+
+在克隆后的仓库目录中执行：
+
+```bash
+./install.sh codex
+./install.sh claude
+./install.sh gemini
+```
+
+默认目录：
+
+- `codex` 依次使用 `CODEX_SKILLS_DIR`、`AGENT_SKILLS_DIR`、`${CODEX_HOME}/skills`、`~/.codex/skills`
+- `claude` 依次使用 `CLAUDE_SKILLS_DIR`、`~/.claude/skills`
+- `gemini` 依次使用 `GEMINI_SKILLS_DIR`、`AGENT_SKILLS_DIR`、`~/.agents/skills`
+
+常用参数：
+
+- `--copy` 把 skill 复制到目标目录，默认就是这个模式
+- `--link` 把当前仓库以符号链接形式安装过去，适合本地开发
+- `--dir PATH` 手动指定目标 skills 目录
+- `--force` 覆盖一个并非由当前安装器管理的同名目标
+- `--dry-run` 只打印将执行的动作，不真正修改文件
+
+示例：
+
+```bash
+./install.sh codex --link
+./install.sh codex --dir .agents/skills
+./install.sh gemini --dir .agents/skills
+```
+
 ## 工作方式
 
 skill 按以下顺序解析审查输入：
@@ -98,7 +141,24 @@ skill 按以下顺序解析审查输入：
 
 ## 使用方式
 
-### 方案 1：作为独立仓库使用
+### 方案 1：使用安装脚本
+
+先克隆本仓库，再针对你的 host 运行安装脚本：
+
+```bash
+./install.sh codex
+```
+
+或者：
+
+```bash
+./install.sh claude
+./install.sh gemini
+```
+
+安装后请重启 agent，或者开启一个新会话，让它重新发现这个 skill。
+
+### 方案 2：作为独立仓库使用
 
 将本仓库克隆或复制到你的 agent 运行时读取自定义 skills 的位置。
 
@@ -114,7 +174,7 @@ your-skills/
 
 随后根据你的 agent 平台的 skill 加载机制，注册或暴露该 skill。
 
-### 方案 2：合并到现有 skills 集合
+### 方案 3：合并到现有 skills 集合
 
 如果你已经维护了一个更大的 skills 仓库，可以把当前目录作为一个独立 skill 包复制进去，并保留相对路径：
 
@@ -153,7 +213,7 @@ your-skills/
 ## 限制
 
 - 该仓库不包含加载或执行 skill 的运行时本身
-- 具体安装方式取决于你的 agent 平台
+- 仓库自带安装脚本，覆盖 Codex、Claude Code、Gemini CLI 的常见目录；如果你的本地布局不同，可能仍需要通过 `--dir` 指定目标位置
 - 辅助脚本依赖环境中可用的 `git`
 - 当前仓库即使脱离 Git 也能作为内容包存在，但本地 diff 收集只有在 Git 仓库内才有效
 
