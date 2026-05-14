@@ -186,14 +186,22 @@ The helper script is referenced by the skill instructions, so the directory stru
 
 ## Review Output
 
-The expected output is a structured pre-commit review with:
+The expected output is an action-first, fast-scanning pre-commit review with:
 
+- a verdict plus a one-line conclusion
 - diff source
-- review limits
-- files changed
-- reviewed and unreviewed scope
-- behavior analysis
-- risk assessment
+- review scope
+- change scale
+- priority findings with concrete fixes
+- the minimum risk and test guidance needed to make a commit decision
+
+The default review should answer three questions first:
+
+- can this be committed now
+- what must be fixed before commit
+- what should be tested next
+
+Only include deeper intent analysis, before/after logic detail, or extra supporting notes when they materially improve the review.
 
 Final verdicts mean:
 
