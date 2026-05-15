@@ -1,3 +1,4 @@
 interface:
   display_name: "Pre Commit Review"
   short_description: "Commit-readiness review for Git diffs"
+  default_prompt: "Review the current Git diff for commit readiness and tell me whether it is safe to commit."

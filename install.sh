@@ -152,6 +152,7 @@ copy_payload() {
   cp "$source_dir/LICENSE" "$staging_dir/"
   cp "$source_dir/install.sh" "$staging_dir/"
   cp -R "$source_dir/agents" "$staging_dir/"
+  cp -R "$source_dir/references" "$staging_dir/"
   cp -R "$source_dir/scripts" "$staging_dir/"
 
   mv "$staging_dir" "$target"

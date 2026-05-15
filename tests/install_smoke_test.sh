@@ -10,6 +10,8 @@ trap 'rm -rf "$tmp_dir"' EXIT
 [ -f "$tmp_dir/codex-skills/pre-commit-review/SKILL.md" ]
 [ -f "$tmp_dir/codex-skills/pre-commit-review/agents/openai.yaml" ]
 [ -f "$tmp_dir/codex-skills/pre-commit-review/scripts/collect_diff_context.sh" ]
+[ -f "$tmp_dir/codex-skills/pre-commit-review/references/output-examples.md" ]
+[ -f "$tmp_dir/codex-skills/pre-commit-review/references/visual-output.md" ]
 
 "$repo_root/install.sh" codex --copy --dir "$tmp_dir/codex-skills"
 [ -d "$tmp_dir/codex-skills/pre-commit-review" ]

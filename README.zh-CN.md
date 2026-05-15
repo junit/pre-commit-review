@@ -28,9 +28,9 @@
   - 影响范围
   - 回归风险
 - 返回清晰的结论：
-  - `PASS`
-  - `PASS_WITH_NOTES`
-  - `NEEDS_WORK`
+  - `SAFE_TO_COMMIT`
+  - `SAFE_TO_COMMIT_WITH_NOTES`
+  - `DO_NOT_COMMIT`
 - 使用只读辅助脚本收集本地 Git 上下文，不修改仓库内容
 
 ## 为什么有这个仓库
@@ -49,6 +49,9 @@
 ├── SKILL.md
 ├── agents/
 │   └── openai.yaml
+├── references/
+│   ├── output-examples.md
+│   └── visual-output.md
 ├── scripts/
 │   └── collect_diff_context.sh
 └── tests/
@@ -76,6 +79,10 @@
 - 在 diff 过大时安全截断输出
 
 它不会执行 fetch、stage、reset、install，也不会修改任何文件。
+
+### `references/`
+
+包含仅在需要时加载的可选指导，例如本地化输出示例和视觉报告格式。
 
 ### `agents/openai.yaml`
 
@@ -169,6 +176,7 @@ your-skills/
 └── pre-commit-review/
     ├── SKILL.md
     ├── agents/
+    ├── references/
     └── scripts/
 ```
 
@@ -180,6 +188,7 @@ your-skills/
 
 - `SKILL.md`
 - `scripts/collect_diff_context.sh`
+- `references/`
 - `agents/openai.yaml`
 
 辅助脚本会在 skill 说明中被引用，因此除非你同步修改引用路径，否则应保持目录结构不变。
@@ -205,9 +214,9 @@ your-skills/
 
 最终 verdict 的含义：
 
-- `PASS`：在已审查范围内，看起来可以安全提交
-- `PASS_WITH_NOTES`：可以提交，但存在后续建议或审查边界限制
-- `NEEDS_WORK`：发现阻塞问题，不应按当前状态提交
+- `SAFE_TO_COMMIT`：在已审查范围内，看起来现在可以安全提交
+- `SAFE_TO_COMMIT_WITH_NOTES`：现在可以提交，但存在后续建议或审查边界限制
+- `DO_NOT_COMMIT`：发现阻塞问题，不应按当前状态提交
 
 ## 安全特性
 

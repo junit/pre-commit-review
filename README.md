@@ -28,9 +28,9 @@ Translations should stay functionally aligned. If you update one version, update
   - blast radius
   - regression risk
 - Returns a clear verdict:
-  - `PASS`
-  - `PASS_WITH_NOTES`
-  - `NEEDS_WORK`
+  - `SAFE_TO_COMMIT`
+  - `SAFE_TO_COMMIT_WITH_NOTES`
+  - `DO_NOT_COMMIT`
 - Uses a read-only helper script to collect local Git context without mutating the repository
 
 ## Why This Repository Exists
@@ -49,6 +49,9 @@ This repository is not an application or framework. It is a small, portable skil
 ├── SKILL.md
 ├── agents/
 │   └── openai.yaml
+├── references/
+│   ├── output-examples.md
+│   └── visual-output.md
 ├── scripts/
 │   └── collect_diff_context.sh
 └── tests/
@@ -76,6 +79,10 @@ A read-only helper script that gathers local repository context for the review w
 - truncates oversized diffs safely when needed
 
 It does not fetch, stage, reset, install, or modify files.
+
+### `references/`
+
+Contains optional guidance loaded only when needed, such as localized output examples and visual report formatting.
 
 ### `agents/openai.yaml`
 
@@ -169,6 +176,7 @@ your-skills/
 └── pre-commit-review/
     ├── SKILL.md
     ├── agents/
+    ├── references/
     └── scripts/
 ```
 
@@ -180,6 +188,7 @@ If you already maintain a larger skills repository, copy this directory in as on
 
 - `SKILL.md`
 - `scripts/collect_diff_context.sh`
+- `references/`
 - `agents/openai.yaml`
 
 The helper script is referenced by the skill instructions, so the directory structure should remain intact unless you also update those references.
@@ -205,9 +214,9 @@ Only include deeper intent analysis, before/after logic detail, or extra support
 
 Final verdicts mean:
 
-- `PASS`: reviewed scope looks safe to commit
-- `PASS_WITH_NOTES`: safe to commit, but follow-up notes or review limits exist
-- `NEEDS_WORK`: blocking issue found; do not commit as-is
+- `SAFE_TO_COMMIT`: reviewed scope looks safe to commit now
+- `SAFE_TO_COMMIT_WITH_NOTES`: safe to commit now, but follow-up notes or review limits exist
+- `DO_NOT_COMMIT`: blocking issue found; do not commit as-is
 
 ## Safety Characteristics
 
