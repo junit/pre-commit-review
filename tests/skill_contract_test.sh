@@ -47,6 +47,11 @@ grep -Fq 'Visual mode is justified only when' "$skill_file" \
   || fail 'SKILL.md must define a concrete visual mode threshold'
 grep -Fq '300+ changed lines' "$skill_file" \
   || fail 'SKILL.md visual mode threshold must reuse the large-diff line-count signal'
+grep -Fq '10+ changed files excluding generated, vendored, minified, and lockfile-only files' "$skill_file" \
+  || fail 'SKILL.md must define meaningful files in measurable terms'
+if grep -Fq '10+ meaningful files' "$skill_file"; then
+  fail 'SKILL.md must not use the ambiguous phrase "meaningful files"'
+fi
 grep -Fq 'Append supporting analysis only when it adds decision value' "$skill_file" \
   || fail 'SKILL.md must make Supporting Analysis optional and decision-value gated'
 if grep -Fq '## Supporting Analysis' "$skill_file"; then
@@ -72,6 +77,17 @@ fi
 if grep -Fq '**审查范围：** <完整 | 部分>' "$skill_file"; then
   fail 'Chinese Tiny Diff template must use explicit review-scope placeholder wording'
 fi
+chinese_tiny_template="$(
+  awk '
+    /#### Chinese Tiny Diff Review/ { in_section=1 }
+    in_section { print }
+    in_section && /### Full Visual Mode/ { exit }
+  ' "$skill_file"
+)"
+for label in '**结论：**' '**差异来源：**' '**审查范围：**' '**变更规模：**' '- **变更：**' '- **代码卫生：**' '- **逻辑：**' '- **影响范围：**' '- **风险：**' '- **测试：**'; do
+  printf '%s\n' "$chinese_tiny_template" | grep -Fq -- "$label" \
+    || fail "Chinese Tiny Diff template missing localized label: $label"
+done
 
 grep -Fq '## Chinese Tiny Diff Example' "$output_examples_file" \
   || fail 'output-examples.md must include a Chinese tiny diff example'
@@ -106,9 +122,21 @@ grep -Fq 'skill_contract_test.sh' "$readme_file" \
   || fail 'README.md repository tree must include skill_contract_test.sh'
 grep -Fq 'collect_diff_context_test.sh' "$readme_file" \
   || fail 'README.md repository tree must include collect_diff_context_test.sh'
+grep -Fq 'eval_contract_test.sh' "$readme_file" \
+  || fail 'README.md repository tree must include eval_contract_test.sh'
+grep -Fq 'trigger-eval.json' "$readme_file" \
+  || fail 'README.md repository tree must include trigger-eval.json'
+grep -Fq 'output-eval.json' "$readme_file" \
+  || fail 'README.md repository tree must include output-eval.json'
 grep -Fq 'skill_contract_test.sh' "$readme_zh_file" \
   || fail 'README.zh-CN.md repository tree must include skill_contract_test.sh'
 grep -Fq 'collect_diff_context_test.sh' "$readme_zh_file" \
   || fail 'README.zh-CN.md repository tree must include collect_diff_context_test.sh'
+grep -Fq 'eval_contract_test.sh' "$readme_zh_file" \
+  || fail 'README.zh-CN.md repository tree must include eval_contract_test.sh'
+grep -Fq 'trigger-eval.json' "$readme_zh_file" \
+  || fail 'README.zh-CN.md repository tree must include trigger-eval.json'
+grep -Fq 'output-eval.json' "$readme_zh_file" \
+  || fail 'README.zh-CN.md repository tree must include output-eval.json'
 
 printf 'skill contract tests passed\n'

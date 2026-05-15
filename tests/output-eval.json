@@ -1,0 +1,93 @@
+{
+  "evaluation_method": "Run each case with the pre-commit-review skill available. Grade the response against the expected verdict, required fields, localization, and review-scope notes.",
+  "cases": [
+    {
+      "id": "output-tiny-docs",
+      "scenario": "tiny-docs",
+      "locale": "en",
+      "prompt": "Review this staged README wording diff before commit.",
+      "fixture": "A one-file documentation diff with +2 / -2 lines and no behavior change.",
+      "expected": {
+        "verdict": "SAFE_TO_COMMIT",
+        "must_include": ["**VERDICT:** SAFE_TO_COMMIT", "No logic change", "🟢 Low"]
+      }
+    },
+    {
+      "id": "output-mixed-staged-unstaged",
+      "scenario": "mixed-staged-unstaged",
+      "locale": "en",
+      "prompt": "Review staged changes before commit.",
+      "fixture": "Staged changes and unstaged edits touch the same file.",
+      "expected": {
+        "verdict": "SAFE_TO_COMMIT_WITH_NOTES",
+        "must_include": ["unstaged changes touch files also staged", "review limitation", "staged diff"]
+      }
+    },
+    {
+      "id": "output-hardcoded-secret",
+      "scenario": "hardcoded-secret",
+      "locale": "en",
+      "prompt": "Check this staged config diff before I commit.",
+      "fixture": "A staged source diff adds an API key-like credential.",
+      "expected": {
+        "verdict": "DO_NOT_COMMIT",
+        "must_include": ["redacted", "rotate", "environment variable"]
+      }
+    },
+    {
+      "id": "output-breaking-api",
+      "scenario": "breaking-api",
+      "locale": "en",
+      "prompt": "Pre-commit review this API diff.",
+      "fixture": "A public API response field is renamed without compatibility handling.",
+      "expected": {
+        "verdict": "DO_NOT_COMMIT",
+        "must_include": ["breaking", "downstream clients", "compatibility"]
+      }
+    },
+    {
+      "id": "output-large-generated",
+      "scenario": "large-generated",
+      "locale": "en",
+      "prompt": "Review this large staged snapshot update before commit.",
+      "fixture": "A large diff dominated by generated snapshots with truncation.",
+      "expected": {
+        "verdict": "SAFE_TO_COMMIT_WITH_NOTES",
+        "must_include": ["Partial review", "generated", "reproducible"]
+      }
+    },
+    {
+      "id": "output-no-git-repo",
+      "scenario": "no-git-repo",
+      "locale": "en",
+      "prompt": "Review current changes before commit.",
+      "fixture": "The helper reports that the current directory is not a git repository.",
+      "expected": {
+        "verdict": "NO_VERDICT",
+        "must_include": ["Diff source", "unavailable", "No diff available"]
+      }
+    },
+    {
+      "id": "output-chinese-request",
+      "scenario": "chinese-request",
+      "locale": "zh-CN",
+      "prompt": "提交前帮我审查 staged diff，用中文输出。",
+      "fixture": "A normal staged code diff with tests updated.",
+      "expected": {
+        "verdict": "SAFE_TO_COMMIT_WITH_NOTES",
+        "must_include": ["**VERDICT:**", "差异来源", "审查范围", "变更规模", "建议验证"]
+      }
+    },
+    {
+      "id": "output-pasted-diff",
+      "scenario": "pasted-diff",
+      "locale": "en",
+      "prompt": "Review this pasted patch for commit readiness.",
+      "fixture": "A user-provided patch with no local repository access.",
+      "expected": {
+        "verdict": "CASE_DEPENDENT",
+        "must_include": ["user-provided diff", "Review scope"]
+      }
+    }
+  ]
+}

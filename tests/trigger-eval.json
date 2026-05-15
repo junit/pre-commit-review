@@ -1,0 +1,53 @@
+{
+  "description_under_test": "Use when the user wants a commit-readiness review of a staged diff, unstaged diff, pasted patch, branch-vs-base change, or other code intended for imminent commit, push, or submission. Avoid triggering for general code review, PR design review, debugging, architecture feedback, or single-function review unless the user explicitly frames it as commit readiness or diff review.",
+  "cases": [
+    {
+      "id": "positive-staged-before-commit",
+      "prompt": "Review my staged changes before I commit.",
+      "expected_trigger": true,
+      "rationale": "Explicit staged commit-readiness review."
+    },
+    {
+      "id": "positive-chinese-commit-check",
+      "prompt": "提交前帮我检查一下当前改动。",
+      "expected_trigger": true,
+      "rationale": "Chinese commit-readiness wording."
+    },
+    {
+      "id": "positive-pasted-diff",
+      "prompt": "Can you pre-commit review this pasted diff and tell me if it is safe to commit?",
+      "expected_trigger": true,
+      "rationale": "Explicit pre-commit review of a pasted diff."
+    },
+    {
+      "id": "positive-branch-vs-base",
+      "prompt": "Check this branch against main before I open the PR.",
+      "expected_trigger": true,
+      "rationale": "Branch-vs-base submission readiness review."
+    },
+    {
+      "id": "negative-debug-failing-test",
+      "prompt": "Debug why this unit test is failing.",
+      "expected_trigger": false,
+      "rationale": "Debugging request without commit-readiness framing."
+    },
+    {
+      "id": "negative-single-function-review",
+      "prompt": "Review this function for readability and naming.",
+      "expected_trigger": false,
+      "rationale": "Single-function review without diff or commit framing."
+    },
+    {
+      "id": "negative-architecture-feedback",
+      "prompt": "Give me architecture feedback on this service design.",
+      "expected_trigger": false,
+      "rationale": "Architecture review is outside commit-readiness scope."
+    },
+    {
+      "id": "negative-pr-design-review",
+      "prompt": "Review the product design direction for this PR.",
+      "expected_trigger": false,
+      "rationale": "PR design feedback is not a pre-commit diff review."
+    }
+  ]
+}

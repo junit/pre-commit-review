@@ -75,8 +75,8 @@ If staged changes exist, treat only the staged diff as the commit candidate. Sti
 Scale detail to the size and risk of the diff:
 
 - **Tiny diffs (<5 changed lines, low risk, and no priority findings)**: MUST use the Tiny Diff format. Keep each dimension to the shortest honest answer, such as `Self-contained - no external impact` or `No logic change`.
-- **Normal diffs**: Use the Default Developer Review format. This covers most changes under roughly 300 changed lines or fewer than about 10 meaningful files when no high-risk area is involved.
-- **Large/high-risk diffs**: Prioritize high-signal areas when the change is roughly 300+ changed lines, spans 10+ meaningful files, is generated/lockfile-heavy, or touches security, auth, public APIs, migrations, data correctness, dependencies, config/deployment, concurrency, payment/billing, data deletion, or resource lifecycle.
+- **Normal diffs**: Use the Default Developer Review format. This covers most changes under roughly 300 changed lines or fewer than about 10 changed files after excluding generated, vendored, minified, and lockfile-only files when no high-risk area is involved.
+- **Large/high-risk diffs**: Prioritize high-signal areas when the change is roughly 300+ changed lines, spans 10+ changed files excluding generated, vendored, minified, and lockfile-only files, is generated/lockfile-heavy, or touches security, auth, public APIs, migrations, data correctness, dependencies, config/deployment, concurrency, payment/billing, data deletion, or resource lifecycle.
 - **Too-large diffs**: Use the Large Diff Handling rules and mark `Review scope` as partial. Do not imply a full safety guarantee.
 
 ## Large Diff Handling
@@ -381,7 +381,7 @@ Apply the same localization rule from the Localization Rule section above: all h
 
 ### Full Visual Mode
 
-Visual mode is justified only when the user asks for a visual report, the review is being shared with a team, or the diff already meets large/high-risk criteria and a matrix materially improves the commit decision. Large/high-risk means roughly 300+ changed lines, 10+ meaningful files, generated/lockfile-heavy changes, or changes touching security, auth, public APIs, migrations, data correctness, dependencies, config/deployment, concurrency, payment/billing, data deletion, or resource lifecycle. Otherwise use the Tiny Diff or Default Developer Review format and do not mix visual tables into the default path. When visual mode is justified, consult `references/visual-output.md`.
+Visual mode is justified only when the user asks for a visual report, the review is being shared with a team, or the diff already meets large/high-risk criteria and a matrix materially improves the commit decision. Large/high-risk means roughly 300+ changed lines, 10+ changed files excluding generated, vendored, minified, and lockfile-only files, generated/lockfile-heavy changes, or changes touching security, auth, public APIs, migrations, data correctness, dependencies, config/deployment, concurrency, payment/billing, data deletion, or resource lifecycle. Otherwise use the Tiny Diff or Default Developer Review format and do not mix visual tables into the default path. When visual mode is justified, consult `references/visual-output.md`.
 
 Rules for visual mode:
 

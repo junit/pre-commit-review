@@ -56,7 +56,10 @@
 │   └── collect_diff_context.sh
 └── tests/
     ├── collect_diff_context_test.sh
+    ├── eval_contract_test.sh
+    ├── output-eval.json
     ├── skill_contract_test.sh
+    ├── trigger-eval.json
     └── install_smoke_test.sh
 ```
 
