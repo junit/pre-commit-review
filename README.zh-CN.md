@@ -55,6 +55,8 @@
 ├── scripts/
 │   └── collect_diff_context.sh
 └── tests/
+    ├── collect_diff_context_test.sh
+    ├── skill_contract_test.sh
     └── install_smoke_test.sh
 ```
 

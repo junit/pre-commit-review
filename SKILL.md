@@ -11,7 +11,7 @@ Review a Git diff as a commit-quality gate. Build a clear model of what changed,
 ## Core Rules
 
 - Optimize for developer actionability, not visual completeness. Every output element must help the developer decide: can I commit, what must I fix, what should I test, or what risk should I watch.
-- Put the verdict first, then a one-sentence action summary in the selected output language. Example: `Conclusion: Safe to commit after running the updated auth test.` or `结论：先修复空值分支，再提交。`
+- After the title, put the verdict first, then a one-sentence action summary in the selected output language. Example: `Conclusion: Safe to commit after running the updated auth test.` or `结论：先修复空值分支，再提交。`
 - Do not pretend to inspect local changes. If no repository or shell access is available, review only the diff or code the user supplied and state that boundary in `Diff source` and `Review scope`.
 - Prefer the exact user-provided diff when the user pasted or uploaded one. Do not replace it with local Git output unless the user asks.
 - When repository access is available, prefer running the bundled helper script `scripts/collect_diff_context.sh` from this skill package before composing manual Git commands. Do not substitute a similarly named script from the target repository. Use the helper output as the source of truth for `Diff source`, `Review scope`, `Change scale`, changed files, staged/unstaged notes, untracked-file notes, and review boundaries. For very large diffs, use `PRE_COMMIT_REVIEW_MAX_DIFF_BYTES=0` only when printing the full diff is safe.
@@ -86,7 +86,7 @@ If the diff cannot fit in context or the helper reports truncation:
 1. Start from diff stat, file list, and changed file types.
 2. Prioritize security, auth, permissions, API/public interfaces, database migrations, payment/billing, data deletion, concurrency, async retry logic, configuration, deployment, dependency changes, and resource lifecycle changes.
 3. Review generated, vendored, minified, and lock files only for source/config consistency, version changes, and suspicious major upgrades unless they are small and clearly relevant.
-4. Use file-specific diffs when possible, such as `git diff -- path/to/file`, to inspect high-risk files deeply.
+4. Use file-specific diffs matching the selected review source to inspect high-risk files deeply: staged reviews use `git diff --cached -- path/to/file`, unstaged reviews use `git diff -- path/to/file`, and branch-vs-base reviews use `git diff <base>...HEAD -- path/to/file`.
 5. Set `Review scope` to partial and list any material unreviewed areas.
 6. Avoid `SAFE_TO_COMMIT` for a partial review unless all omitted files are clearly generated or non-executable and no risky files were skipped.
 

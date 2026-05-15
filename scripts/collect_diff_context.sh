@@ -23,7 +23,7 @@ fail_no_repo() {
   print_kv 'review_limits' 'no local repository access'
   echo
   echo 'No diff available. Stage your changes or provide a diff to review.'
-  exit 2
+  exit 0
 }
 
 if ! repo_root="$(git rev-parse --show-toplevel 2>/dev/null)"; then

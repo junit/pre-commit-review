@@ -6,6 +6,8 @@ repo_root="$(CDPATH='' cd -- "$script_dir/.." && pwd -P)"
 skill_file="$repo_root/SKILL.md"
 output_examples_file="$repo_root/references/output-examples.md"
 visual_output_file="$repo_root/references/visual-output.md"
+readme_file="$repo_root/README.md"
+readme_zh_file="$repo_root/README.zh-CN.md"
 
 fail() {
   printf 'skill contract test failed: %s\n' "$*" >&2
@@ -33,6 +35,13 @@ grep -Fq '#### English Default Developer Review' "$skill_file" \
 grep -Fq '#### Chinese Default Developer Review' "$skill_file" \
   || fail 'SKILL.md must include a concrete Chinese default template'
 
+grep -Fq 'git diff --cached -- path/to/file' "$skill_file" \
+  || fail 'SKILL.md must tell reviewers to use staged file-specific diffs for staged reviews'
+grep -Fq 'git diff <base>...HEAD -- path/to/file' "$skill_file" \
+  || fail 'SKILL.md must tell reviewers to use branch file-specific diffs for branch-vs-base reviews'
+grep -Fq 'After the title, put the verdict first' "$skill_file" \
+  || fail 'SKILL.md must align the verdict-first rule with the titled output templates'
+
 grep -Fq '## Chinese Tiny Diff Example' "$output_examples_file" \
   || fail 'output-examples.md must include a Chinese tiny diff example'
 grep -Fq '## Chinese Partial Review Example' "$output_examples_file" \
@@ -49,5 +58,14 @@ grep -Fq 'Follow the selected output language from `SKILL.md`.' "$visual_output_
   || fail 'visual-output.md must preserve the SKILL.md localization contract'
 grep -Fq 'Only calculate distribution from real `name-status`, `numstat`, or reviewed file counts.' "$visual_output_file" \
   || fail 'visual-output.md must prohibit invented change distribution percentages'
+
+grep -Fq 'skill_contract_test.sh' "$readme_file" \
+  || fail 'README.md repository tree must include skill_contract_test.sh'
+grep -Fq 'collect_diff_context_test.sh' "$readme_file" \
+  || fail 'README.md repository tree must include collect_diff_context_test.sh'
+grep -Fq 'skill_contract_test.sh' "$readme_zh_file" \
+  || fail 'README.zh-CN.md repository tree must include skill_contract_test.sh'
+grep -Fq 'collect_diff_context_test.sh' "$readme_zh_file" \
+  || fail 'README.zh-CN.md repository tree must include collect_diff_context_test.sh'
 
 printf 'skill contract tests passed\n'

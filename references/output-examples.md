@@ -30,14 +30,14 @@ SKILL.md is authoritative; examples illustrate valid outputs only.
 - **建议验证：** 运行受影响模块的测试
 
 ## 变更概览
-- **修改的文件：** `src/auth/validator.js` — 增加了对 session token 的空值检查
-- **新增的文件：** 无 — 仅修改
+- **修改：** `src/auth/validator.js` — 增加了对 session token 的空值检查
+- **新增：** 无 - 仅修改。
 
 ## 风险摘要
-- **逻辑变更：** session token 校验现在会显式拒绝 null/undefined
+- **逻辑变化：** session token 校验现在会显式拒绝 null/undefined
 - **影响范围：** 自包含 — 仅影响 `validateSession` 的调用方
 - **回归风险：** 🟢 低 — 更严格的校验，不会拒绝之前能通过的 token
-- **上线监控：** 无需额外监控
+- **监控点：** 无需额外监控
 ```
 
 ## Chinese Example with Blocking Issue
