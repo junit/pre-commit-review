@@ -57,6 +57,7 @@ This repository is not an application or framework. It is a small, portable skil
 └── tests/
     ├── collect_diff_context_test.sh
     ├── eval_contract_test.sh
+    ├── install_agent_matrix_test.sh
     ├── output-eval.json
     ├── skill_contract_test.sh
     ├── trigger-eval.json
@@ -95,7 +96,7 @@ Provides lightweight agent metadata for environments that expose skills through 
 
 ### `install.sh`
 
-Installs this skill package into a host-specific skills directory for Codex, Claude Code, or Gemini CLI.
+Installs this skill package into host-specific skills directories for supported AI coding agents.
 
 ### `tests/install_smoke_test.sh`
 
@@ -103,24 +104,35 @@ Runs a small end-to-end installer smoke test against temporary directories.
 
 ## Quick Install
 
-From a clone of this repository:
+From a clone of this repository, install globally for any supported agent:
 
 ```bash
-./install.sh codex
-./install.sh claude
-./install.sh gemini
+./install.sh --agent codex
+./install.sh --agent claude-code
+./install.sh --agent gemini-cli
+./install.sh --agent kiro-cli
+```
+
+List every supported agent id and its project/global paths:
+
+```bash
+./install.sh --list-agents
 ```
 
 Defaults:
 
-- `codex` installs to `CODEX_SKILLS_DIR`, then `AGENT_SKILLS_DIR`, then `${CODEX_HOME}/skills`, then `~/.codex/skills`
-- `claude` installs to `CLAUDE_SKILLS_DIR`, then `~/.claude/skills`
-- `gemini` installs to `GEMINI_SKILLS_DIR`, then `AGENT_SKILLS_DIR`, then `~/.agents/skills`
+- Global installs use the agent-specific global path shown by `--list-agents`
+- Project installs use the agent-specific project path shown by `--list-agents`
+- `--dir PATH` overrides both defaults
+- `AGENT_SKILLS_DIR` overrides the global default for all agents
+- Dedicated overrides are also supported for existing integrations: `CODEX_SKILLS_DIR`, `CLAUDE_SKILLS_DIR`, `GEMINI_SKILLS_DIR`, `KIRO_SKILLS_DIR`, and `CODEX_HOME`
+- Backward-compatible aliases are supported: `claude`, `gemini`, and `kiro`
 
 Useful flags:
 
 - `--copy` copies the skill into the target directory and is the default mode
 - `--link` creates a symlink to this repository, which is useful for local development
+- `--project` installs into the agent's project-local skills directory
 - `--dir PATH` overrides the target skills directory
 - `--force` replaces an existing non-managed target
 - `--dry-run` prints what would happen without changing anything
@@ -128,9 +140,10 @@ Useful flags:
 Examples:
 
 ```bash
-./install.sh codex --link
-./install.sh codex --dir .agents/skills
-./install.sh gemini --dir .agents/skills
+./install.sh --agent cursor --project
+./install.sh --agent windsurf --link --project
+./install.sh --agent github-copilot --dry-run
+./install.sh kiro --dir .kiro/skills
 ```
 
 ## How It Works
@@ -164,8 +177,9 @@ Clone this repository, then run the installer for your host:
 or:
 
 ```bash
-./install.sh claude
-./install.sh gemini
+./install.sh --agent claude-code
+./install.sh --agent gemini-cli
+./install.sh --agent kiro-cli
 ```
 
 Restart the agent or start a new session after installing so it can discover the new skill.

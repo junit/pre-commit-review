@@ -57,6 +57,7 @@
 └── tests/
     ├── collect_diff_context_test.sh
     ├── eval_contract_test.sh
+    ├── install_agent_matrix_test.sh
     ├── output-eval.json
     ├── skill_contract_test.sh
     ├── trigger-eval.json
@@ -95,7 +96,7 @@
 
 ### `install.sh`
 
-把这个 skill 包安装到 Codex、Claude Code 或 Gemini CLI 的 skills 目录。
+把这个 skill 包安装到受支持 AI 编程 agent 的 skills 目录。
 
 ### `tests/install_smoke_test.sh`
 
@@ -103,24 +104,35 @@
 
 ## 快速安装
 
-在克隆后的仓库目录中执行：
+在克隆后的仓库目录中，可以为任意受支持 agent 执行全局安装：
 
 ```bash
-./install.sh codex
-./install.sh claude
-./install.sh gemini
+./install.sh --agent codex
+./install.sh --agent claude-code
+./install.sh --agent gemini-cli
+./install.sh --agent kiro-cli
+```
+
+列出所有受支持的 agent id 及其 project/global 路径：
+
+```bash
+./install.sh --list-agents
 ```
 
 默认目录：
 
-- `codex` 依次使用 `CODEX_SKILLS_DIR`、`AGENT_SKILLS_DIR`、`${CODEX_HOME}/skills`、`~/.codex/skills`
-- `claude` 依次使用 `CLAUDE_SKILLS_DIR`、`~/.claude/skills`
-- `gemini` 依次使用 `GEMINI_SKILLS_DIR`、`AGENT_SKILLS_DIR`、`~/.agents/skills`
+- 全局安装使用 `--list-agents` 中对应 agent 的 global path
+- 项目安装使用 `--list-agents` 中对应 agent 的 project path
+- `--dir PATH` 会覆盖上述默认路径
+- `AGENT_SKILLS_DIR` 会覆盖所有 agent 的全局默认路径
+- 也支持已有集成的专用覆盖变量：`CODEX_SKILLS_DIR`、`CLAUDE_SKILLS_DIR`、`GEMINI_SKILLS_DIR`、`KIRO_SKILLS_DIR`、`CODEX_HOME`
+- 继续支持兼容别名：`claude`、`gemini`、`kiro`
 
 常用参数：
 
 - `--copy` 把 skill 复制到目标目录，默认就是这个模式
 - `--link` 把当前仓库以符号链接形式安装过去，适合本地开发
+- `--project` 安装到该 agent 的项目级 skills 目录
 - `--dir PATH` 手动指定目标 skills 目录
 - `--force` 覆盖一个并非由当前安装器管理的同名目标
 - `--dry-run` 只打印将执行的动作，不真正修改文件
@@ -128,9 +140,10 @@
 示例：
 
 ```bash
-./install.sh codex --link
-./install.sh codex --dir .agents/skills
-./install.sh gemini --dir .agents/skills
+./install.sh --agent cursor --project
+./install.sh --agent windsurf --link --project
+./install.sh --agent github-copilot --dry-run
+./install.sh kiro --dir .kiro/skills
 ```
 
 ## 工作方式
@@ -164,8 +177,9 @@ skill 按以下顺序解析审查输入：
 或者：
 
 ```bash
-./install.sh claude
-./install.sh gemini
+./install.sh --agent claude-code
+./install.sh --agent gemini-cli
+./install.sh --agent kiro-cli
 ```
 
 安装后请重启 agent，或者开启一个新会话，让它重新发现这个 skill。
