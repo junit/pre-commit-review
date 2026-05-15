@@ -41,6 +41,37 @@ grep -Fq 'git diff <base>...HEAD -- path/to/file' "$skill_file" \
   || fail 'SKILL.md must tell reviewers to use branch file-specific diffs for branch-vs-base reviews'
 grep -Fq 'After the title, put the verdict first' "$skill_file" \
   || fail 'SKILL.md must align the verdict-first rule with the titled output templates'
+grep -Fq 'MUST use the Tiny Diff format' "$skill_file" \
+  || fail 'SKILL.md must make tiny diff formatting a hard rule for tiny low-risk diffs'
+grep -Fq 'Visual mode is justified only when' "$skill_file" \
+  || fail 'SKILL.md must define a concrete visual mode threshold'
+grep -Fq '300+ changed lines' "$skill_file" \
+  || fail 'SKILL.md visual mode threshold must reuse the large-diff line-count signal'
+grep -Fq 'Append supporting analysis only when it adds decision value' "$skill_file" \
+  || fail 'SKILL.md must make Supporting Analysis optional and decision-value gated'
+if grep -Fq '## Supporting Analysis' "$skill_file"; then
+  fail 'SKILL.md default templates must not include Supporting Analysis by default'
+fi
+if grep -Fq '## 补充分析' "$skill_file"; then
+  fail 'SKILL.md default templates must not include Chinese Supporting Analysis by default'
+fi
+if grep -Fq '**变更规模：** <count> files' "$skill_file"; then
+  fail 'Chinese default template must not use English count/files placeholders'
+fi
+if grep -Fq '**未审查变更：** <无 | unstaged/generated/too-large files' "$skill_file"; then
+  fail 'Chinese default template must not use English unreviewed-change placeholders'
+fi
+if grep -Fq '**变更规模：** <files and lines>' "$skill_file"; then
+  fail 'Chinese tiny template must not use English files/lines placeholders'
+fi
+grep -Fq '**变更规模：** <文件数> 个文件, +<新增行数> 行 / -<删除行数> 行' "$skill_file" \
+  || fail 'Chinese templates must show localized line-count units'
+if grep -Fq '**差异来源：** <来源>' "$skill_file"; then
+  fail 'Chinese Tiny Diff template must use the same diff-source placeholder style as the default template'
+fi
+if grep -Fq '**审查范围：** <完整 | 部分>' "$skill_file"; then
+  fail 'Chinese Tiny Diff template must use explicit review-scope placeholder wording'
+fi
 
 grep -Fq '## Chinese Tiny Diff Example' "$output_examples_file" \
   || fail 'output-examples.md must include a Chinese tiny diff example'
@@ -51,6 +82,15 @@ grep -Fq 'SKILL.md is authoritative; examples illustrate valid outputs only.' "$
 if grep -Eq '^\*\*(结论|裁定|状态|判定)[^*]*\*\*:?[[:space:]]*(SAFE_TO_COMMIT|SAFE_TO_COMMIT_WITH_NOTES|DO_NOT_COMMIT)' "$output_examples_file"; then
   fail 'output-examples.md must not show verdict tokens under translated verdict-like labels'
 fi
+if grep -Fq '**差异来源：** staged diff' "$output_examples_file"; then
+  fail 'Chinese examples must not use English diff-source labels as prose values'
+fi
+if grep -Eq '^\*\*变更规模：\*\* [0-9]+ files' "$output_examples_file"; then
+  fail 'Chinese examples must not use English files counts'
+fi
+if grep -Eq '^\*\*变更规模：\*\* .* \+[0-9]+ / -[0-9]+' "$output_examples_file"; then
+  fail 'Chinese examples must include localized line-count units'
+fi
 
 grep -Fq '## Visual Review Skeleton' "$visual_output_file" \
   || fail 'visual-output.md must include a complete visual review skeleton'
@@ -58,6 +98,9 @@ grep -Fq 'Follow the selected output language from `SKILL.md`.' "$visual_output_
   || fail 'visual-output.md must preserve the SKILL.md localization contract'
 grep -Fq 'Only calculate distribution from real `name-status`, `numstat`, or reviewed file counts.' "$visual_output_file" \
   || fail 'visual-output.md must prohibit invented change distribution percentages'
+if grep -Fq '**变更规模：** <files and lines>' "$visual_output_file"; then
+  fail 'Chinese visual skeleton must not use English files/lines placeholders'
+fi
 
 grep -Fq 'skill_contract_test.sh' "$readme_file" \
   || fail 'README.md repository tree must include skill_contract_test.sh'

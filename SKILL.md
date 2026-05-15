@@ -74,7 +74,7 @@ If staged changes exist, treat only the staged diff as the commit candidate. Sti
 
 Scale detail to the size and risk of the diff:
 
-- **Tiny diffs (<5 changed lines and low risk)**: Use the Tiny Diff format. Keep each dimension to the shortest honest answer, such as `Self-contained - no external impact` or `No logic change`.
+- **Tiny diffs (<5 changed lines, low risk, and no priority findings)**: MUST use the Tiny Diff format. Keep each dimension to the shortest honest answer, such as `Self-contained - no external impact` or `No logic change`.
 - **Normal diffs**: Use the Default Developer Review format. This covers most changes under roughly 300 changed lines or fewer than about 10 meaningful files when no high-risk area is involved.
 - **Large/high-risk diffs**: Prioritize high-signal areas when the change is roughly 300+ changed lines, spans 10+ meaningful files, is generated/lockfile-heavy, or touches security, auth, public APIs, migrations, data correctness, dependencies, config/deployment, concurrency, payment/billing, data deletion, or resource lifecycle.
 - **Too-large diffs**: Use the Large Diff Handling rules and mark `Review scope` as partial. Do not imply a full safety guarantee.
@@ -291,14 +291,6 @@ If there are no blockers or notes, write `None`.
 - **Regression risk:** <🔴 High | 🟡 Medium | 🟢 Low> - <concrete reason>
 - **Watchpoints:** <logs, metrics, dashboards, errors, or `None needed`>
 
-## Supporting Analysis
-
-Include only the subsections that add signal. Omit this entire section if nothing adds signal.
-
-- **Code hygiene:** <issues or `Clean - no hygiene issues found.`>
-- **Intent:** <likely business/technical intent when useful>
-- **Before/After detail:** <only when the logic shift needs more explanation>
-- **Additional test scope:** <edge cases, manual flows, or rollout checks not already covered above>
 ```
 
 #### Chinese Default Developer Review
@@ -308,10 +300,10 @@ Include only the subsections that add signal. Omit this entire section if nothin
 
 **VERDICT:** <SAFE_TO_COMMIT | SAFE_TO_COMMIT_WITH_NOTES | DO_NOT_COMMIT>
 **结论：** <一句话说明现在能否提交，以及下一步要做什么>
-**差异来源：** <diff 获取方式>
+**差异来源：** <差异获取方式>
 **审查范围：** <完整审查 | 部分审查及原因>
-**变更规模：** <count> files, +<insertions> / -<deletions>
-**未审查变更：** <无 | unstaged/generated/too-large files 或其他限制>
+**变更规模：** <文件数> 个文件, +<新增行数> 行 / -<删除行数> 行
+**未审查变更：** <无 | 未暂存变更、生成文件、过大文件或其他限制>
 
 ## 重点发现
 
@@ -337,17 +329,11 @@ Include only the subsections that add signal. Omit this entire section if nothin
 - **回归风险：** <🔴 高 | 🟡 中 | 🟢 低> - <具体原因>
 - **监控点：** <日志、指标、仪表盘、错误，或 `无需额外监控`>
 
-## 补充分析
-
-仅包含有信息量的子项。如果没有有价值的补充内容，省略整个“补充分析”部分。
-
-- **代码卫生：** <问题，或 `干净 - 未发现代码卫生问题。`>
-- **变更意图：** <有用时说明可能的业务/技术意图>
-- **前后行为细节：** <只有逻辑变化需要更多解释时填写>
-- **额外测试范围：** <上文未覆盖的边界场景、手动流程或发布检查>
 ```
 
 Do not force every supporting subsection into every review. The default review should feel like a concise decision memo, not a compliance form.
+
+Append supporting analysis only when it adds decision value beyond the required sections. If needed, use the localized heading `Supporting Analysis` or `补充分析` and include only useful subsections such as code hygiene, intent, before/after detail, or additional test scope. Omit the section entirely for routine reviews.
 
 ### Tiny Diff Format
 
@@ -381,9 +367,9 @@ Apply the same localization rule from the Localization Rule section above: all h
 
 **VERDICT:** <SAFE_TO_COMMIT | SAFE_TO_COMMIT_WITH_NOTES | DO_NOT_COMMIT>
 **结论：** <一句话结论>
-**差异来源：** <来源>
-**审查范围：** <完整 | 部分>
-**变更规模：** <files and lines>
+**差异来源：** <差异获取方式>
+**审查范围：** <完整审查 | 部分审查>
+**变更规模：** <文件数> 个文件, +<新增行数> 行 / -<删除行数> 行
 
 - **变更：** <一句话>
 - **代码卫生：** <干净或具体问题>
@@ -395,7 +381,7 @@ Apply the same localization rule from the Localization Rule section above: all h
 
 ### Full Visual Mode
 
-Use full visual/report styling only when the user asks for a visual report, the review is being shared with a team, or a large/high-risk diff benefits from a matrix. When needed, consult `references/visual-output.md`.
+Visual mode is justified only when the user asks for a visual report, the review is being shared with a team, or the diff already meets large/high-risk criteria and a matrix materially improves the commit decision. Large/high-risk means roughly 300+ changed lines, 10+ meaningful files, generated/lockfile-heavy changes, or changes touching security, auth, public APIs, migrations, data correctness, dependencies, config/deployment, concurrency, payment/billing, data deletion, or resource lifecycle. Otherwise use the Tiny Diff or Default Developer Review format and do not mix visual tables into the default path. When visual mode is justified, consult `references/visual-output.md`.
 
 Rules for visual mode:
 

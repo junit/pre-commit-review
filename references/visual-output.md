@@ -1,6 +1,6 @@
 # Optional Visual Output Guidance
 
-Use this file only when the user asks for a visual/report-style review, the result will be shared with a team, or the diff is large/high-risk enough that structured visual summaries improve scanability.
+Use this file only when `SKILL.md` visual-mode criteria are met: the user asks for a visual/report-style review, the result will be shared with a team, or the diff already meets large/high-risk criteria and structured visual summaries materially improve the commit decision.
 
 ## Principles
 
@@ -62,7 +62,7 @@ Use the concrete skeleton matching the selected output language when visual mode
 **结论：** <一句话提交决策>
 **差异来源：** <来源>
 **审查范围：** <完整 | 部分>
-**变更规模：** <files and lines>
+**变更规模：** <文件数和行数>
 **未审查变更：** <无或具体限制>
 
 | 领域 | 状态 | 说明 |

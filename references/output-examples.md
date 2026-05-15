@@ -16,9 +16,9 @@ SKILL.md is authoritative; examples illustrate valid outputs only.
 
 **VERDICT:** SAFE_TO_COMMIT_WITH_NOTES
 **结论：** 可以提交，但建议先运行受影响的测试。
-**差异来源：** staged diff
+**差异来源：** 暂存区差异
 **审查范围：** 完整审查
-**变更规模：** 2 files, +20 / -4
+**变更规模：** 2 个文件, +20 行 / -4 行
 **未审查变更：** 无
 
 ## 重点发现
@@ -47,9 +47,9 @@ SKILL.md is authoritative; examples illustrate valid outputs only.
 
 **VERDICT:** DO_NOT_COMMIT
 **结论：** 发现硬编码 API key — 移除后再提交。
-**差异来源：** staged diff
+**差异来源：** 暂存区差异
 **审查范围：** 完整审查
-**变更规模：** 1 file, +8 / -2
+**变更规模：** 1 个文件, +8 行 / -2 行
 **未审查变更：** 无
 
 ## 重点发现
@@ -72,9 +72,9 @@ SKILL.md is authoritative; examples illustrate valid outputs only.
 
 **VERDICT:** SAFE_TO_COMMIT
 **结论：** 可以提交；这是文档措辞更新，无行为风险。
-**差异来源：** staged diff
+**差异来源：** 暂存区差异
 **审查范围：** 完整审查
-**变更规模：** 1 file, +2 / -2
+**变更规模：** 1 个文件, +2 行 / -2 行
 
 - **变更：** 更新 README 中的安装说明措辞。
 - **代码卫生：** 干净 - 未发现代码卫生问题。
@@ -93,9 +93,9 @@ SKILL.md is authoritative; examples illustrate valid outputs only.
 
 **VERDICT:** SAFE_TO_COMMIT_WITH_NOTES
 **结论：** 已审查高风险路径，未发现阻塞项；提交前建议检查未展开的生成文件。
-**差异来源：** staged diff via helper
-**审查范围：** 部分审查 - helper 截断 diff 输出
-**变更规模：** 18 files, +900 / -120
+**差异来源：** 通过辅助脚本获取的暂存区差异
+**审查范围：** 部分审查 - 辅助脚本截断差异输出
+**变更规模：** 18 个文件, +900 行 / -120 行
 **未审查变更：** 生成快照文件仅按文件列表和统计检查，未逐行审查
 
 ## 重点发现
