@@ -1,5 +1,5 @@
 {
-  "evaluation_method": "Run each case with the pre-commit-review skill available. Grade the response against the expected verdict, required fields, localization, and review-scope notes.",
+  "evaluation_method": "Prepare each case with tests/output_eval_runner.sh, run the case with the pre-commit-review skill available or through a host wrapper such as tests/output_eval_codex_runner.sh / tests/output_eval_claude_runner.sh, and grade the response against the expected verdict, required fields, localization, and review-scope notes.",
   "cases": [
     {
       "id": "output-tiny-docs",

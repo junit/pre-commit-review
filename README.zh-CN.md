@@ -58,7 +58,15 @@
 └── tests/
     ├── collect_diff_context_test.sh
     ├── eval_contract_test.sh
+    ├── full_review_workflow_test.sh
     ├── install_agent_matrix_test.sh
+    ├── output_eval_claude_case.sh
+    ├── output_eval_claude_runner.sh
+    ├── output_eval_codex_case.sh
+    ├── output_eval_codex_runner.sh
+    ├── output_eval_host_wrappers_test.sh
+    ├── output_eval_runner.sh
+    ├── output_eval_runner_test.sh
     ├── output-eval.json
     ├── skill_contract_test.sh
     ├── trigger-eval.json
@@ -128,6 +136,16 @@ Reducer 和 subagent 自动化应优先使用 `Review Plan JSON`、`Reducer Stat
 ### `install.sh`
 
 把这个 skill 包安装到受支持 AI 编程 agent 的 skills 目录。
+
+### 输出基准 Harness
+
+`tests/output_eval_runner.sh` 会为 `tests/output-eval.json` 中的每个场景准备真实本地 fixture，也可以选择调用外部模型 runner，并按期望 verdict 与必含短语对保存的响应做评分。
+
+`tests/output_eval_runner_test.sh` 是这个 harness 的确定性自测。它会准备 fixture、合成 mock responses，并在不调用真实模型的情况下验证评分逻辑。
+
+`tests/output_eval_codex_runner.sh` 和 `tests/output_eval_claude_runner.sh` 是宿主专用薄封装。它们会先把当前仓库链接到 fixture 的 project-local skill 目录（Codex 用 `.agents/skills`，Claude Code 用 `.claude/skills`），再用适合各自宿主的非交互命令委托给 `tests/output_eval_runner.sh`。
+
+`tests/output_eval_host_wrappers_test.sh` 用 mock Codex/Claude 二进制验证这些 wrapper，确保宿主命令模板回归时不需要消耗真实模型调用。
 
 ### `tests/install_smoke_test.sh`
 

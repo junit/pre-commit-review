@@ -58,7 +58,15 @@ This repository is not an application or framework. It is a small, portable skil
 └── tests/
     ├── collect_diff_context_test.sh
     ├── eval_contract_test.sh
+    ├── full_review_workflow_test.sh
     ├── install_agent_matrix_test.sh
+    ├── output_eval_claude_case.sh
+    ├── output_eval_claude_runner.sh
+    ├── output_eval_codex_case.sh
+    ├── output_eval_codex_runner.sh
+    ├── output_eval_host_wrappers_test.sh
+    ├── output_eval_runner.sh
+    ├── output_eval_runner_test.sh
     ├── output-eval.json
     ├── skill_contract_test.sh
     ├── trigger-eval.json
@@ -128,6 +136,16 @@ Provides lightweight agent metadata for environments that expose skills through 
 ### `install.sh`
 
 Installs this skill package into host-specific skills directories for supported AI coding agents.
+
+### Output Benchmark Harness
+
+`tests/output_eval_runner.sh` prepares real local fixtures for every scenario in `tests/output-eval.json`, can optionally invoke an external model runner, and grades saved responses against expected verdicts and required phrases.
+
+`tests/output_eval_runner_test.sh` is the deterministic self-test for that harness. It prepares fixtures, synthesizes mock responses, and verifies the grading logic without calling a real model.
+
+`tests/output_eval_codex_runner.sh` and `tests/output_eval_claude_runner.sh` are host-specific thin wrappers. They link this checkout into the fixture's project-local skill directory (`.agents/skills` for Codex, `.claude/skills` for Claude Code) and then delegate to `tests/output_eval_runner.sh` with host-appropriate non-interactive commands.
+
+`tests/output_eval_host_wrappers_test.sh` verifies those wrappers with mock Codex and Claude binaries so the host command templates can regress safely without spending model calls.
 
 ### `tests/install_smoke_test.sh`
 

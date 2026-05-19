@@ -205,8 +205,24 @@ grep -Fq 'collect_diff_context_test.sh' "$readme_file" \
   || fail 'README.md repository tree must include collect_diff_context_test.sh'
 grep -Fq 'eval_contract_test.sh' "$readme_file" \
   || fail 'README.md repository tree must include eval_contract_test.sh'
+grep -Fq 'full_review_workflow_test.sh' "$readme_file" \
+  || fail 'README.md repository tree must include full_review_workflow_test.sh'
 grep -Fq 'install_agent_matrix_test.sh' "$readme_file" \
   || fail 'README.md repository tree must include install_agent_matrix_test.sh'
+grep -Fq 'output_eval_claude_case.sh' "$readme_file" \
+  || fail 'README.md repository tree must include output_eval_claude_case.sh'
+grep -Fq 'output_eval_claude_runner.sh' "$readme_file" \
+  || fail 'README.md repository tree must include output_eval_claude_runner.sh'
+grep -Fq 'output_eval_codex_case.sh' "$readme_file" \
+  || fail 'README.md repository tree must include output_eval_codex_case.sh'
+grep -Fq 'output_eval_codex_runner.sh' "$readme_file" \
+  || fail 'README.md repository tree must include output_eval_codex_runner.sh'
+grep -Fq 'output_eval_host_wrappers_test.sh' "$readme_file" \
+  || fail 'README.md repository tree must include output_eval_host_wrappers_test.sh'
+grep -Fq 'output_eval_runner.sh' "$readme_file" \
+  || fail 'README.md repository tree must include output_eval_runner.sh'
+grep -Fq 'output_eval_runner_test.sh' "$readme_file" \
+  || fail 'README.md repository tree must include output_eval_runner_test.sh'
 grep -Fq 'trigger-eval.json' "$readme_file" \
   || fail 'README.md repository tree must include trigger-eval.json'
 grep -Fq 'output-eval.json' "$readme_file" \
@@ -217,8 +233,24 @@ grep -Fq 'collect_diff_context_test.sh' "$readme_zh_file" \
   || fail 'README.zh-CN.md repository tree must include collect_diff_context_test.sh'
 grep -Fq 'eval_contract_test.sh' "$readme_zh_file" \
   || fail 'README.zh-CN.md repository tree must include eval_contract_test.sh'
+grep -Fq 'full_review_workflow_test.sh' "$readme_zh_file" \
+  || fail 'README.zh-CN.md repository tree must include full_review_workflow_test.sh'
 grep -Fq 'install_agent_matrix_test.sh' "$readme_zh_file" \
   || fail 'README.zh-CN.md repository tree must include install_agent_matrix_test.sh'
+grep -Fq 'output_eval_claude_case.sh' "$readme_zh_file" \
+  || fail 'README.zh-CN.md repository tree must include output_eval_claude_case.sh'
+grep -Fq 'output_eval_claude_runner.sh' "$readme_zh_file" \
+  || fail 'README.zh-CN.md repository tree must include output_eval_claude_runner.sh'
+grep -Fq 'output_eval_codex_case.sh' "$readme_zh_file" \
+  || fail 'README.zh-CN.md repository tree must include output_eval_codex_case.sh'
+grep -Fq 'output_eval_codex_runner.sh' "$readme_zh_file" \
+  || fail 'README.zh-CN.md repository tree must include output_eval_codex_runner.sh'
+grep -Fq 'output_eval_host_wrappers_test.sh' "$readme_zh_file" \
+  || fail 'README.zh-CN.md repository tree must include output_eval_host_wrappers_test.sh'
+grep -Fq 'output_eval_runner.sh' "$readme_zh_file" \
+  || fail 'README.zh-CN.md repository tree must include output_eval_runner.sh'
+grep -Fq 'output_eval_runner_test.sh' "$readme_zh_file" \
+  || fail 'README.zh-CN.md repository tree must include output_eval_runner_test.sh'
 grep -Fq 'trigger-eval.json' "$readme_zh_file" \
   || fail 'README.zh-CN.md repository tree must include trigger-eval.json'
 grep -Fq 'output-eval.json' "$readme_zh_file" \
