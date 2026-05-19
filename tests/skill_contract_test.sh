@@ -40,6 +40,22 @@ grep -Fq '#### English Default Developer Review' "$skill_file" \
   || fail 'SKILL.md must include a concrete English default template'
 grep -Fq '#### Chinese Default Developer Review' "$skill_file" \
   || fail 'SKILL.md must include a concrete Chinese default template'
+if grep -Fq 'Decision impact: <blocker | note>' "$skill_file"; then
+  fail 'SKILL.md must not force every finding to render a Decision impact blocker/note field'
+fi
+if grep -Fq '决定影响：<阻塞项 | 备注>' "$skill_file"; then
+  fail 'SKILL.md must not force every finding to render a 决定影响 阻塞项/备注 field'
+fi
+if grep -Fq 'Decision impact: note' "$skill_file"; then
+  fail 'SKILL.md must not prime routine English note labels in finding instructions'
+fi
+if grep -Fq '决定影响：备注' "$skill_file"; then
+  fail 'SKILL.md must not prime routine Chinese 备注 labels in finding instructions'
+fi
+grep -Fq 'Blocking reason: <why this blocks commit; include only for blockers>' "$skill_file" \
+  || fail 'English findings must make blocking rationale conditional rather than forcing note labels'
+grep -Fq '阻塞原因：<为什么这会阻塞提交；仅阻塞项包含此行>' "$skill_file" \
+  || fail 'Chinese findings must make blocking rationale conditional rather than forcing 备注 labels'
 
 contains_contract 'git diff --cached -- path/to/file' \
   || fail 'SKILL.md must tell reviewers to use staged file-specific diffs for staged reviews'
@@ -165,10 +181,61 @@ chinese_tiny_template="$(
     in_section && /### Full Visual Mode/ { exit }
   ' "$skill_file"
 )"
-for label in '**结论：**' '**差异来源：**' '**审查范围：**' '**变更规模：**' '- **变更：**' '- **代码卫生：**' '- **逻辑：**' '- **影响范围：**' '- **风险：**' '- **测试：**'; do
+english_tiny_template="$(
+  awk '
+    /#### English Tiny Diff Review/ { in_section=1 }
+    in_section { print }
+    in_section && /#### Chinese Tiny Diff Review/ { exit }
+  ' "$skill_file"
+)"
+if printf '%s\n' "$english_tiny_template" | grep -Fq -- '- **Hygiene:**'; then
+  fail 'English Tiny Diff template must not force a routine Hygiene line'
+fi
+if printf '%s\n' "$chinese_tiny_template" | grep -Fq -- '- **代码卫生：**'; then
+  fail 'Chinese Tiny Diff template must not force a routine 代码卫生 line'
+fi
+for label in '**结论：**' '**差异来源：**' '**审查范围：**' '**变更规模：**' '- **变更：**' '- **逻辑：**' '- **影响范围：**' '- **风险：**' '- **测试：**'; do
   printf '%s\n' "$chinese_tiny_template" | grep -Fq -- "$label" \
     || fail "Chinese Tiny Diff template missing localized label: $label"
 done
+if grep -Fq '代码卫生' "$skill_file" "$output_examples_file" "$visual_output_file" "$readme_zh_file"; then
+  fail 'Chinese user-facing output must use 代码质量 instead of 代码卫生'
+fi
+if grep -Fq 'Code hygiene' "$skill_file" "$visual_output_file"; then
+  fail 'User-facing output must use Code quality instead of Code hygiene'
+fi
+if grep -Fq 'Clean /' "$visual_output_file"; then
+  fail 'visual-output.md must not encourage clean/no-issue status rows'
+fi
+if grep -Fq '干净 /' "$visual_output_file"; then
+  fail 'visual-output.md must not encourage Chinese clean/no-issue status rows'
+fi
+if grep -Fq '| Code quality | Clean |' "$visual_output_file"; then
+  fail 'visual-output.md must not include a fixed clean Code quality example'
+fi
+if grep -Fq 'Clean - no hygiene issues found.' "$skill_file"; then
+  fail 'SKILL.md must not instruct agents to emit a fixed clean hygiene sentence'
+fi
+if grep -Fq 'None needed' "$skill_file" "$output_examples_file"; then
+  fail 'SKILL.md and examples must not instruct agents to emit fixed "None needed" watchpoints'
+fi
+if grep -Fq '无需额外监控' "$skill_file" "$output_examples_file"; then
+  fail 'SKILL.md and examples must not instruct agents to emit fixed no-monitoring watchpoints'
+fi
+grep -Fq 'For concrete post-commit monitoring only, add `- **Watchpoints:** <specific logs, metrics, dashboards, errors, or user behaviors>`.' "$skill_file" \
+  || fail 'English Risk Summary must make Watchpoints conditional'
+grep -Fq '仅存在具体提交后监控事项时追加 `- **监控点：** <具体日志、指标、仪表盘、错误或用户行为>`。' "$skill_file" \
+  || fail 'Chinese Risk Summary must make 监控点 conditional'
+grep -Fq '### 2. Code Quality' "$skill_file" \
+  || fail 'SKILL.md must name the review dimension Code Quality'
+grep -Fq '| Code quality |' "$visual_output_file" \
+  || fail 'visual-output.md must use Code quality in user-facing visual tables'
+grep -Fq '代码质量' "$visual_output_file" \
+  || fail 'visual-output.md must use 代码质量 in Chinese visual tables'
+grep -Fq 'code quality issues' "$readme_file" \
+  || fail 'README.md must describe the dimension as code quality'
+grep -Fq '代码质量问题' "$readme_zh_file" \
+  || fail 'README.zh-CN.md must describe the dimension as 代码质量'
 
 grep -Fq '## Chinese Tiny Diff Example' "$output_examples_file" \
   || fail 'output-examples.md must include a Chinese tiny diff example'

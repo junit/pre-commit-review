@@ -8,6 +8,7 @@ Use this file only when `SKILL.md` visual-mode criteria are met: the user asks f
 - Prefer compact status tables over health bars or numeric percentages.
 - Use bullets for findings that need evidence, impact, and fix details.
 - Do not invent precision. If coverage, risk, or completeness is unknown, write `Unknown` or `N/A`.
+- In summary tables, include only rows with a concern, verification need, review limit, or meaningful risk signal. Do not add rows whose only message is clean/no issue.
 - Keep the single verdict token from the main template. Do not add a second verdict box with a conflicting label.
 - Follow the selected output language from `SKILL.md`.
 - Keep the field label `VERDICT` exactly in English, even in localized visual reports.
@@ -30,16 +31,13 @@ Use the concrete skeleton matching the selected output language when visual mode
 **Change scale:** <files and lines>
 **Unreviewed changes:** <none or limitations>
 
-| Area | Status | Note |
+| Area | Signal | Evidence |
 |---|---|---|
-| Code hygiene | <Clean / Needs attention / Unknown> | <short evidence> |
-| Security | <Clean / Needs attention / Unknown> | <short evidence> |
-| Tests | <Covered / Needs verification / Unknown> | <short evidence> |
-| Regression risk | <Low / Medium / High> | <short evidence> |
+| <code quality/security/tests/regression risk/etc.> | <concern / verification need / review limit / meaningful risk> | <short evidence> |
 
 ## Priority Findings
 
-<findings with evidence, impact, fix, decision impact; write `None` if none>
+<findings with evidence, impact, fix, and blocking reason only for blockers; write `None` if none>
 
 ## Commit Guidance
 
@@ -65,16 +63,13 @@ Use the concrete skeleton matching the selected output language when visual mode
 **变更规模：** <文件数和行数>
 **未审查变更：** <无或具体限制>
 
-| 领域 | 状态 | 说明 |
+| 领域 | 信号 | 证据 |
 |---|---|---|
-| 代码卫生 | <干净 / 需注意 / 未知> | <简短证据> |
-| 安全 | <干净 / 需注意 / 未知> | <简短证据> |
-| 测试 | <已覆盖 / 需验证 / 未知> | <简短证据> |
-| 回归风险 | <低 / 中 / 高> | <简短证据> |
+| <代码质量/安全/测试/回归风险等> | <问题 / 验证需求 / 审查限制 / 有意义的风险> | <简短证据> |
 
 ## 重点发现
 
-<包含证据、影响、修复、决定影响的问题列表；没有则写 `无`>
+<包含证据、影响、修复的问题列表；仅阻塞项包含阻塞原因；没有则写 `无`>
 
 ## 提交建议
 
@@ -91,9 +86,9 @@ Use the concrete skeleton matching the selected output language when visual mode
 ### Summary Status Table
 
 ```markdown
-| Area | Status | Note |
+| Area | Signal | Evidence |
 |---|---|---|
-| Code hygiene | Clean | Reviewed changed hunks only |
+| Code quality | Needs attention | New helper duplicates existing validation path |
 | Security | Needs attention | New endpoint lacks visible auth check |
 | Tests | Unknown | No test diff provided |
 | Regression risk | Medium | Validation behavior changed |

@@ -37,7 +37,6 @@ SKILL.md is authoritative; examples illustrate valid outputs only.
 - **逻辑变化：** session token 校验现在会显式拒绝 null/undefined
 - **影响范围：** 自包含 — 仅影响 `validateSession` 的调用方
 - **回归风险：** 🟢 低 — 更严格的校验，不会拒绝之前能通过的 token
-- **监控点：** 无需额外监控
 ```
 
 ## Chinese Example with Blocking Issue
@@ -58,7 +57,7 @@ SKILL.md is authoritative; examples illustrate valid outputs only.
    - 证据：`const API_KEY = "sk-prod-..."`
    - 影响：凭据暴露在版本控制中
    - 修复：改用环境变量，轮换已泄露的 key
-   - 决定影响：阻塞项
+   - 阻塞原因：提交会把凭据写入版本控制，并需要立即轮换已泄露的 key
 
 ## 提交建议
 - **提交前：** 移除硬编码 key，改用 `process.env.API_KEY`
@@ -77,7 +76,6 @@ SKILL.md is authoritative; examples illustrate valid outputs only.
 **变更规模：** 1 个文件, +2 行 / -2 行
 
 - **变更：** 更新 README 中的安装说明措辞。
-- **代码卫生：** 干净 - 未发现代码卫生问题。
 - **逻辑：** 无逻辑变化 - 文档变更。
 - **影响范围：** 自包含 - 只影响读者说明。
 - **风险：** 🟢 低 - 不影响运行时代码。
@@ -110,7 +108,6 @@ SKILL.md is authoritative; examples illustrate valid outputs only.
 - **逻辑变化：** 核心逻辑路径未见行为变化；主要是测试快照更新
 - **影响范围：** 测试和生成产物
 - **回归风险：** 🟡 中 - 大量快照未逐行审查
-- **监控点：** 无需额外监控
 ```
 
 ## English Example
@@ -141,7 +138,6 @@ None
 - **Logic shift:** session token validation now rejects null/undefined explicitly
 - **Blast radius:** self-contained — only affects `validateSession` callers
 - **Regression risk:** 🟢 Low — stricter validation, no previously-passing tokens rejected
-- **Watchpoints:** None needed
 ```
 
 ## English Example with Blocking Issue
@@ -162,7 +158,7 @@ None
    - Evidence: `const API_KEY = "sk-prod-..."`
    - Impact: Credential exposure in version control
    - Fix: Move to environment variable, rotate the leaked key
-   - Decision impact: blocker
+   - Blocking reason: Committing would expose a credential and require key rotation
 
 ## Commit Guidance
 - **Before commit:** Remove hardcoded key, use `process.env.API_KEY`

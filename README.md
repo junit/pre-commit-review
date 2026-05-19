@@ -22,7 +22,7 @@ Translations should stay functionally aligned. If you update one version, update
   - branch vs. base branch
 - Produces a consistent review format focused on:
   - what changed
-  - hygiene issues
+  - code quality issues
   - intent
   - logic shifts
   - blast radius

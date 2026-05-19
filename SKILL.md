@@ -100,7 +100,7 @@ Account for every reviewed hunk or every reviewed file group.
 
 For large diffs, group low-risk repeated changes, but do not hide important logic changes inside a broad summary.
 
-### 2. Code Hygiene
+### 2. Code Quality
 
 Scan changed hunks for issues that are embarrassing, unsafe, or operationally risky to commit:
 
@@ -109,7 +109,7 @@ Scan changed hunks for issues that are embarrassing, unsafe, or operationally ri
 - **Consistency & conventions**: Compare adjacent code and project conventions. Check naming, return shapes, error handling, authorization checks, validation style, logging style, transaction patterns, framework best practices, and resource lifecycle patterns for clients, sessions, connections, files, locks, background tasks, and other infrastructure resources.
 - **New code completeness**: For new functions/classes/files, check edge cases, null/empty/zero handling, validation, idempotency, error paths, domain requirements, timeout/retry behavior, cancellation, cleanup, and graceful degradation.
 
-If clean, write `Clean - no hygiene issues found.` Do not pad this section.
+Surface quality issues as priority findings when they affect commit-readiness. If no issue is found, do not add a routine clean-quality sentence.
 
 ### 3. Why It Changed (Optional)
 
@@ -188,7 +188,7 @@ For `DO_NOT_COMMIT`, list each blocking issue with file:line when available and 
 
 Default to the compact developer review. Optimize for fast scanability: verdict, action, findings, then supporting detail. Use tables only for summaries and comparisons. Use bullet findings when evidence, impact, and fix details matter. Do not use numeric health scores, health bars, distribution charts, or ASCII verdict boxes by default.
 
-Use exactly one verdict token in the entire review: the top-level `VERDICT`. Inside findings, use non-verdict labels such as `Decision impact: blocker` or `Decision impact: note`.
+Use exactly one verdict token in the entire review: the top-level `VERDICT`. Do not repeat verdict tokens inside findings. Do not add routine per-finding note labels; non-blocking status is already implied by `SAFE_TO_COMMIT_WITH_NOTES`, the finding icon, and Commit Guidance. For findings that block commit, include a conditional blocking-rationale line (`Blocking reason:` / `阻塞原因：`).
 
 #### Non-Translatable Verdict Field
 
@@ -238,7 +238,7 @@ The review must be fully monolingual in the selected output language. This means
 
 - **Section headings** (`Priority Findings`, `Commit Guidance`, `What Changed`, `Risk Summary`, `Supporting Analysis`, etc.) must be translated.
 - **Field labels** (`Diff source`, `Review scope`, `Change scale`, `Unreviewed changes`, `Modified`, `New`, `Before commit`, `Suggested verification`, etc.) must be translated.
-- **Finding sub-labels** (`Evidence`, `Impact`, `Fix`, `Decision impact`) must be translated.
+- **Finding sub-labels** (`Evidence`, `Impact`, `Fix`, `Blocking reason`) must be translated.
 - **Connective prose** (conclusion, descriptions, risk explanations) must be in the selected language.
 - **Keep in English only:** the field label `VERDICT`, file paths, code identifiers, command lines, and the three verdict strings `SAFE_TO_COMMIT` / `SAFE_TO_COMMIT_WITH_NOTES` / `DO_NOT_COMMIT`.
 
@@ -268,9 +268,8 @@ Use the concrete template matching the selected output language.
    - Evidence: <what in the diff shows this>
    - Impact: <what can break, leak, corrupt, or confuse>
    - Fix: <specific next action>
-   - Decision impact: <blocker | note>
 
-If there are no blockers or notes, write `None`.
+For blocking findings only, add `   - Blocking reason: <why this blocks commit; include only for blockers>`. If there are no priority findings, write `None`.
 
 ## Commit Guidance
 - **Before commit:** <required fix, review note, or `None`>
@@ -284,7 +283,8 @@ If there are no blockers or notes, write `None`.
 - **Logic shift:** <no logic change | concise delta>
 - **Blast radius:** <self-contained | impacted callers/dependencies/systems>
 - **Regression risk:** <🔴 High | 🟡 Medium | 🟢 Low> - <concrete reason>
-- **Watchpoints:** <logs, metrics, dashboards, errors, or `None needed`>
+
+For concrete post-commit monitoring only, add `- **Watchpoints:** <specific logs, metrics, dashboards, errors, or user behaviors>`.
 
 ```
 
@@ -306,9 +306,8 @@ If there are no blockers or notes, write `None`.
    - 证据：<diff 中显示该问题的内容>
    - 影响：<可能破坏、泄露、损坏或误导什么>
    - 修复：<具体下一步>
-   - 决定影响：<阻塞项 | 备注>
 
-如果没有阻塞项或备注，写 `无`。
+仅阻塞项追加 `   - 阻塞原因：<为什么这会阻塞提交；仅阻塞项包含此行>`。如果没有重点发现，写 `无`。
 
 ## 提交建议
 - **提交前：** <必须修复的问题、审查备注，或 `无`>
@@ -322,13 +321,14 @@ If there are no blockers or notes, write `None`.
 - **逻辑变化：** <无逻辑变化 | 简要说明行为差异>
 - **影响范围：** <自包含 | 受影响调用方/依赖/系统>
 - **回归风险：** <🔴 高 | 🟡 中 | 🟢 低> - <具体原因>
-- **监控点：** <日志、指标、仪表盘、错误，或 `无需额外监控`>
+
+仅存在具体提交后监控事项时追加 `- **监控点：** <具体日志、指标、仪表盘、错误或用户行为>`。
 
 ```
 
 Do not force every supporting subsection into every review. The default review should feel like a concise decision memo, not a compliance form.
 
-Append supporting analysis only when it adds decision value beyond the required sections. If needed, use the localized heading `Supporting Analysis` or `补充分析` and include only useful subsections such as code hygiene, intent, before/after detail, or additional test scope. Omit the section entirely for routine reviews.
+Append supporting analysis only when it adds decision value beyond the required sections. If needed, use the localized heading `Supporting Analysis` or `补充分析` and include only useful subsections such as code quality, intent, before/after detail, or additional test scope. Omit the section entirely for routine reviews.
 
 ### Tiny Diff Format
 
@@ -348,7 +348,6 @@ Apply the same localization rule from the Localization Rule section above: all h
 **Change scale:** <files and lines>
 
 - **Change:** <one sentence>
-- **Hygiene:** <clean or issue>
 - **Logic:** <no logic change | exact delta>
 - **Blast radius:** <self-contained | affected callers/dependencies>
 - **Risk:** <🔴 High | 🟡 Medium | 🟢 Low> - <reason>
@@ -367,7 +366,6 @@ Apply the same localization rule from the Localization Rule section above: all h
 **变更规模：** <文件数> 个文件, +<新增行数> 行 / -<删除行数> 行
 
 - **变更：** <一句话>
-- **代码卫生：** <干净或具体问题>
 - **逻辑：** <无逻辑变化 | 精确差异>
 - **影响范围：** <自包含 | 受影响调用方/依赖>
 - **风险：** <🔴 高 | 🟡 中 | 🟢 低> - <原因>
