@@ -5,10 +5,15 @@ set -euo pipefail
 # This script is read-only. It does not fetch, stage, reset, install, or mutate files.
 # Optional environment variable:
 #   PRE_COMMIT_REVIEW_MAX_DIFF_BYTES  default 200000; set 0 for no truncation
+#   PRE_COMMIT_REVIEW_CONTEXT_QUERY_LIMIT  default 20; max matches per context query
 
 MAX_DIFF_BYTES="${PRE_COMMIT_REVIEW_MAX_DIFF_BYTES:-200000}"
 case "$MAX_DIFF_BYTES" in
   ''|*[!0-9]*) MAX_DIFF_BYTES=200000 ;;
+esac
+CONTEXT_QUERY_LIMIT="${PRE_COMMIT_REVIEW_CONTEXT_QUERY_LIMIT:-20}"
+case "$CONTEXT_QUERY_LIMIT" in
+  ''|*[!0-9]*) CONTEXT_QUERY_LIMIT=20 ;;
 esac
 GROUP_TARGET_BYTES="${PRE_COMMIT_REVIEW_GROUP_TARGET_BYTES:-120000}"
 case "$GROUP_TARGET_BYTES" in
@@ -26,6 +31,10 @@ TAB="$(printf '\t')"
 
 print_kv() {
   printf '%s: %s\n' "$1" "$2"
+}
+
+sanitize_tsv() {
+  printf '%s' "$1" | tr '\t' ' '
 }
 
 shell_quote() {
@@ -790,6 +799,8 @@ emit_review_plan_json() {
       printf "  \"split_required_groups\":%d,\n", split_required_groups
       printf "  \"high_risk_units\":%d,\n", high_risk_units
       printf "  \"context_mode\":\"group\",\n"
+      printf "  \"state_snapshot_section\":\"Reducer State Snapshot Template\",\n"
+      printf "  \"semantic_context_section\":\"Semantic Context Queries\",\n"
       printf "  \"groups\":["
       for (i=1; i<=group_count; i++) {
         group=group_order[i]
@@ -817,6 +828,73 @@ emit_review_plan_json() {
       printf "\"rule\":\"manifest_units - reviewed_units must be empty before claiming full review\","
       printf "\"blocking_rule\":\"high-risk or needs-split coverage gaps force DO_NOT_COMMIT\""
       printf "}\n"
+      printf "}\n"
+    }
+  ' "$manifest_tmp"
+}
+
+emit_reducer_state_snapshot_template() {
+  local manifest_tmp="$1"
+
+  echo '## Reducer State Snapshot Template'
+  awk -F "$TAB" -v hard="$GROUP_HARD_BYTES" -v source="$mode" '
+    function json_escape(value) {
+      gsub(/\\/, "\\\\", value)
+      gsub(/"/, "\\\"", value)
+      gsub(/\r/, "\\r", value)
+      gsub(/\t/, "\\t", value)
+      return value
+    }
+    function json_string(value) {
+      return "\"" json_escape(value) "\""
+    }
+    function append_json(array_value, value) {
+      if (array_value == "") return json_string(value)
+      return array_value "," json_string(value)
+    }
+    function append_gap(array_value, unit, group, risk, status) {
+      gap="{\"unit_id\":" json_string(unit) ",\"group_id\":" json_string(group) ",\"risk_tags\":" json_string(risk) ",\"coverage_status\":" json_string(status) "}"
+      if (array_value == "") return gap
+      return array_value "," gap
+    }
+    NR == 1 { next }
+    {
+      rows[++row_count]=$0
+      group=$8
+      bytes[group] += $6
+      groups[group]=1
+      risk[group]=$7
+      units[group]=append_json(units[group], $1)
+      pending_units=append_json(pending_units, $1)
+    }
+    END {
+      for (i=1; i<=row_count; i++) {
+        split(rows[i], fields, "\t")
+        status="pending"
+        if (bytes[fields[8]] > hard) status="needs-split"
+        coverage_gaps=append_gap(coverage_gaps, fields[1], fields[8], fields[7], status)
+        if (status == "needs-split") {
+          needs_split_units=append_json(needs_split_units, fields[1])
+        }
+      }
+      for (group in groups) group_count += 1
+      printf "{\n"
+      printf "  \"schema_version\":1,\n"
+      printf "  \"state_kind\":\"reducer_state_snapshot\",\n"
+      printf "  \"source\":%s,\n", json_string(source)
+      printf "  \"status\":\"pending_group_reviews\",\n"
+      printf "  \"manifest_units\":%d,\n", row_count
+      printf "  \"review_groups\":%d,\n", group_count
+      printf "  \"reviewed_units\":[],\n"
+      printf "  \"pending_units\":[%s],\n", pending_units
+      printf "  \"needs_split_units\":[%s],\n", needs_split_units
+      printf "  \"group_results\":[],\n"
+      printf "  \"coverage_gaps\":[%s],\n", coverage_gaps
+      printf "  \"finding_merge\":{\"deduplicated_findings\":[],\"blockers\":[],\"notes\":[]},\n"
+      printf "  \"dependency_checks\":[],\n"
+      printf "  \"test_recommendations\":[],\n"
+      printf "  \"final_verdict\":\"blocked_until_coverage_validation_passes\",\n"
+      printf "  \"persistence_rule\":\"carry this compact state forward after each group result; update reviewed_units, pending_units, group_results, coverage_gaps, and finding_merge before reducer finalization\"\n"
       printf "}\n"
     }
   ' "$manifest_tmp"
@@ -1060,6 +1138,9 @@ emit_review_manifest_and_groups() {
       }
     }
   ' "$manifest_tmp"
+
+  echo
+  emit_reducer_state_snapshot_template "$manifest_tmp"
 
   echo
   echo '## Coverage Validation Checklist'
@@ -1427,6 +1508,77 @@ emit_dependency_summary() {
   ' "$diff_tmp"
 }
 
+emit_semantic_context_queries() {
+  local queries_file="$repo_root/.pre-commit-review/context-queries"
+  local query
+  local output_tmp
+  local error_tmp
+  local status
+  local safe_query
+
+  echo '## Semantic Context Queries'
+  printf 'query\tfile\tline\tmatch\n'
+
+  if [ ! -f "$queries_file" ]; then
+    echo 'none	none	0	no context queries configured'
+    return 0
+  fi
+
+  while IFS= read -r query || [ -n "$query" ]; do
+    case "$query" in
+      ''|'#'*) continue ;;
+    esac
+
+    safe_query="$(sanitize_tsv "$query")"
+    output_tmp="$(mktemp)"
+    error_tmp="$(mktemp)"
+    set +e
+    case "$mode" in
+      staged) git grep --cached -n -I -E -e "$query" -- . >"$output_tmp" 2>"$error_tmp" ;;
+      unstaged) git grep -n -I -E -e "$query" -- . >"$output_tmp" 2>"$error_tmp" ;;
+      branch) git grep -n -I -E -e "$query" HEAD -- . >"$output_tmp" 2>"$error_tmp" ;;
+      *) : >"$output_tmp" ;;
+    esac
+    status=$?
+    set -e
+
+    if [ "$status" -gt 1 ]; then
+      printf '%s\terror\t0\tinvalid or unsupported git grep ERE\n' "$safe_query"
+      rm -f "$output_tmp" "$error_tmp"
+      continue
+    fi
+
+    if [ "$mode" = 'branch' ]; then
+      sed 's/^HEAD://' "$output_tmp" >"${output_tmp}.normalized"
+      mv "${output_tmp}.normalized" "$output_tmp"
+    fi
+
+    awk -F ':' -v query="$safe_query" -v limit="$CONTEXT_QUERY_LIMIT" '
+      NF >= 3 && count < limit {
+        file=$1
+        if (file == ".pre-commit-review/context-queries") {
+          next
+        }
+        line=$2
+        match_text=$0
+        sub(/^[^:]*:[^:]*:/, "", match_text)
+        gsub(/\t/, " ", file)
+        gsub(/\t/, " ", line)
+        gsub(/\t/, " ", match_text)
+        printf "%s\t%s\t%s\t%s\n", query, file, line, match_text
+        count += 1
+      }
+      END {
+        if (count == 0) {
+          printf "%s\tnone\t0\tno matches\n", query
+        }
+      }
+    ' "$output_tmp"
+
+    rm -f "$output_tmp" "$error_tmp"
+  done < "$queries_file"
+}
+
 emit_diff_limited() {
   local tmp_file="$1"
   local size
@@ -1744,6 +1896,9 @@ emit_review_manifest_and_groups
 
 echo
 emit_dependency_summary
+
+echo
+emit_semantic_context_queries
 
 echo
 echo '## Suggested Review Queue'

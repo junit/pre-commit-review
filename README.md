@@ -50,6 +50,7 @@ This repository is not an application or framework. It is a small, portable skil
 ├── agents/
 │   └── openai.yaml
 ├── references/
+│   ├── coverage-led-review.md
 │   ├── output-examples.md
 │   └── visual-output.md
 ├── scripts/
@@ -90,11 +91,13 @@ A read-only helper script that gathers local repository context for the review w
 - emits Split Unit Diff Preview blocks for hunk-level review
 - emits a Coverage Ledger Template with pending review units
 - emits Group Review Result templates for reducer-ready group findings
+- emits a Reducer State Snapshot Template for long multi-step reviews
 - emits a Coverage Validation Checklist for reducer preflight
 - emits a Full Review Execution Plan with ordered split/review steps
 - emits Group Review Work Packets for serial or delegated group review
 - emits a Reducer Finalization Template for final synthesis gates
 - emits a best-effort Dependency Summary for cross-file reduction
+- emits bounded Semantic Context Queries from project-provided read-only grep patterns
 - emits a suggested review queue for large or truncated diffs
 - truncates oversized diffs safely when needed
 
@@ -108,13 +111,15 @@ Use `scripts/collect_diff_context.sh --source <staged|unstaged|branch> --group <
 
 Project-specific risk hints can live in `.pre-commit-review/risk-paths` and `.pre-commit-review/risk-content`. Each non-empty, non-comment line is an extended regular expression; matches promote files into high-risk ordering but do not change coverage requirements.
 
+Project-specific semantic context hints can live in `.pre-commit-review/context-queries`. Each non-empty, non-comment line is an extended regular expression executed only through bounded read-only `git grep`; these matches can guide dependency or caller checks but never satisfy review coverage.
+
 Review-planning tables and `Dependency Summary` use TSV because paths, commands, and dependency details may contain commas.
 
-Reducer and subagent automation should prefer the JSONL sections when present; TSV tables are primarily for human scanning.
+Reducer and subagent automation should prefer `Review Plan JSON`, `Reducer State Snapshot Template`, and JSONL sections when present; TSV tables are primarily for human scanning.
 
 ### `references/`
 
-Contains optional guidance loaded only when needed, such as localized output examples and visual report formatting.
+Contains optional guidance loaded only when needed, including the detailed coverage-led review workflow, localized output examples, and visual report formatting.
 
 ### `agents/openai.yaml`
 
@@ -255,6 +260,8 @@ This package is intentionally conservative:
 - it treats large or truncated diffs as a reason to split work and retrieve smaller context, not as permission to skip material units
 - it reserves partial triage for advisory fallback and blocks commit-readiness when high-risk units are unreviewed
 - it supports coverage-led commit-readiness by requiring every manifest unit to be accounted for before claiming full scope
+- it keeps long-review reducer state compact and explicit instead of relying on implicit conversation memory
+- it treats semantic context queries as bounded read-only hints, not arbitrary shell commands or coverage substitutes
 
 ## Limitations
 

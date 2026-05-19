@@ -63,49 +63,19 @@ Use coverage-led review for commit-readiness whenever repository/helper access o
 
 Coverage-led review requires a coverage ledger: every `Review Manifest` unit must appear in exactly one group review result before the final verdict can claim a full review.
 
-Workflow:
+Load `references/coverage-led-review.md` when the helper emits `Review Plan JSON`, when the diff is large/truncated, when any group is `split-required`, when review work is delegated, or when reducer state must survive a long multi-step review.
 
-1. Treat `Review Manifest` as the authoritative list of review units. If a file is too large for one context window, split it into hunk units before claiming full coverage.
-   - Prefer `Review Manifest JSONL` and `Review Groups JSONL` for reducer or subagent automation; keep TSV tables for human scanning only.
-   - Use `Review Plan JSON` as the reducer-friendly aggregate plan when present; it captures group order, required units, budget status, context commands, and coverage gates without parsing Markdown tables.
-   - Treat `Review Manifest`, `Review Groups`, `Split Suggestions`, `Coverage Ledger Template`, and `Full Review Execution Plan` as TSV tables; do not parse their rows by comma because paths and commands may contain commas.
-   - Start coverage-led review from the `Coverage Ledger Template`; leave units pending until a group result records the exact reviewed unit, and replace `needs-split` rows with `Split Suggestions` units before review.
-2. Use `Review Groups` as the initial work plan. Review high-risk groups first, consistency groups next, and medium-risk groups last unless cross-file dependencies require a different order.
-   - Risk classification controls review order and split strategy; it never authorizes omitting executable or material units from a commit-readiness review.
-   - Helper candidates are not exhaustive; semantically scan the full file list, diff stat, and changed file types, then promote any ordinary-looking file to high risk when its role, imports, API surface, or changed content affects a trust boundary or irreversible behavior.
-   - Review generated, vendored, minified, and lock files for source/config consistency, version changes, and suspicious major upgrades; they still need coverage entries even when summarized as a consistency group.
-   - If a `Review Groups` row has `budget_status` of `split-required`, split that group into smaller file or hunk units before reviewing it; do not mark it covered as a single group.
-   - Use `Split Suggestions` as the starting point for replacing an over-budget group with smaller file or hunk units in the coverage ledger.
-   - Use `Split Unit Diff Preview` for hunk-level review when present; if the preview is insufficient or truncated, fall back to the listed file-specific command and hunk header.
-   - Use `Full Review Execution Plan` as the default work order: split `split-required` groups first, then review high-risk groups, consistency groups, and medium-risk groups unless dependency evidence requires reordering.
-   - Use `Group Review Work Packets` as the handoff context for serial or delegated group review; each packet carries the group id, required units, review commands, and split guidance.
-   - Use the work packet `context_command` when a group or file needs fresh context after global diff truncation; it must return only the requested group or file diff without widening review scope.
-   - Prefer group-level `context_command` values with `--group <group_id>` for groups within the hard budget; use file-level `--path <path>` commands from the manifest only when a group needs narrower context or has been split.
-   - Do not use `--group` to review a `split-required` group as one unit; replace it with `Split Suggestions` units first.
-   - Every `context_command` must include `--source staged`, `--source unstaged`, or `--source branch` so follow-up context retrieval cannot switch diff sources when the working tree changes.
-3. For each group, inspect the complete group diff with file-specific commands and record a compact group result:
-   - File-specific commands must match the selected review source: staged reviews use `git diff --cached -- path/to/file`, unstaged reviews use `git diff -- path/to/file`, and branch-vs-base reviews use `git diff <base>...HEAD -- path/to/file`.
-   - Use the helper-provided `Group Review Result Template` for every group result; keep `required_units` intact and fill `reviewed_units` only with units actually inspected.
+Minimum gates kept in this file:
 
-   ```json
-   {
-     "group_id": "high-risk-auth",
-     "reviewed_units": ["file:auth/session.py"],
-     "coverage": "full",
-     "findings": [],
-     "contract_changes": [],
-     "dependencies_to_check": [],
-     "tests_recommended": []
-   }
-   ```
-
-4. If subagents are available and the user has asked for delegated or parallel work, group reviews may run in parallel. Otherwise, review groups serially in the current thread and keep the same group result shape.
-5. Run Coverage Validation before cross-file reduction: compute `manifest_units - reviewed_units`; any high-risk coverage gap makes the verdict `DO_NOT_COMMIT`. Before merging findings, use `Coverage Validation Checklist` as reducer preflight; full review is forbidden until `manifest_units - reviewed_units` is empty and all `needs-split` units have replacement results.
-6. Perform cross-file reduction only after coverage validation. Merge findings, de-duplicate repeated notes, inspect `contract_changes` and `dependencies_to_check`, and re-check API signatures, imports, shared types, migrations/config rollout order, and callers affected by changed behavior. Use `Dependency Summary` as reducer input for changed imports, exports, signatures, and schema/config signals, but treat it as best-effort rather than complete static analysis.
-   - Treat `Dependency Summary` as TSV as well; file paths and dependency details may contain commas, so do not parse it as CSV.
-   - Use `Reducer Finalization Template` for the final synthesis; do not produce the top-level verdict until coverage validation, finding merge, dependency checks, and test recommendations are filled.
-7. Set `Review scope` to `full review` only when coverage validation is empty. If any material unit remains unreviewed, use partial review wording and explain the coverage gap.
-   - Unreviewed high-risk candidates make commit-readiness `DO_NOT_COMMIT`; advisory fallback must not present a commit-safe verdict.
+- Risk classification controls review order and split strategy; it never authorizes omitting executable or material units from a commit-readiness review.
+- Helper candidates are not exhaustive; semantically scan the full file list, diff stat, and changed file types, then promote any ordinary-looking file to high risk when its role, imports, API surface, or changed content affects a trust boundary or irreversible behavior.
+- Use `Review Plan JSON`, `Review Manifest JSONL`, and `Review Groups JSONL` for automation when present; use TSV sections for human scanning.
+- Use `Reducer State Snapshot Template` as the compact persistent state for long reviews; carry it forward after every group result and update reviewed units, pending units, coverage gaps, findings, dependency checks, and test recommendations.
+- Treat `Semantic Context Queries` as best-effort surrounding context for dependency and caller checks; it can promote follow-up inspection, but it cannot mark any manifest unit reviewed.
+- Run Coverage Validation before cross-file reduction: compute `manifest_units - reviewed_units`; any high-risk coverage gap makes the verdict `DO_NOT_COMMIT`.
+- Use `Reducer Finalization Template` for the final synthesis; do not produce the top-level verdict until coverage validation, finding merge, dependency checks, and test recommendations are filled.
+- Set `Review scope` to `full review` only when coverage validation is empty. If any material unit remains unreviewed, use partial review wording and explain the coverage gap.
+- Unreviewed high-risk candidates make commit-readiness `DO_NOT_COMMIT`; advisory fallback must not present a commit-safe verdict.
 
 ## Advisory Fallback
 

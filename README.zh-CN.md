@@ -50,6 +50,7 @@
 ├── agents/
 │   └── openai.yaml
 ├── references/
+│   ├── coverage-led-review.md
 │   ├── output-examples.md
 │   └── visual-output.md
 ├── scripts/
@@ -90,11 +91,13 @@
 - 输出 Split Unit Diff Preview，用于 hunk 级审查
 - 输出 Coverage Ledger Template，列出待审查单元
 - 输出 Group Review Result 模板，便于 reducer 合并 group findings
+- 输出 Reducer State Snapshot Template，用于长流程多轮审查
 - 输出 Coverage Validation Checklist，用于 reducer preflight
 - 输出 Full Review Execution Plan，提供有序 split/review 步骤
 - 输出 Group Review Work Packets，供串行或委派 group review 使用
 - 输出 Reducer Finalization Template，用于最终综合门禁
 - 输出 best-effort Dependency Summary，用于跨文件综合
+- 根据项目提供的只读 grep 模式输出有界 Semantic Context Queries
 - 为大体积或被截断的 diff 输出建议审查队列
 - 在 diff 过大时安全截断输出
 
@@ -108,13 +111,15 @@ Review group 预算默认目标值为 120KB，硬上限为 160KB。可通过 `PR
 
 项目级风险提示可以放在 `.pre-commit-review/risk-paths` 和 `.pre-commit-review/risk-content`。每个非空、非注释行都是一个扩展正则表达式；匹配项只会提升到 high-risk 审查顺序，不会改变覆盖要求。
 
+项目级语义上下文提示可以放在 `.pre-commit-review/context-queries`。每个非空、非注释行都是一个扩展正则表达式，只会通过有界、只读的 `git grep` 执行；匹配结果可辅助依赖或调用方检查，但永远不能满足审查覆盖。
+
 Review-planning 表和 `Dependency Summary` 使用 TSV，因为路径、命令和依赖详情中可能包含逗号。
 
-Reducer 和 subagent 自动化应优先使用 JSONL section；TSV 表主要用于人工快速浏览。
+Reducer 和 subagent 自动化应优先使用 `Review Plan JSON`、`Reducer State Snapshot Template` 和 JSONL section；TSV 表主要用于人工快速浏览。
 
 ### `references/`
 
-包含仅在需要时加载的可选指导，例如本地化输出示例和视觉报告格式。
+包含仅在需要时加载的可选指导，包括详细的 coverage-led 审查流程、本地化输出示例和视觉报告格式。
 
 ### `agents/openai.yaml`
 
@@ -255,6 +260,8 @@ your-skills/
 - 会把大 diff 或截断视为拆分工作、按需取更小上下文的信号，而不是跳过实质性单元的理由
 - 只把部分 triage 用作 advisory fallback；高风险单元未审查时会阻塞提交就绪性结论
 - 支持 coverage-led commit-readiness；只有每个 manifest unit 都被记录覆盖后，才能声称完整审查
+- 会把长流程 reducer state 保持为紧凑、显式的状态对象，而不是依赖隐式对话记忆
+- 会把语义上下文查询当成有界只读提示，而不是任意 shell command 或覆盖替代品
 
 ## 限制
 

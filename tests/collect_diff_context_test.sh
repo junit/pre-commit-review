@@ -296,6 +296,8 @@ assert_jsonl_section_valid "$content_risk_output" 'Review Groups JSONL'
 assert_contains "$content_risk_output" '## Review Plan JSON'
 assert_contains "$content_risk_output" '"schema_version":1'
 assert_contains "$content_risk_output" '"context_mode":"group"'
+assert_contains "$content_risk_output" '"state_snapshot_section":"Reducer State Snapshot Template"'
+assert_contains "$content_risk_output" '"semantic_context_section":"Semantic Context Queries"'
 assert_contains "$content_risk_output" '"context_command":"/Users/wifibaby4u/LLM/pre-commit-review/scripts/collect_diff_context.sh --source staged --group high-risk-src"'
 assert_json_section_valid "$content_risk_output" 'Review Plan JSON'
 assert_contains "$content_risk_output" '## Coverage Ledger Template'
@@ -306,6 +308,12 @@ assert_contains "$content_risk_output" '"group_id": "high-risk-src"'
 assert_contains "$content_risk_output" '"required_units": ["file:src/service.py"]'
 assert_contains "$content_risk_output" '"coverage": "pending"'
 assert_contains "$content_risk_output" '"findings": []'
+assert_contains "$content_risk_output" '## Reducer State Snapshot Template'
+assert_contains "$content_risk_output" '"state_kind":"reducer_state_snapshot"'
+assert_contains "$content_risk_output" '"pending_units":["file:src/service.py"]'
+assert_contains "$content_risk_output" '"final_verdict":"blocked_until_coverage_validation_passes"'
+assert_contains "$content_risk_output" '"persistence_rule":"carry this compact state forward after each group result'
+assert_json_section_valid "$content_risk_output" 'Reducer State Snapshot Template'
 assert_contains "$content_risk_output" '## Coverage Validation Checklist'
 assert_contains "$content_risk_output" 'manifest_units: 1'
 assert_contains "$content_risk_output" 'review_groups: 1'
@@ -325,6 +333,8 @@ assert_contains "$content_risk_output" '"coverage_validation": "required"'
 assert_contains "$content_risk_output" '"cross_file_reduction": "required_after_coverage_validation"'
 assert_contains "$content_risk_output" '"final_verdict": "blocked_until_coverage_validation_passes"'
 assert_contains "$content_risk_output" '"residual_risks": []'
+assert_contains "$content_risk_output" '## Semantic Context Queries'
+assert_contains "$content_risk_output" $'none\tnone\t0\tno context queries configured'
 
 space_path_repo="$tmp_dir/space-path"
 mkdir -p "$space_path_repo/docs"
@@ -412,6 +422,20 @@ assert_contains "$configured_risk_output" $'high-risk\thigh-risk-internal'
 assert_contains "$configured_risk_output" $'high-risk\thigh-risk-src'
 assert_contains "$configured_risk_output" 'high-risk: internal/service/ordinary.py'
 assert_contains "$configured_risk_output" 'high-risk: src/plain.ts'
+
+context_query_repo="$tmp_dir/context-query"
+mkdir -p "$context_query_repo/.pre-commit-review" "$context_query_repo/src"
+init_repo "$context_query_repo"
+printf '# read-only semantic context query\nvalidate_token\n' >"$context_query_repo/.pre-commit-review/context-queries"
+git -C "$context_query_repo" add .pre-commit-review/context-queries
+git -C "$context_query_repo" commit -q -m context-queries
+printf 'def validate_token(token):\n    return token\n' >"$context_query_repo/src/auth.py"
+git -C "$context_query_repo" add src/auth.py
+context_query_output="$tmp_dir/context-query.out"
+run_helper "$context_query_repo" "$context_query_output"
+assert_contains "$context_query_output" '## Semantic Context Queries'
+assert_contains "$context_query_output" $'query\tfile\tline\tmatch'
+assert_contains "$context_query_output" $'validate_token\tsrc/auth.py\t1\tdef validate_token(token):'
 
 space_path_specific_output="$tmp_dir/space-path-specific.out"
 (
