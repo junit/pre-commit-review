@@ -15,8 +15,12 @@ Review a Git diff as a commit-quality gate. Build a clear model of what changed,
 - Do not pretend to inspect local changes. If no repository or shell access is available, review only the diff or code the user supplied and state that boundary in `Diff source` and `Review scope`.
 - Prefer the exact user-provided diff when the user pasted or uploaded one. Do not replace it with local Git output unless the user asks.
 - When repository access is available, prefer running the bundled helper script `scripts/collect_diff_context.sh` from this skill package before composing manual Git commands. Do not substitute a similarly named script from the target repository. Use the helper output as the source of truth for `Diff source`, `Review scope`, `Change scale`, changed files, staged/unstaged notes, untracked-file notes, and review boundaries. For very large diffs, use `PRE_COMMIT_REVIEW_MAX_DIFF_BYTES=0` only when printing the full diff is safe.
+- Treat `PRE_COMMIT_REVIEW_MAX_DIFF_BYTES` as an output budget, not a safety boundary; lower it when conversation context is crowded, and raise it or set it to `0` only when printing the larger diff is safe.
 - Do not run `git fetch`, modify files, stage files, commit, push, or change branches unless the user explicitly asks.
-- If the diff is too large to review completely, perform a prioritized partial review and clearly label it. Do not say the commit is fully safe when material changes were not reviewed.
+- Commit-readiness reviews are coverage-led by default: start from `Review Manifest JSONL` or `Review Manifest`, account for every review unit, and treat large or truncated diffs as a reason to split or retrieve context rather than sample or skip.
+- Use advisory fallback only when repository/helper access is unavailable, the user explicitly asks for quick triage, or the user declines continuing the coverage-led review after being told that commit-readiness requires coverage-led validation; label it partial/advisory and do not provide a commit-safe verdict from sampled coverage.
+- When helper/repository access is available and the user asks for commit-readiness, do not self-select advisory fallback to save time; continue coverage-led review or report that commit-readiness is blocked pending coverage.
+- The helper may read optional project-level risk hints from `.pre-commit-review/risk-paths` and `.pre-commit-review/risk-content`; each non-empty, non-comment line is an extended regular expression used only to promote matching files into high-risk ordering.
 - Remember that untracked files are not included in `git diff`; review them only when they are staged, provided by the user, or otherwise readable.
 - When flagging secrets, credentials, tokens, connection strings, or private hosts, never reproduce the full value. Show the file, line if known, secret type, and a redacted preview only.
 - Select the output language in this order: first, obey any explicit user request such as `use English` or `用中文输出`; otherwise, use the dominant language of the user's latest request. If the latest request is mainly Chinese, render the review in Chinese. If it is mainly English, render the review in English. Only ask for clarification when the request is genuinely mixed-language and no dominant language is clear. Preserve only the verdict tokens `SAFE_TO_COMMIT`, `SAFE_TO_COMMIT_WITH_NOTES`, and `DO_NOT_COMMIT` in English. For non-English output, translate headings, field labels, and connective prose naturally. Do not leave labels such as `Diff source`, `Review scope`, `Priority Findings`, or `Commit Guidance` in English unless the user asked for English output.
@@ -34,33 +38,7 @@ Resolve the diff source in this priority order:
 
 If the user provides code but no diff, perform a static pre-commit-style review. Set `Diff source` to `user-provided code`, set `Review scope` to `partial review - no before/after diff available`, and do not infer prior behavior unless the user showed it.
 
-### Manual base branch detection
-
-Use this only when the helper script is unavailable:
-
-```bash
-base=$(
-  git symbolic-ref --quiet --short refs/remotes/origin/HEAD 2>/dev/null     | sed 's|^origin/||'
-)
-
-if [ -z "$base" ]; then
-  if git rev-parse --verify --quiet origin/main >/dev/null; then
-    base="main"
-  elif git rev-parse --verify --quiet origin/master >/dev/null; then
-    base="master"
-  elif git rev-parse --verify --quiet main >/dev/null; then
-    base="main"
-  elif git rev-parse --verify --quiet master >/dev/null; then
-    base="master"
-  else
-    base="main"
-  fi
-fi
-
-echo "$base"
-```
-
-If the detected base ref does not exist or `git diff <base>...HEAD` fails, do not guess. Mark branch-vs-base review as unavailable and ask the user for a base branch or a diff.
+Manual base-branch detection is only a fallback when the helper is unavailable. Prefer `origin/HEAD`, then `origin/main`, `origin/master`, `main`, and `master`; if the detected ref does not exist or `git diff <base>...HEAD` fails, do not guess. Mark branch-vs-base review as unavailable and ask the user for a base branch or a diff.
 
 ## Staged and Unstaged Mixed State
 
@@ -72,23 +50,70 @@ If staged changes exist, treat only the staged diff as the commit candidate. Sti
 
 ## Depth Scaling
 
-Scale detail to the size and risk of the diff:
+Scale detail to the size and risk of the diff without changing the coverage requirement for commit-readiness:
 
 - **Tiny diffs (<5 changed lines, low risk, and no priority findings)**: MUST use the Tiny Diff format. Keep each dimension to the shortest honest answer, such as `Self-contained - no external impact` or `No logic change`.
 - **Normal diffs**: Use the Default Developer Review format. This covers most changes under roughly 300 changed lines or fewer than about 10 changed files after excluding generated, vendored, minified, and lockfile-only files when no high-risk area is involved.
-- **Large/high-risk diffs**: Prioritize high-signal areas when the change is roughly 300+ changed lines, spans 10+ changed files excluding generated, vendored, minified, and lockfile-only files, is generated/lockfile-heavy, or touches security, auth, public APIs, migrations, data correctness, dependencies, config/deployment, concurrency, payment/billing, data deletion, or resource lifecycle.
-- **Too-large diffs**: Use the Large Diff Handling rules and mark `Review scope` as partial. Do not imply a full safety guarantee.
+- **Large/high-risk diffs**: Use coverage-led review with stronger ordering and splitting when the change is roughly 300+ changed lines, spans 10+ changed files excluding generated, vendored, minified, and lockfile-only files, is generated/lockfile-heavy, or touches security, auth, public APIs, migrations, data correctness, dependencies, config/deployment, concurrency, payment/billing, data deletion, or resource lifecycle.
+- **Too-large diffs**: Treat truncation as an output-budget signal. Use manifest units, work packets, `context_command`, and hunk split suggestions to retrieve smaller context instead of treating truncation as permission to skip material units.
 
-## Large Diff Handling
+## Coverage-Led Commit Review
 
-If the diff cannot fit in context or the helper reports truncation:
+Use coverage-led review for commit-readiness whenever repository/helper access or a complete user-provided diff makes it possible to enumerate review units.
 
-1. Start from diff stat, file list, and changed file types.
-2. Prioritize security, auth, permissions, API/public interfaces, database migrations, payment/billing, data deletion, concurrency, async retry logic, configuration, deployment, dependency changes, and resource lifecycle changes.
-3. Review generated, vendored, minified, and lock files only for source/config consistency, version changes, and suspicious major upgrades unless they are small and clearly relevant.
-4. Use file-specific diffs matching the selected review source to inspect high-risk files deeply: staged reviews use `git diff --cached -- path/to/file`, unstaged reviews use `git diff -- path/to/file`, and branch-vs-base reviews use `git diff <base>...HEAD -- path/to/file`.
-5. Set `Review scope` to partial and list any material unreviewed areas.
-6. Avoid `SAFE_TO_COMMIT` for a partial review unless all omitted files are clearly generated or non-executable and no risky files were skipped.
+Coverage-led review requires a coverage ledger: every `Review Manifest` unit must appear in exactly one group review result before the final verdict can claim a full review.
+
+Workflow:
+
+1. Treat `Review Manifest` as the authoritative list of review units. If a file is too large for one context window, split it into hunk units before claiming full coverage.
+   - Prefer `Review Manifest JSONL` and `Review Groups JSONL` for reducer or subagent automation; keep TSV tables for human scanning only.
+   - Use `Review Plan JSON` as the reducer-friendly aggregate plan when present; it captures group order, required units, budget status, context commands, and coverage gates without parsing Markdown tables.
+   - Treat `Review Manifest`, `Review Groups`, `Split Suggestions`, `Coverage Ledger Template`, and `Full Review Execution Plan` as TSV tables; do not parse their rows by comma because paths and commands may contain commas.
+   - Start coverage-led review from the `Coverage Ledger Template`; leave units pending until a group result records the exact reviewed unit, and replace `needs-split` rows with `Split Suggestions` units before review.
+2. Use `Review Groups` as the initial work plan. Review high-risk groups first, consistency groups next, and medium-risk groups last unless cross-file dependencies require a different order.
+   - Risk classification controls review order and split strategy; it never authorizes omitting executable or material units from a commit-readiness review.
+   - Helper candidates are not exhaustive; semantically scan the full file list, diff stat, and changed file types, then promote any ordinary-looking file to high risk when its role, imports, API surface, or changed content affects a trust boundary or irreversible behavior.
+   - Review generated, vendored, minified, and lock files for source/config consistency, version changes, and suspicious major upgrades; they still need coverage entries even when summarized as a consistency group.
+   - If a `Review Groups` row has `budget_status` of `split-required`, split that group into smaller file or hunk units before reviewing it; do not mark it covered as a single group.
+   - Use `Split Suggestions` as the starting point for replacing an over-budget group with smaller file or hunk units in the coverage ledger.
+   - Use `Split Unit Diff Preview` for hunk-level review when present; if the preview is insufficient or truncated, fall back to the listed file-specific command and hunk header.
+   - Use `Full Review Execution Plan` as the default work order: split `split-required` groups first, then review high-risk groups, consistency groups, and medium-risk groups unless dependency evidence requires reordering.
+   - Use `Group Review Work Packets` as the handoff context for serial or delegated group review; each packet carries the group id, required units, review commands, and split guidance.
+   - Use the work packet `context_command` when a group or file needs fresh context after global diff truncation; it must return only the requested group or file diff without widening review scope.
+   - Prefer group-level `context_command` values with `--group <group_id>` for groups within the hard budget; use file-level `--path <path>` commands from the manifest only when a group needs narrower context or has been split.
+   - Do not use `--group` to review a `split-required` group as one unit; replace it with `Split Suggestions` units first.
+   - Every `context_command` must include `--source staged`, `--source unstaged`, or `--source branch` so follow-up context retrieval cannot switch diff sources when the working tree changes.
+3. For each group, inspect the complete group diff with file-specific commands and record a compact group result:
+   - File-specific commands must match the selected review source: staged reviews use `git diff --cached -- path/to/file`, unstaged reviews use `git diff -- path/to/file`, and branch-vs-base reviews use `git diff <base>...HEAD -- path/to/file`.
+   - Use the helper-provided `Group Review Result Template` for every group result; keep `required_units` intact and fill `reviewed_units` only with units actually inspected.
+
+   ```json
+   {
+     "group_id": "high-risk-auth",
+     "reviewed_units": ["file:auth/session.py"],
+     "coverage": "full",
+     "findings": [],
+     "contract_changes": [],
+     "dependencies_to_check": [],
+     "tests_recommended": []
+   }
+   ```
+
+4. If subagents are available and the user has asked for delegated or parallel work, group reviews may run in parallel. Otherwise, review groups serially in the current thread and keep the same group result shape.
+5. Run Coverage Validation before cross-file reduction: compute `manifest_units - reviewed_units`; any high-risk coverage gap makes the verdict `DO_NOT_COMMIT`. Before merging findings, use `Coverage Validation Checklist` as reducer preflight; full review is forbidden until `manifest_units - reviewed_units` is empty and all `needs-split` units have replacement results.
+6. Perform cross-file reduction only after coverage validation. Merge findings, de-duplicate repeated notes, inspect `contract_changes` and `dependencies_to_check`, and re-check API signatures, imports, shared types, migrations/config rollout order, and callers affected by changed behavior. Use `Dependency Summary` as reducer input for changed imports, exports, signatures, and schema/config signals, but treat it as best-effort rather than complete static analysis.
+   - Treat `Dependency Summary` as TSV as well; file paths and dependency details may contain commas, so do not parse it as CSV.
+   - Use `Reducer Finalization Template` for the final synthesis; do not produce the top-level verdict until coverage validation, finding merge, dependency checks, and test recommendations are filled.
+7. Set `Review scope` to `full review` only when coverage validation is empty. If any material unit remains unreviewed, use partial review wording and explain the coverage gap.
+   - Unreviewed high-risk candidates make commit-readiness `DO_NOT_COMMIT`; advisory fallback must not present a commit-safe verdict.
+
+## Advisory Fallback
+
+Use advisory fallback only when repository/helper access is unavailable, the user explicitly asks for quick triage, or the user declines continuing the coverage-led review after being told that commit-readiness requires coverage-led validation; label it partial/advisory and do not provide a commit-safe verdict from sampled coverage.
+
+When helper/repository access is available and the user asks for commit-readiness, do not self-select advisory fallback to save time; continue coverage-led review or report that commit-readiness is blocked pending coverage.
+
+In advisory fallback, use the same risk signals to order what you inspect, but treat the result as a bounded risk summary rather than a commit-quality gate. State exactly which files/groups were reviewed, which material areas remain unreviewed, and what would be required to convert the advisory result into coverage-led commit-readiness.
 
 ## Review Workflow
 

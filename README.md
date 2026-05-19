@@ -82,9 +82,35 @@ A read-only helper script that gathers local repository context for the review w
 - prefers staged changes when present
 - falls back to unstaged changes or branch-vs-base comparison
 - reports diff stats, file lists, and status
+- identifies truncation, path/content high-risk candidates, generated-like files, lock files, and top-churn files
+- emits a Review Manifest and Review Groups for coverage-led commit-readiness workflows
+- records rename, delete, binary, mode-only, and submodule pointer changes as manifest units
+- emits Review Plan JSON for reducer-friendly automation without Markdown table parsing
+- emits Split Suggestions for review groups that exceed the hard budget
+- emits Split Unit Diff Preview blocks for hunk-level review
+- emits a Coverage Ledger Template with pending review units
+- emits Group Review Result templates for reducer-ready group findings
+- emits a Coverage Validation Checklist for reducer preflight
+- emits a Full Review Execution Plan with ordered split/review steps
+- emits Group Review Work Packets for serial or delegated group review
+- emits a Reducer Finalization Template for final synthesis gates
+- emits a best-effort Dependency Summary for cross-file reduction
+- emits a suggested review queue for large or truncated diffs
 - truncates oversized diffs safely when needed
 
 It does not fetch, stage, reset, install, or modify files.
+
+The default diff output budget is 200KB. Override it with `PRE_COMMIT_REVIEW_MAX_DIFF_BYTES`; use a lower value when the surrounding conversation is already large, and use `0` only when printing the full diff is safe.
+
+Review group budgets default to 120KB target and 160KB hard limit. Override them with `PRE_COMMIT_REVIEW_GROUP_TARGET_BYTES` and `PRE_COMMIT_REVIEW_GROUP_HARD_BYTES`; groups over the hard limit are marked `split-required`.
+
+Use `scripts/collect_diff_context.sh --source <staged|unstaged|branch> --group <group_id>` to retrieve one in-budget review group's diff after a global diff is truncated. Use `--path <path>` for file-level follow-up when a group needs narrower context or has been split. Helper-emitted `context_command` values include `--source` so follow-up retrieval stays pinned to the original diff source; `split-required` groups must be reviewed through split suggestions instead of as one group.
+
+Project-specific risk hints can live in `.pre-commit-review/risk-paths` and `.pre-commit-review/risk-content`. Each non-empty, non-comment line is an extended regular expression; matches promote files into high-risk ordering but do not change coverage requirements.
+
+Review-planning tables and `Dependency Summary` use TSV because paths, commands, and dependency details may contain commas.
+
+Reducer and subagent automation should prefer the JSONL sections when present; TSV tables are primarily for human scanning.
 
 ### `references/`
 
@@ -164,27 +190,9 @@ When local repository access is available, the workflow prefers using `scripts/c
 - staged vs. unstaged notes
 - untracked file warnings
 
-## Usage
+## Other Integration Modes
 
-### Option 1: Use the installer
-
-Clone this repository, then run the installer for your host:
-
-```bash
-./install.sh codex
-```
-
-or:
-
-```bash
-./install.sh --agent claude-code
-./install.sh --agent gemini-cli
-./install.sh --agent kiro-cli
-```
-
-Restart the agent or start a new session after installing so it can discover the new skill.
-
-### Option 2: Use as a standalone repository
+### Use as a standalone repository
 
 Clone or copy this repository into the place where your agent runtime expects custom skills.
 
@@ -201,7 +209,7 @@ your-skills/
 
 Then register or expose the skill according to your agent platform's skill-loading mechanism.
 
-### Option 3: Merge into an existing skills collection
+### Merge into an existing skills collection
 
 If you already maintain a larger skills repository, copy this directory in as one skill package and preserve the relative paths:
 
@@ -244,7 +252,9 @@ This package is intentionally conservative:
 - it avoids pretending to see local changes when no repository is available
 - it distinguishes staged and unstaged review scope
 - it warns about untracked files not present in `git diff`
-- it treats large diffs as partial-review situations unless risky files are inspected
+- it treats large or truncated diffs as a reason to split work and retrieve smaller context, not as permission to skip material units
+- it reserves partial triage for advisory fallback and blocks commit-readiness when high-risk units are unreviewed
+- it supports coverage-led commit-readiness by requiring every manifest unit to be accounted for before claiming full scope
 
 ## Limitations
 

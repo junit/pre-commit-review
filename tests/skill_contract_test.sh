@@ -49,8 +49,73 @@ grep -Fq '300+ changed lines' "$skill_file" \
   || fail 'SKILL.md visual mode threshold must reuse the large-diff line-count signal'
 grep -Fq '10+ changed files excluding generated, vendored, minified, and lockfile-only files' "$skill_file" \
   || fail 'SKILL.md must define meaningful files in measurable terms'
+grep -Fq 'Commit-readiness reviews are coverage-led by default: start from `Review Manifest JSONL` or `Review Manifest`, account for every review unit, and treat large or truncated diffs as a reason to split or retrieve context rather than sample or skip.' "$skill_file" \
+  || fail 'SKILL.md must make coverage-led review the default commit-readiness path'
+grep -Fq 'Risk classification controls review order and split strategy; it never authorizes omitting executable or material units from a commit-readiness review.' "$skill_file" \
+  || fail 'SKILL.md must make risk classification an ordering signal, not a skip rule'
+grep -Fq 'Use advisory fallback only when repository/helper access is unavailable, the user explicitly asks for quick triage, or the user declines continuing the coverage-led review after being told that commit-readiness requires coverage-led validation; label it partial/advisory and do not provide a commit-safe verdict from sampled coverage.' "$skill_file" \
+  || fail 'SKILL.md must restrict triage to advisory fallback'
+grep -Fq 'When helper/repository access is available and the user asks for commit-readiness, do not self-select advisory fallback to save time; continue coverage-led review or report that commit-readiness is blocked pending coverage.' "$skill_file" \
+  || fail 'SKILL.md must prevent self-selected advisory fallback when helper access is available'
+grep -Fq 'Unreviewed high-risk candidates make commit-readiness `DO_NOT_COMMIT`; advisory fallback must not present a commit-safe verdict.' "$skill_file" \
+  || fail 'SKILL.md must make skipped high-risk files blocking for commit-readiness'
+grep -Fq 'Treat `PRE_COMMIT_REVIEW_MAX_DIFF_BYTES` as an output budget, not a safety boundary; lower it when conversation context is crowded, and raise it or set it to `0` only when printing the larger diff is safe.' "$skill_file" \
+  || fail 'SKILL.md must describe diff byte budget limits relative to LLM context'
+grep -Fq 'Helper candidates are not exhaustive; semantically scan the full file list, diff stat, and changed file types, then promote any ordinary-looking file to high risk when its role, imports, API surface, or changed content affects a trust boundary or irreversible behavior.' "$skill_file" \
+  || fail 'SKILL.md must require semantic risk promotion beyond helper regex candidates'
+grep -Fq 'The helper may read optional project-level risk hints from `.pre-commit-review/risk-paths` and `.pre-commit-review/risk-content`; each non-empty, non-comment line is an extended regular expression used only to promote matching files into high-risk ordering.' "$skill_file" \
+  || fail 'SKILL.md must document project-level risk hint files as ordering-only signals'
+grep -Fq 'Coverage-led review requires a coverage ledger: every `Review Manifest` unit must appear in exactly one group review result before the final verdict can claim a full review.' "$skill_file" \
+  || fail 'SKILL.md must require a coverage ledger for coverage-led review'
+grep -Fq 'Run Coverage Validation before cross-file reduction: compute `manifest_units - reviewed_units`; any high-risk coverage gap makes the verdict `DO_NOT_COMMIT`.' "$skill_file" \
+  || fail 'SKILL.md must require coverage validation before final reduction'
+grep -Fq 'Use `Dependency Summary` as reducer input for changed imports, exports, signatures, and schema/config signals, but treat it as best-effort rather than complete static analysis.' "$skill_file" \
+  || fail 'SKILL.md must require reducer use of Dependency Summary with best-effort limits'
+grep -Fq 'Treat `Dependency Summary` as TSV as well; file paths and dependency details may contain commas, so do not parse it as CSV.' "$skill_file" \
+  || fail 'SKILL.md must require TSV parsing for Dependency Summary'
+grep -Fq 'If a `Review Groups` row has `budget_status` of `split-required`, split that group into smaller file or hunk units before reviewing it; do not mark it covered as a single group.' "$skill_file" \
+  || fail 'SKILL.md must require splitting over-budget review groups'
+grep -Fq 'Use `Split Suggestions` as the starting point for replacing an over-budget group with smaller file or hunk units in the coverage ledger.' "$skill_file" \
+  || fail 'SKILL.md must require using split suggestions for over-budget groups'
+grep -Fq 'Start coverage-led review from the `Coverage Ledger Template`; leave units pending until a group result records the exact reviewed unit, and replace `needs-split` rows with `Split Suggestions` units before review.' "$skill_file" \
+  || fail 'SKILL.md must require using the coverage ledger template'
+grep -Fq 'Use the helper-provided `Group Review Result Template` for every group result; keep `required_units` intact and fill `reviewed_units` only with units actually inspected.' "$skill_file" \
+  || fail 'SKILL.md must require group result templates for reducer input'
+grep -Fq 'Before merging findings, use `Coverage Validation Checklist` as reducer preflight; full review is forbidden until `manifest_units - reviewed_units` is empty and all `needs-split` units have replacement results.' "$skill_file" \
+  || fail 'SKILL.md must require coverage validation checklist before reduction'
+grep -Fq 'Use `Full Review Execution Plan` as the default work order: split `split-required` groups first, then review high-risk groups, consistency groups, and medium-risk groups unless dependency evidence requires reordering.' "$skill_file" \
+  || fail 'SKILL.md must require the full review execution plan work order'
+grep -Fq 'Use `Split Unit Diff Preview` for hunk-level review when present; if the preview is insufficient or truncated, fall back to the listed file-specific command and hunk header.' "$skill_file" \
+  || fail 'SKILL.md must require split unit diff previews for hunk review'
+grep -Fq 'Use `Group Review Work Packets` as the handoff context for serial or delegated group review; each packet carries the group id, required units, review commands, and split guidance.' "$skill_file" \
+  || fail 'SKILL.md must require group review work packets as review handoff context'
+grep -Fq 'Use `Reducer Finalization Template` for the final synthesis; do not produce the top-level verdict until coverage validation, finding merge, dependency checks, and test recommendations are filled.' "$skill_file" \
+  || fail 'SKILL.md must require reducer finalization before top-level verdict'
+grep -Fq 'Use the work packet `context_command` when a group or file needs fresh context after global diff truncation; it must return only the requested group or file diff without widening review scope.' "$skill_file" \
+  || fail 'SKILL.md must require file-specific context commands after truncation'
+grep -Fq 'Prefer group-level `context_command` values with `--group <group_id>` for groups within the hard budget; use file-level `--path <path>` commands from the manifest only when a group needs narrower context or has been split.' "$skill_file" \
+  || fail 'SKILL.md must prefer group-level context commands for in-budget groups'
+grep -Fq 'Do not use `--group` to review a `split-required` group as one unit; replace it with `Split Suggestions` units first.' "$skill_file" \
+  || fail 'SKILL.md must forbid whole-group review for split-required groups'
+grep -Fq 'Every `context_command` must include `--source staged`, `--source unstaged`, or `--source branch` so follow-up context retrieval cannot switch diff sources when the working tree changes.' "$skill_file" \
+  || fail 'SKILL.md must require source-locked context commands'
+grep -Fq 'Treat `Review Manifest`, `Review Groups`, `Split Suggestions`, `Coverage Ledger Template`, and `Full Review Execution Plan` as TSV tables; do not parse their rows by comma because paths and commands may contain commas.' "$skill_file" \
+  || fail 'SKILL.md must require TSV parsing for review-planning tables'
+grep -Fq 'Prefer `Review Manifest JSONL` and `Review Groups JSONL` for reducer or subagent automation; keep TSV tables for human scanning only.' "$skill_file" \
+  || fail 'SKILL.md must prefer JSONL for automated reducer inputs'
+grep -Fq 'Use `Review Plan JSON` as the reducer-friendly aggregate plan when present; it captures group order, required units, budget status, context commands, and coverage gates without parsing Markdown tables.' "$skill_file" \
+  || fail 'SKILL.md must require Review Plan JSON for reducer-friendly automation'
 if grep -Fq '10+ meaningful files' "$skill_file"; then
   fail 'SKILL.md must not use the ambiguous phrase "meaningful files"'
+fi
+if grep -Fq 'Large Diff Triage Protocol' "$skill_file"; then
+  fail 'SKILL.md must not keep a separate large diff triage protocol'
+fi
+if grep -Fq 'max(5, ceil(10% of the group))' "$skill_file"; then
+  fail 'SKILL.md must not use sampling quotas for commit-readiness'
+fi
+if grep -Fq 'Use deterministic representative sampling' "$skill_file"; then
+  fail 'SKILL.md must not present representative sampling as a commit-readiness mechanism'
 fi
 grep -Fq 'Append supporting analysis only when it adds decision value' "$skill_file" \
   || fail 'SKILL.md must make Supporting Analysis optional and decision-value gated'

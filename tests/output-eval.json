@@ -53,7 +53,18 @@
       "fixture": "A large diff dominated by generated snapshots with truncation.",
       "expected": {
         "verdict": "SAFE_TO_COMMIT_WITH_NOTES",
-        "must_include": ["Partial review", "generated", "reproducible"]
+        "must_include": ["coverage-led", "generated", "reproducible", "Coverage Validation"]
+      }
+    },
+    {
+      "id": "output-full-review-split-reducer",
+      "scenario": "full-review-split-reducer",
+      "locale": "en",
+      "prompt": "Review all staged changes before commit, even if the diff is large.",
+      "fixture": "A large staged diff where the helper emits Review Manifest, Review Plan JSON, a split-required generated group, a high-risk migration group, group review result templates, coverage validation, and reducer finalization. One reviewed migration drops a column without compatibility handling.",
+      "expected": {
+        "verdict": "DO_NOT_COMMIT",
+        "must_include": ["Review Manifest", "Split Suggestions", "Group Review Result", "Coverage Validation", "Reducer Finalization", "DO_NOT_COMMIT", "drop", "compatibility"]
       }
     },
     {

@@ -82,9 +82,35 @@
 - 在存在 staged 变更时优先使用 staged diff
 - 在没有 staged 时回退到 unstaged 或 branch-vs-base 比较
 - 输出 diff 统计、文件列表和状态信息
+- 标识截断状态、基于路径和内容的高风险候选文件、疑似生成文件、lockfile 和高 churn 文件
+- 输出 Review Manifest 和 Review Groups，用于 coverage-led commit-readiness 流程
+- 将 rename、delete、binary、mode-only 和 submodule 指针更新记录为 manifest units
+- 输出 Review Plan JSON，便于 reducer 自动化消费，避免解析 Markdown 表
+- 对超过硬预算的 review group 输出 Split Suggestions
+- 输出 Split Unit Diff Preview，用于 hunk 级审查
+- 输出 Coverage Ledger Template，列出待审查单元
+- 输出 Group Review Result 模板，便于 reducer 合并 group findings
+- 输出 Coverage Validation Checklist，用于 reducer preflight
+- 输出 Full Review Execution Plan，提供有序 split/review 步骤
+- 输出 Group Review Work Packets，供串行或委派 group review 使用
+- 输出 Reducer Finalization Template，用于最终综合门禁
+- 输出 best-effort Dependency Summary，用于跨文件综合
+- 为大体积或被截断的 diff 输出建议审查队列
 - 在 diff 过大时安全截断输出
 
 它不会执行 fetch、stage、reset、install，也不会修改任何文件。
+
+默认 diff 输出预算是 200KB。可通过 `PRE_COMMIT_REVIEW_MAX_DIFF_BYTES` 覆盖；当当前对话上下文已经很大时应调低，只有在确认输出完整 diff 安全时才设为 `0`。
+
+Review group 预算默认目标值为 120KB，硬上限为 160KB。可通过 `PRE_COMMIT_REVIEW_GROUP_TARGET_BYTES` 和 `PRE_COMMIT_REVIEW_GROUP_HARD_BYTES` 覆盖；超过硬上限的 group 会标记为 `split-required`。
+
+当全局 diff 被截断时，可用 `scripts/collect_diff_context.sh --source <staged|unstaged|branch> --group <group_id>` 只输出一个未超硬预算 review group 的 diff。需要更窄上下文或 group 已拆分时，用 `--path <path>` 做文件级补取。helper 输出的 `context_command` 会包含 `--source`，确保后续取上下文时仍固定在原始 diff source；`split-required` group 必须通过 split suggestions 审查，不能作为一个整体 group 审查。
+
+项目级风险提示可以放在 `.pre-commit-review/risk-paths` 和 `.pre-commit-review/risk-content`。每个非空、非注释行都是一个扩展正则表达式；匹配项只会提升到 high-risk 审查顺序，不会改变覆盖要求。
+
+Review-planning 表和 `Dependency Summary` 使用 TSV，因为路径、命令和依赖详情中可能包含逗号。
+
+Reducer 和 subagent 自动化应优先使用 JSONL section；TSV 表主要用于人工快速浏览。
 
 ### `references/`
 
@@ -164,27 +190,9 @@ skill 按以下顺序解析审查输入：
 - staged 与 unstaged 的说明
 - untracked 文件警告
 
-## 使用方式
+## 其他集成方式
 
-### 方案 1：使用安装脚本
-
-先克隆本仓库，再针对你的 host 运行安装脚本：
-
-```bash
-./install.sh codex
-```
-
-或者：
-
-```bash
-./install.sh --agent claude-code
-./install.sh --agent gemini-cli
-./install.sh --agent kiro-cli
-```
-
-安装后请重启 agent，或者开启一个新会话，让它重新发现这个 skill。
-
-### 方案 2：作为独立仓库使用
+### 作为独立仓库使用
 
 将本仓库克隆或复制到你的 agent 运行时读取自定义 skills 的位置。
 
@@ -201,7 +209,7 @@ your-skills/
 
 随后根据你的 agent 平台的 skill 加载机制，注册或暴露该 skill。
 
-### 方案 3：合并到现有 skills 集合
+### 合并到现有 skills 集合
 
 如果你已经维护了一个更大的 skills 仓库，可以把当前目录作为一个独立 skill 包复制进去，并保留相对路径：
 
@@ -244,7 +252,9 @@ your-skills/
 - 当本地仓库不可访问时，不会假装看到了本地变更
 - 会区分 staged 和 unstaged 的审查范围
 - 会提醒 `git diff` 中未包含的 untracked 文件
-- 当 diff 过大时，除非明确检查高风险文件，否则会视为部分审查场景
+- 会把大 diff 或截断视为拆分工作、按需取更小上下文的信号，而不是跳过实质性单元的理由
+- 只把部分 triage 用作 advisory fallback；高风险单元未审查时会阻塞提交就绪性结论
+- 支持 coverage-led commit-readiness；只有每个 manifest unit 都被记录覆盖后，才能声称完整审查
 
 ## 限制
 
