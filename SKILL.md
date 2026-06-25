@@ -148,6 +148,17 @@ Be concrete. Prefer exact scenarios over generic warnings.
 - **Test scope**: Group recommendations into existing automated tests to run, new tests to add, manual verification, and negative/edge cases when useful. Name specific files, commands, or scenarios if visible.
 - **Watchpoints**: Name logs, metrics, dashboards, alert conditions, endpoint error rates, queue retries, migration status, or user behaviors to monitor after the commit lands.
 
+### 7. Performance & Cost Impact
+
+Assess this only when the diff touches code on a hot path, a database query, a loop over a collection, a network/IO call, or anything that runs per-request or at scale. Skip it for docs, comments, formatting, or one-time scripts. Be concrete about where the cost lands and who pays it.
+
+- **Hot paths**: Identify whether changed code runs per request, per row, per user, in a tight loop, or on a critical latency path. A small per-iteration cost multiplied by a large N dominates total cost.
+- **Query/IO patterns**: Flag N+1 queries (a query inside a loop), missing/removed indexes, full-table scans, unbatched external calls, synchronous waits on network or disk inside a request path, and large payload fetches.
+- **Resource growth**: Check for unbounded loops, growing caches/maps without eviction, retained references (memory leaks), duplicated work, recomputation of cheaply-cacheable values, and oversized allocations or buffers.
+- **Cost signals**: Note token/credit consumption for LLM calls, billing-metered API volume, batch-size choices, and concurrency/parallelism that shifts cost between latency and throughput.
+
+If the change has no performance relevance, say `No performance impact` rather than padding with generic advice.
+
 ## Conditional Risk Scans
 
 Apply these only when relevant to the diff:
@@ -161,6 +172,7 @@ Apply these only when relevant to the diff:
 - **Infrastructure/resource lifecycle changes**: Check client/session/connection creation and reuse, timeouts, retries, cancellation, cleanup, context managers, file handles, transaction scope, locks, and graceful degradation against nearby code conventions.
 - **Generated/vendor/minified files**: Check whether the generating source/config also changed. Flag generated output without a matching source change unless the reason is clear.
 - **Observability changes**: Check whether failures remain diagnosable through logs, metrics, traces, alerts, and useful error messages.
+- **Performance/cost changes**: When the diff touches a hot path, database query, loop, network/IO call, or per-request/per-row code, check N+1 queries, index usage, batch sizes, unbounded loops, retained references, and metered/token cost. Promote a concrete regression to a priority finding when it can move a critical latency or cost metric.
 
 ## Verdict
 
