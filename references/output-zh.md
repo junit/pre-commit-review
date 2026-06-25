@@ -9,6 +9,7 @@ Loaded when the review is rendered in Chinese (中文). SKILL.md is authoritativ
 
 **VERDICT:** <SAFE_TO_COMMIT | SAFE_TO_COMMIT_WITH_NOTES | DO_NOT_COMMIT>
 **结论：** <一句话说明现在能否提交，以及下一步要做什么>
+**统计：** <按类型统计发现项："N 个阻塞项 · N 个提醒 · N 个测试缺口"，🔒/❌ 为阻塞项、⚠️ 为提醒、🧪 为测试缺口；无重点发现时写 `无`>
 **差异来源：** <差异获取方式>
 **审查范围：** <完整审查 | 部分审查及原因>
 **变更规模：** <文件数> 个文件, +<新增行数> 行 / -<删除行数> 行

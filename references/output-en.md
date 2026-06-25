@@ -9,6 +9,7 @@ Loaded when the review is rendered in English. SKILL.md is authoritative for rev
 
 **VERDICT:** <SAFE_TO_COMMIT | SAFE_TO_COMMIT_WITH_NOTES | DO_NOT_COMMIT>
 **Conclusion:** <one sentence stating whether they can commit and what to do next>
+**Tally:** <count of findings by type: "N blocker · N warning · N test-gap" using the 🔒/❌ blockers, ⚠️ warnings, 🧪 test-gaps; write `None` if no priority findings>
 **Diff source:** <how the diff was obtained>
 **Review scope:** <full review | partial review with reason>
 **Change scale:** <count> files, +<insertions> / -<deletions>

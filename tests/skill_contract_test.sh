@@ -37,6 +37,13 @@ verdict_zh_count="$(grep -Fc '**VERDICT:** <SAFE_TO_COMMIT | SAFE_TO_COMMIT_WITH
 [ "$verdict_en_count" -ge 1 ] && [ "$verdict_zh_count" -ge 1 ] \
   || fail 'output-en.md and output-zh.md must each show concrete verdict lines'
 
+# Funnel: the Default template must surface a finding tally right after the
+# conclusion so severity scale is visible before any finding detail.
+grep -Fq '**Tally:**' "$output_en_file" \
+  || fail 'output-en.md Default template must include a Tally line after Conclusion'
+grep -Fq '**统计：**' "$output_zh_file" \
+  || fail 'output-zh.md Default template must include a 统计 line after 结论'
+
 grep -Fq '#### English Default Developer Review' "$output_en_file" \
   || fail 'output-en.md must include a concrete English default template'
 grep -Fq '#### Chinese Default Developer Review' "$output_zh_file" \
