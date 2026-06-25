@@ -7,6 +7,8 @@ skill_file="$repo_root/SKILL.md"
 coverage_reference_file="$repo_root/references/coverage-led-review.md"
 output_examples_file="$repo_root/references/output-examples.md"
 visual_output_file="$repo_root/references/visual-output.md"
+output_en_file="$repo_root/references/output-en.md"
+output_zh_file="$repo_root/references/output-zh.md"
 readme_file="$repo_root/README.md"
 readme_zh_file="$repo_root/README.zh-CN.md"
 
@@ -30,31 +32,30 @@ fi
 grep -Fq 'The field label `VERDICT` must remain exactly `VERDICT`.' "$skill_file" \
   || fail 'SKILL.md must explicitly forbid translating the VERDICT field label'
 
-verdict_template_count="$(
-  grep -Fc '**VERDICT:** <SAFE_TO_COMMIT | SAFE_TO_COMMIT_WITH_NOTES | DO_NOT_COMMIT>' "$skill_file"
-)"
-[ "$verdict_template_count" -ge 2 ] \
-  || fail 'SKILL.md must show concrete verdict lines in both English and Chinese templates'
+verdict_en_count="$(grep -Fc '**VERDICT:** <SAFE_TO_COMMIT | SAFE_TO_COMMIT_WITH_NOTES | DO_NOT_COMMIT>' "$output_en_file")"
+verdict_zh_count="$(grep -Fc '**VERDICT:** <SAFE_TO_COMMIT | SAFE_TO_COMMIT_WITH_NOTES | DO_NOT_COMMIT>' "$output_zh_file")"
+[ "$verdict_en_count" -ge 1 ] && [ "$verdict_zh_count" -ge 1 ] \
+  || fail 'output-en.md and output-zh.md must each show concrete verdict lines'
 
-grep -Fq '#### English Default Developer Review' "$skill_file" \
-  || fail 'SKILL.md must include a concrete English default template'
-grep -Fq '#### Chinese Default Developer Review' "$skill_file" \
-  || fail 'SKILL.md must include a concrete Chinese default template'
-if grep -Fq 'Decision impact: <blocker | note>' "$skill_file"; then
-  fail 'SKILL.md must not force every finding to render a Decision impact blocker/note field'
+grep -Fq '#### English Default Developer Review' "$output_en_file" \
+  || fail 'output-en.md must include a concrete English default template'
+grep -Fq '#### Chinese Default Developer Review' "$output_zh_file" \
+  || fail 'output-zh.md must include a concrete Chinese default template'
+if grep -Fq 'Decision impact: <blocker | note>' "$output_en_file"; then
+  fail 'English template must not force every finding to render a Decision impact blocker/note field'
 fi
-if grep -Fq '决定影响：<阻塞项 | 备注>' "$skill_file"; then
-  fail 'SKILL.md must not force every finding to render a 决定影响 阻塞项/备注 field'
+if grep -Fq '决定影响：<阻塞项 | 备注>' "$output_zh_file"; then
+  fail 'Chinese template must not force every finding to render a 决定影响 阻塞项/备注 field'
 fi
-if grep -Fq 'Decision impact: note' "$skill_file"; then
-  fail 'SKILL.md must not prime routine English note labels in finding instructions'
+if grep -Fq 'Decision impact: note' "$output_en_file"; then
+  fail 'English template must not prime routine note labels in finding instructions'
 fi
-if grep -Fq '决定影响：备注' "$skill_file"; then
-  fail 'SKILL.md must not prime routine Chinese 备注 labels in finding instructions'
+if grep -Fq '决定影响：备注' "$output_zh_file"; then
+  fail 'Chinese template must not prime routine 备注 labels in finding instructions'
 fi
-grep -Fq 'Blocking reason: <why this blocks commit; include only for blockers>' "$skill_file" \
+grep -Fq 'Blocking reason: <why this blocks commit; include only for blockers>' "$output_en_file" \
   || fail 'English findings must make blocking rationale conditional rather than forcing note labels'
-grep -Fq '阻塞原因：<为什么这会阻塞提交；仅阻塞项包含此行>' "$skill_file" \
+grep -Fq '阻塞原因：<为什么这会阻塞提交；仅阻塞项包含此行>' "$output_zh_file" \
   || fail 'Chinese findings must make blocking rationale conditional rather than forcing 备注 labels'
 
 contains_contract 'git diff --cached -- path/to/file' \
@@ -151,57 +152,49 @@ if grep -Fq 'Use deterministic representative sampling' "$skill_file"; then
 fi
 grep -Fq 'Append supporting analysis only when it adds decision value' "$skill_file" \
   || fail 'SKILL.md must make Supporting Analysis optional and decision-value gated'
-if grep -Fq '## Supporting Analysis' "$skill_file"; then
-  fail 'SKILL.md default templates must not include Supporting Analysis by default'
+if grep -Fq '## Supporting Analysis' "$output_en_file"; then
+  fail 'English default template must not include Supporting Analysis by default'
 fi
-if grep -Fq '## 补充分析' "$skill_file"; then
-  fail 'SKILL.md default templates must not include Chinese Supporting Analysis by default'
+if grep -Fq '## 补充分析' "$output_zh_file"; then
+  fail 'Chinese default template must not include Chinese Supporting Analysis by default'
 fi
-if grep -Fq '**变更规模：** <count> files' "$skill_file"; then
+if grep -Fq '**变更规模：** <count> files' "$output_zh_file"; then
   fail 'Chinese default template must not use English count/files placeholders'
 fi
-if grep -Fq '**未审查变更：** <无 | unstaged/generated/too-large files' "$skill_file"; then
+if grep -Fq '**未审查变更：** <无 | unstaged/generated/too-large files' "$output_zh_file"; then
   fail 'Chinese default template must not use English unreviewed-change placeholders'
 fi
-if grep -Fq '**变更规模：** <files and lines>' "$skill_file"; then
+if grep -Fq '**变更规模：** <files and lines>' "$output_zh_file"; then
   fail 'Chinese tiny template must not use English files/lines placeholders'
 fi
-grep -Fq '**变更规模：** <文件数> 个文件, +<新增行数> 行 / -<删除行数> 行' "$skill_file" \
+grep -Fq '**变更规模：** <文件数> 个文件, +<新增行数> 行 / -<删除行数> 行' "$output_zh_file" \
   || fail 'Chinese templates must show localized line-count units'
-if grep -Fq '**差异来源：** <来源>' "$skill_file"; then
+if grep -Fq '**差异来源：** <来源>' "$output_zh_file"; then
   fail 'Chinese Tiny Diff template must use the same diff-source placeholder style as the default template'
 fi
-if grep -Fq '**审查范围：** <完整 | 部分>' "$skill_file"; then
+if grep -Fq '**审查范围：** <完整 | 部分>' "$output_zh_file"; then
   fail 'Chinese Tiny Diff template must use explicit review-scope placeholder wording'
 fi
-chinese_tiny_template="$(
-  awk '
-    /#### Chinese Tiny Diff Review/ { in_section=1 }
-    in_section { print }
-    in_section && /### Full Visual Mode/ { exit }
-  ' "$skill_file"
-)"
-english_tiny_template="$(
-  awk '
-    /#### English Tiny Diff Review/ { in_section=1 }
-    in_section { print }
-    in_section && /#### Chinese Tiny Diff Review/ { exit }
-  ' "$skill_file"
-)"
-if printf '%s\n' "$english_tiny_template" | grep -Fq -- '- **Hygiene:**'; then
+# Tiny-template label checks use direct greps against the per-language files
+# (not header-boundary awk slices) so a missing label fails explicitly.
+grep -Fq '#### English Tiny Diff Review' "$output_en_file" \
+  || fail 'output-en.md must include a concrete English tiny template'
+if grep -Fq -- '- **Hygiene:**' "$output_en_file"; then
   fail 'English Tiny Diff template must not force a routine Hygiene line'
 fi
-if printf '%s\n' "$chinese_tiny_template" | grep -Fq -- '- **代码卫生：**'; then
+grep -Fq '#### Chinese Tiny Diff Review' "$output_zh_file" \
+  || fail 'output-zh.md must include a concrete Chinese tiny template'
+if grep -Fq -- '- **代码卫生：**' "$output_zh_file"; then
   fail 'Chinese Tiny Diff template must not force a routine 代码卫生 line'
 fi
 for label in '**结论：**' '**差异来源：**' '**审查范围：**' '**变更规模：**' '- **变更：**' '- **逻辑：**' '- **影响范围：**' '- **风险：**' '- **测试：**'; do
-  printf '%s\n' "$chinese_tiny_template" | grep -Fq -- "$label" \
+  grep -Fq -- "$label" "$output_zh_file" \
     || fail "Chinese Tiny Diff template missing localized label: $label"
 done
-if grep -Fq '代码卫生' "$skill_file" "$output_examples_file" "$visual_output_file" "$readme_zh_file"; then
+if grep -Fq '代码卫生' "$skill_file" "$output_en_file" "$output_zh_file" "$output_examples_file" "$visual_output_file" "$readme_zh_file"; then
   fail 'Chinese user-facing output must use 代码质量 instead of 代码卫生'
 fi
-if grep -Fq 'Code hygiene' "$skill_file" "$visual_output_file"; then
+if grep -Fq 'Code hygiene' "$skill_file" "$output_en_file" "$visual_output_file"; then
   fail 'User-facing output must use Code quality instead of Code hygiene'
 fi
 if grep -Fq 'Clean /' "$visual_output_file"; then
@@ -213,18 +206,18 @@ fi
 if grep -Fq '| Code quality | Clean |' "$visual_output_file"; then
   fail 'visual-output.md must not include a fixed clean Code quality example'
 fi
-if grep -Fq 'Clean - no hygiene issues found.' "$skill_file"; then
-  fail 'SKILL.md must not instruct agents to emit a fixed clean hygiene sentence'
+if grep -Fq 'Clean - no hygiene issues found.' "$output_en_file"; then
+  fail 'English template must not instruct agents to emit a fixed clean hygiene sentence'
 fi
-if grep -Fq 'None needed' "$skill_file" "$output_examples_file"; then
-  fail 'SKILL.md and examples must not instruct agents to emit fixed "None needed" watchpoints'
+if grep -Fq 'None needed' "$output_en_file" "$output_zh_file" "$output_examples_file"; then
+  fail 'templates and examples must not instruct agents to emit fixed "None needed" watchpoints'
 fi
-if grep -Fq '无需额外监控' "$skill_file" "$output_examples_file"; then
-  fail 'SKILL.md and examples must not instruct agents to emit fixed no-monitoring watchpoints'
+if grep -Fq '无需额外监控' "$output_en_file" "$output_zh_file" "$output_examples_file"; then
+  fail 'templates and examples must not instruct agents to emit fixed no-monitoring watchpoints'
 fi
-grep -Fq 'For concrete post-commit monitoring only, add `- **Watchpoints:** <specific logs, metrics, dashboards, errors, or user behaviors>`.' "$skill_file" \
+grep -Fq 'For concrete post-commit monitoring only, add `- **Watchpoints:** <specific logs, metrics, dashboards, errors, or user behaviors>`.' "$output_en_file" \
   || fail 'English Risk Summary must make Watchpoints conditional'
-grep -Fq '仅存在具体提交后监控事项时追加 `- **监控点：** <具体日志、指标、仪表盘、错误或用户行为>`。' "$skill_file" \
+grep -Fq '仅存在具体提交后监控事项时追加 `- **监控点：** <具体日志、指标、仪表盘、错误或用户行为>`。' "$output_zh_file" \
   || fail 'Chinese Risk Summary must make 监控点 conditional'
 grep -Fq '### 2. Code Quality' "$skill_file" \
   || fail 'SKILL.md must name the review dimension Code Quality'

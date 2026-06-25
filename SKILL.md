@@ -248,83 +248,7 @@ For expanded localized examples, consult `references/output-examples.md` only wh
 
 ### Default Developer Review
 
-Use the concrete template matching the selected output language.
-
-#### English Default Developer Review
-
-```markdown
-# Pre-Commit Review
-
-**VERDICT:** <SAFE_TO_COMMIT | SAFE_TO_COMMIT_WITH_NOTES | DO_NOT_COMMIT>
-**Conclusion:** <one sentence stating whether they can commit and what to do next>
-**Diff source:** <how the diff was obtained>
-**Review scope:** <full review | partial review with reason>
-**Change scale:** <count> files, +<insertions> / -<deletions>
-**Unreviewed changes:** <none | unstaged/generated/too-large files or other limits>
-
-## Priority Findings
-
-1. [🔒|❌|⚠️|🧪] `file:line` - <issue title>
-   - Evidence: <what in the diff shows this>
-   - Impact: <what can break, leak, corrupt, or confuse>
-   - Fix: <specific next action>
-
-For blocking findings only, add `   - Blocking reason: <why this blocks commit; include only for blockers>`. If there are no priority findings, write `None`.
-
-## Commit Guidance
-- **Before commit:** <required fix, review note, or `None`>
-- **Suggested verification:** <tests/manual checks to run next>
-
-## What Changed
-- **Modified:** <summary or `None - pure additions.`>
-- **New:** <summary or `None - modifications only.`>
-
-## Risk Summary
-- **Logic shift:** <no logic change | concise delta>
-- **Blast radius:** <self-contained | impacted callers/dependencies/systems>
-- **Regression risk:** <🔴 High | 🟡 Medium | 🟢 Low> - <concrete reason>
-
-For concrete post-commit monitoring only, add `- **Watchpoints:** <specific logs, metrics, dashboards, errors, or user behaviors>`.
-
-```
-
-#### Chinese Default Developer Review
-
-```markdown
-# 提交前审查
-
-**VERDICT:** <SAFE_TO_COMMIT | SAFE_TO_COMMIT_WITH_NOTES | DO_NOT_COMMIT>
-**结论：** <一句话说明现在能否提交，以及下一步要做什么>
-**差异来源：** <差异获取方式>
-**审查范围：** <完整审查 | 部分审查及原因>
-**变更规模：** <文件数> 个文件, +<新增行数> 行 / -<删除行数> 行
-**未审查变更：** <无 | 未暂存变更、生成文件、过大文件或其他限制>
-
-## 重点发现
-
-1. [🔒|❌|⚠️|🧪] `file:line` - <问题标题>
-   - 证据：<diff 中显示该问题的内容>
-   - 影响：<可能破坏、泄露、损坏或误导什么>
-   - 修复：<具体下一步>
-
-仅阻塞项追加 `   - 阻塞原因：<为什么这会阻塞提交；仅阻塞项包含此行>`。如果没有重点发现，写 `无`。
-
-## 提交建议
-- **提交前：** <必须修复的问题、审查备注，或 `无`>
-- **建议验证：** <接下来要运行的测试或手动检查>
-
-## 变更概览
-- **修改：** <摘要，或 `无 - 纯新增。`>
-- **新增：** <摘要，或 `无 - 仅修改。`>
-
-## 风险摘要
-- **逻辑变化：** <无逻辑变化 | 简要说明行为差异>
-- **影响范围：** <自包含 | 受影响调用方/依赖/系统>
-- **回归风险：** <🔴 高 | 🟡 中 | 🟢 低> - <具体原因>
-
-仅存在具体提交后监控事项时追加 `- **监控点：** <具体日志、指标、仪表盘、错误或用户行为>`。
-
-```
+Render the concrete template matching the selected output language: load `references/output-en.md` for English reviews or `references/output-zh.md` for Chinese reviews, per the Localization Rule. Each file holds the Default and Tiny templates for that language.
 
 Do not force every supporting subsection into every review. The default review should feel like a concise decision memo, not a compliance form.
 
@@ -332,45 +256,9 @@ Append supporting analysis only when it adds decision value beyond the required 
 
 ### Tiny Diff Format
 
-Use this for very small, low-risk diffs. Do not force the full template when it would reduce readability.
+Use this for very small, low-risk diffs. Do not force the full template when it would reduce readability. The Tiny Diff templates live in the same per-language files: `references/output-en.md` and `references/output-zh.md`.
 
 Apply the same localization rule from the Localization Rule section above: all headings, labels, and prose must be in the selected output language.
-
-#### English Tiny Diff Review
-
-```markdown
-# Pre-Commit Review
-
-**VERDICT:** <SAFE_TO_COMMIT | SAFE_TO_COMMIT_WITH_NOTES | DO_NOT_COMMIT>
-**Conclusion:** <one sentence>
-**Diff source:** <source>
-**Review scope:** <full | partial>
-**Change scale:** <files and lines>
-
-- **Change:** <one sentence>
-- **Logic:** <no logic change | exact delta>
-- **Blast radius:** <self-contained | affected callers/dependencies>
-- **Risk:** <🔴 High | 🟡 Medium | 🟢 Low> - <reason>
-- **Test:** <minimal verification or required fix>
-```
-
-#### Chinese Tiny Diff Review
-
-```markdown
-# 提交前审查
-
-**VERDICT:** <SAFE_TO_COMMIT | SAFE_TO_COMMIT_WITH_NOTES | DO_NOT_COMMIT>
-**结论：** <一句话结论>
-**差异来源：** <差异获取方式>
-**审查范围：** <完整审查 | 部分审查>
-**变更规模：** <文件数> 个文件, +<新增行数> 行 / -<删除行数> 行
-
-- **变更：** <一句话>
-- **逻辑：** <无逻辑变化 | 精确差异>
-- **影响范围：** <自包含 | 受影响调用方/依赖>
-- **风险：** <🔴 高 | 🟡 中 | 🟢 低> - <原因>
-- **测试：** <最小验证或必须修复的问题>
-```
 
 ### Full Visual Mode
 

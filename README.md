@@ -52,7 +52,9 @@ This repository is not an application or framework. It is a small, portable skil
 ├── references/
 │   ├── coverage-led-review.md
 │   ├── engineering-audit.md
+│   ├── output-en.md
 │   ├── output-examples.md
+│   ├── output-zh.md
 │   └── visual-output.md
 ├── scripts/
 │   └── collect_diff_context.sh
