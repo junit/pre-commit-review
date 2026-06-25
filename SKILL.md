@@ -1,7 +1,7 @@
 ---
 name: pre-commit-review
 description: |
-  Use when the user wants a commit-readiness review of a staged diff, unstaged diff, pasted patch, branch-vs-base change, or other code intended for imminent commit, push, or submission. Triggers include "review before commit", "ready to commit", "pre-commit review", "check staged changes", "提交前审查", "提交前检查", and "检查 staged 变更". Avoid triggering for general code review, PR design review, debugging, architecture feedback, or single-function review unless the user explicitly frames it as commit readiness or diff review.
+  Use when the user wants a commit-readiness review of a staged diff, unstaged diff, pasted patch, branch-vs-base change, or other code intended for imminent commit, push, or submission. Triggers include "review before commit", "ready to commit", "pre-commit review", "check staged changes", "提交前审查", "提交前检查", and "检查 staged 变更". Use this whenever the user asks whether their changes are safe to commit, ship, push, or land, or whether anything is wrong before they commit or open a PR, even when they do not explicitly say "review" — for example "is this safe to commit?", "can I push this?", "anything I should fix before committing?", or "look this over before I ship". Avoid triggering for general code review, PR design review, debugging, architecture feedback, or single-function review unless the user explicitly frames it as commit readiness or diff review.
 ---
 
 # Pre-Commit Review

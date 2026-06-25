@@ -31,7 +31,7 @@ grep -Fq 'The field label `VERDICT` must remain exactly `VERDICT`.' "$skill_file
   || fail 'SKILL.md must explicitly forbid translating the VERDICT field label'
 
 verdict_template_count="$(
-  grep -F '**VERDICT:** <SAFE_TO_COMMIT | SAFE_TO_COMMIT_WITH_NOTES | DO_NOT_COMMIT>' "$skill_file" | wc -l | tr -d ' '
+  grep -Fc '**VERDICT:** <SAFE_TO_COMMIT | SAFE_TO_COMMIT_WITH_NOTES | DO_NOT_COMMIT>' "$skill_file"
 )"
 [ "$verdict_template_count" -ge 2 ] \
   || fail 'SKILL.md must show concrete verdict lines in both English and Chinese templates'
@@ -322,5 +322,27 @@ grep -Fq 'trigger-eval.json' "$readme_zh_file" \
   || fail 'README.zh-CN.md repository tree must include trigger-eval.json'
 grep -Fq 'output-eval.json' "$readme_zh_file" \
   || fail 'README.zh-CN.md repository tree must include output-eval.json'
+
+# Reverse consistency: every test-tree filename a README lists must exist on disk.
+# This catches phantom README entries (lies in the tree direction disk->tree above
+# cannot catch). Keep both directions so the README tree stays a two-way contract.
+for readme in "$readme_file" "$readme_zh_file"; do
+  while IFS= read -r listed_name; do
+    [ -n "$listed_name" ] || continue
+    [ -f "$repo_root/tests/$listed_name" ] \
+      || fail "$readme lists '$listed_name' under tests/ but it does not exist on disk"
+  done < <(
+    awk '
+      /^└── tests\/$/ { in_tests=1; next }
+      in_tests && /^```/ { in_tests=0 }
+      in_tests && /^[[:space:]]*[├└]── / {
+        line=$0
+        sub(/^[[:space:]]*[├└]── /, "", line)
+        # only filenames ending in .sh or .json under tests/
+        if (line ~ /\.(sh|json)$/) print line
+      }
+    ' "$readme"
+  )
+done
 
 printf 'skill contract tests passed\n'

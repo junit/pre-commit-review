@@ -51,6 +51,7 @@
 │   └── openai.yaml
 ├── references/
 │   ├── coverage-led-review.md
+│   ├── engineering-audit.md
 │   ├── output-examples.md
 │   └── visual-output.md
 ├── scripts/
@@ -300,6 +301,10 @@ your-skills/
 
 如果你修改了脚本路径或仓库结构，请同步更新 `SKILL.md`。
 如果你修改了对外文档，请尽量保持各本地化 README 版本同步。
+
+### 开发
+
+Shell 脚本（`scripts/*.sh`、`install.sh`、`tests/*.sh`）在 CI（`.github/workflows/lint.yml`）中由 [shellcheck](https://www.shellcheck.net/) 检查。提交前请在本地安装（macOS 可用 `brew install shellcheck`）并运行 `shellcheck -s bash scripts/*.sh install.sh tests/*.sh`。完整测试套件为 `bash tests/*_test.sh`。
 
 ## License
 

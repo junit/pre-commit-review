@@ -51,6 +51,7 @@ This repository is not an application or framework. It is a small, portable skil
 │   └── openai.yaml
 ├── references/
 │   ├── coverage-led-review.md
+│   ├── engineering-audit.md
 │   ├── output-examples.md
 │   └── visual-output.md
 ├── scripts/
@@ -300,6 +301,10 @@ Contributions are best focused on:
 
 If you change script paths or repository layout, update `SKILL.md` accordingly.
 If you update user-facing documentation, keep localized README files synchronized.
+
+### Development
+
+Shell scripts (`scripts/*.sh`, `install.sh`, `tests/*.sh`) are linted by [shellcheck](https://www.shellcheck.net/) in CI (`.github/workflows/lint.yml`). Install it locally (`brew install shellcheck` on macOS) and run `shellcheck -s bash scripts/*.sh install.sh tests/*.sh` before submitting changes. The full test suite is `bash tests/*_test.sh`.
 
 ## License
 

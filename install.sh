@@ -50,10 +50,21 @@ die() {
 }
 
 expand_home() {
-  case "$1" in
-    "~") printf '%s\n' "$HOME" ;;
-    "~/"*) printf '%s/%s\n' "$HOME" "${1#\~/}" ;;
-    *) printf '%s\n' "$1" ;;
+  local input="$1"
+  local stripped
+  # Expand a leading literal "~" or "~/" to $HOME. The pattern uses a literal
+  # tilde character, not tilde expansion, so it matches input paths like "~/".
+  case "$input" in
+    '~')
+      printf '%s\n' "$HOME"
+      ;;
+    '~'/*)
+      stripped="${input#'~/'}"
+      printf '%s/%s\n' "$HOME" "$stripped"
+      ;;
+    *)
+      printf '%s\n' "$input"
+      ;;
   esac
 }
 
@@ -225,6 +236,10 @@ remove_target() {
     return 0
   fi
 
+  case "$path" in
+    /|'') die "refusing to remove root or empty path: '$path'" ;;
+  esac
+
   rm -rf "$path"
 }
 
@@ -268,7 +283,7 @@ copy_payload() {
     return 0
   fi
 
-  rm -rf "$staging_dir"
+  remove_target "$staging_dir"
   mkdir -p "$staging_dir"
 
   cp "$source_dir/SKILL.md" "$staging_dir/"

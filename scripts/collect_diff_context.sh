@@ -6,6 +6,24 @@ set -euo pipefail
 # Optional environment variable:
 #   PRE_COMMIT_REVIEW_MAX_DIFF_BYTES  default 200000; set 0 for no truncation
 #   PRE_COMMIT_REVIEW_CONTEXT_QUERY_LIMIT  default 20; max matches per context query
+#   PRE_COMMIT_REVIEW_GROUP_TARGET_BYTES  default 120000; soft group size target
+#   PRE_COMMIT_REVIEW_GROUP_HARD_BYTES   default 160000; hard group size limit
+#
+# Section index (single-file by design for portability; no `source` deps):
+#   1. Env/config              - MAX_DIFF_BYTES, GROUP_*_BYTES, REQUEST_* parsing
+#   2. Helpers                 - print_kv, sanitize_tsv, shell_quote, usage, fail_no_repo
+#   3. Diff detection          - has_staged/unstaged_changes, has_diff_for_ref, detect_base_branch
+#   4. Stat/numstat            - summarize_numstat, join_lines_csv, file_*_for_path
+#   5. Risk classifiers (awk)  - high_risk_paths_from_name_status, content_risk_paths_from_diff,
+#                                generated_like_*, lock_paths_*, configured_*_risk, top_churn_*
+#   6. Path predicates         - path_has_high_risk_signal, path_is_generated_like, path_is_lockfile
+#   7. Grouping                - safe_group_component, group_component_for_path
+#   8. Commands & splitting    - review/context_command_for_path|group, emit_hunk_split_*
+#   9. Manifest & JSON emit    - build_review_manifest_tmp, emit_review_plan_json,
+#                                emit_reducer_state_snapshot_template, emit_review_manifest_and_groups,
+#                                emit_requested_group_context, emit_dependency_summary,
+#                                emit_semantic_context_queries, emit_diff_limited
+#  10. Orchestration (main)    - run_diff, select_branch_ref, source selection, final output
 
 MAX_DIFF_BYTES="${PRE_COMMIT_REVIEW_MAX_DIFF_BYTES:-200000}"
 case "$MAX_DIFF_BYTES" in
