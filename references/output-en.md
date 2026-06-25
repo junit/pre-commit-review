@@ -57,3 +57,40 @@ For concrete post-commit monitoring only, add `- **Watchpoints:** <specific logs
 - **Risk:** <🔴 High | 🟡 Medium | 🟢 Low> - <reason>
 - **Test:** <minimal verification or required fix>
 ```
+
+---
+## Visual Review Skeleton
+
+Use the concrete skeleton matching the selected output language when visual mode is justified.
+
+### English Visual Review Skeleton
+
+```markdown
+# Pre-Commit Review
+
+> ⚠️ **Partial review:** <reason>. Areas not reviewed are listed under Unreviewed changes.
+
+**VERDICT:** <SAFE_TO_COMMIT | SAFE_TO_COMMIT_WITH_NOTES | DO_NOT_COMMIT>
+**Conclusion:** <one-sentence commit decision>
+**Diff source:** <source>
+**Review scope:** <full | partial>
+**Change scale:** <files and lines>
+**Unreviewed changes:** <none or limitations>
+
+| Area | Signal | Evidence |
+|---|---|---|
+| <code quality/security/tests/regression risk/etc.> | <concern / verification need / review limit / meaningful risk> | <short evidence> |
+
+## Priority Findings
+
+<findings with evidence, impact, fix, and blocking reason only for blockers; write `None` if none>
+
+## Commit Guidance
+
+- **Before commit:** <required fix or `None`>
+- **Suggested verification:** <tests/manual checks>
+
+## Risk Detail
+
+<risk matrix, changed-area summary, or flow diagram only when it improves the commit decision>
+```

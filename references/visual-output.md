@@ -15,71 +15,7 @@ Use this file only when `SKILL.md` visual-mode criteria are met: the user asks f
 
 ## Visual Review Skeleton
 
-Use the concrete skeleton matching the selected output language when visual mode is justified.
-
-### English Visual Review Skeleton
-
-```markdown
-# Pre-Commit Review
-
-> ⚠️ **Partial review:** <reason>. Areas not reviewed are listed under Unreviewed changes.
-
-**VERDICT:** <SAFE_TO_COMMIT | SAFE_TO_COMMIT_WITH_NOTES | DO_NOT_COMMIT>
-**Conclusion:** <one-sentence commit decision>
-**Diff source:** <source>
-**Review scope:** <full | partial>
-**Change scale:** <files and lines>
-**Unreviewed changes:** <none or limitations>
-
-| Area | Signal | Evidence |
-|---|---|---|
-| <code quality/security/tests/regression risk/etc.> | <concern / verification need / review limit / meaningful risk> | <short evidence> |
-
-## Priority Findings
-
-<findings with evidence, impact, fix, and blocking reason only for blockers; write `None` if none>
-
-## Commit Guidance
-
-- **Before commit:** <required fix or `None`>
-- **Suggested verification:** <tests/manual checks>
-
-## Risk Detail
-
-<risk matrix, changed-area summary, or flow diagram only when it improves the commit decision>
-```
-
-### Chinese Visual Review Skeleton
-
-```markdown
-# 提交前审查
-
-> ⚠️ **部分审查:** <原因>. 未审查的部分列于"未审查变更"中。
-
-**VERDICT:** <SAFE_TO_COMMIT | SAFE_TO_COMMIT_WITH_NOTES | DO_NOT_COMMIT>
-**结论：** <一句话提交决策>
-**差异来源：** <来源>
-**审查范围：** <完整 | 部分>
-**变更规模：** <文件数和行数>
-**未审查变更：** <无或具体限制>
-
-| 领域 | 信号 | 证据 |
-|---|---|---|
-| <代码质量/安全/测试/回归风险等> | <问题 / 验证需求 / 审查限制 / 有意义的风险> | <简短证据> |
-
-## 重点发现
-
-<包含证据、影响、修复的问题列表；仅阻塞项包含阻塞原因；没有则写 `无`>
-
-## 提交建议
-
-- **提交前：** <必须修复的问题或 `无`>
-- **建议验证：** <测试或手动检查>
-
-## 风险细节
-
-<仅在有助于提交决策时使用风险矩阵、变更区域摘要或流程图>
-```
+When visual mode is justified, render the per-language visual skeleton: load `references/output-en.md` for English or `references/output-zh.md` for Chinese, per the Localization Rule. Each file holds the Visual Review Skeleton for that language alongside its Default and Tiny templates.
 
 ## Useful Visual Elements
 

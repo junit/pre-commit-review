@@ -223,8 +223,8 @@ grep -Fq '### 2. Code Quality' "$skill_file" \
   || fail 'SKILL.md must name the review dimension Code Quality'
 grep -Fq '| Code quality |' "$visual_output_file" \
   || fail 'visual-output.md must use Code quality in user-facing visual tables'
-grep -Fq '代码质量' "$visual_output_file" \
-  || fail 'visual-output.md must use 代码质量 in Chinese visual tables'
+grep -Fq '代码质量' "$output_zh_file" \
+  || fail 'output-zh.md must use 代码质量 in the Chinese visual skeleton'
 grep -Fq 'code quality issues' "$readme_file" \
   || fail 'README.md must describe the dimension as code quality'
 grep -Fq '代码质量问题' "$readme_zh_file" \
@@ -250,14 +250,15 @@ if grep -Eq '^\*\*变更规模：\*\* .* \+[0-9]+ / -[0-9]+' "$output_examples_f
 fi
 
 grep -Fq '## Visual Review Skeleton' "$visual_output_file" \
-  || fail 'visual-output.md must include a complete visual review skeleton'
+  || fail 'visual-output.md must keep a Visual Review Skeleton routing section'
+grep -Fq '### English Visual Review Skeleton' "$output_en_file" \
+  || fail 'output-en.md must include the English visual skeleton'
+grep -Fq '### Chinese Visual Review Skeleton' "$output_zh_file" \
+  || fail 'output-zh.md must include the Chinese visual skeleton'
 grep -Fq 'Follow the selected output language from `SKILL.md`.' "$visual_output_file" \
   || fail 'visual-output.md must preserve the SKILL.md localization contract'
 grep -Fq 'Only calculate distribution from real `name-status`, `numstat`, or reviewed file counts.' "$visual_output_file" \
   || fail 'visual-output.md must prohibit invented change distribution percentages'
-if grep -Fq '**变更规模：** <files and lines>' "$visual_output_file"; then
-  fail 'Chinese visual skeleton must not use English files/lines placeholders'
-fi
 
 grep -Fq 'skill_contract_test.sh' "$readme_file" \
   || fail 'README.md repository tree must include skill_contract_test.sh'
