@@ -286,6 +286,7 @@ This package is intentionally conservative:
 - This repository does not include the runtime that loads or executes the skill.
 - The included installer covers common Codex, Claude Code, and Gemini CLI locations, but some local setups may still require `--dir` overrides.
 - The helper script expects a working `git` executable in the environment.
+- On Windows, the helper script and installer require a Unix-compatible environment (such as Git Bash, MSYS2, or WSL) to run correctly.
 - The current repository itself may be used outside Git, but local diff collection only works inside a Git repository.
 
 ## Contributing

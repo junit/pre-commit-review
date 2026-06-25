@@ -585,7 +585,7 @@ emit_hunk_split_suggestions_for_path() {
   local path="$2"
   local review_command="$3"
 
-  file_diff_for_path "$path" | awk -v parent_group="$parent_group" -v path="$path" -v review_command="$review_command" '
+  file_diff_for_path "$path" | LC_ALL=C awk -v parent_group="$parent_group" -v path="$path" -v review_command="$review_command" '
     function emit_hunk() {
       if (hunk_index > 0) {
         clean_header=hunk_header

@@ -286,6 +286,7 @@ your-skills/
 - 该仓库不包含加载或执行 skill 的运行时本身
 - 仓库自带安装脚本，覆盖 Codex、Claude Code、Gemini CLI 的常见目录；如果你的本地布局不同，可能仍需要通过 `--dir` 指定目标位置
 - 辅助脚本依赖环境中可用的 `git`
+- 在 Windows 环境下，辅助脚本与安装器需要类 Unix 环境（如 Git Bash、MSYS2 或 WSL）支持才能正常运行。
 - 当前仓库即使脱离 Git 也能作为内容包存在，但本地 diff 收集只有在 Git 仓库内才有效
 
 ## 贡献
