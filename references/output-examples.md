@@ -9,6 +9,62 @@ SKILL.md is authoritative; examples illustrate valid outputs only.
 - Use examples for tone, localization, and scenario shape, not as a second output specification.
 - Never replace the `**VERDICT:**` field label with a translated label.
 
+
+## English Example
+
+```markdown
+# Pre-Commit Review
+
+**VERDICT:** SAFE_TO_COMMIT_WITH_NOTES
+**Conclusion:** Safe to commit, but run the affected tests first.
+**Diff source:** staged diff
+**Review scope:** full review
+**Change scale:** 2 files, +20 / -4
+**Unreviewed changes:** none
+
+## Priority Findings
+
+None
+
+## Commit Guidance
+- **Before commit:** None
+- **Suggested verification:** Run the affected module tests
+
+## What Changed
+- **Modified:** `src/auth/validator.js` — added null check on session token
+- **New:** None - modifications only.
+
+## Risk Summary
+- **Logic shift:** session token validation now rejects null/undefined explicitly
+- **Blast radius:** self-contained — only affects `validateSession` callers
+- **Regression risk:** 🟢 Low — stricter validation, no previously-passing tokens rejected
+```
+
+## English Example with Blocking Issue
+
+```markdown
+# Pre-Commit Review
+
+**VERDICT:** DO_NOT_COMMIT
+**Conclusion:** Hardcoded API key found — remove before committing.
+**Diff source:** staged diff
+**Review scope:** full review
+**Change scale:** 1 file, +8 / -2
+**Unreviewed changes:** none
+
+## Priority Findings
+
+1. 🔒 `src/config.js:14` - Hardcoded API key in source
+   - Evidence: `const API_KEY = "sk-prod-..."`
+   - Impact: Credential exposure in version control
+   - Fix: Move to environment variable, rotate the leaked key
+   - Blocking reason: Committing would expose a credential and require key rotation
+
+## Commit Guidance
+- **Before commit:** Remove hardcoded key, use `process.env.API_KEY`
+- **Suggested verification:** Confirm key is rotated in the provider dashboard
+```
+
 ## Chinese Example
 
 ```markdown
@@ -108,59 +164,4 @@ SKILL.md is authoritative; examples illustrate valid outputs only.
 - **逻辑变化：** 核心逻辑路径未见行为变化；主要是测试快照更新
 - **影响范围：** 测试和生成产物
 - **回归风险：** 🟡 中 - 大量快照未逐行审查
-```
-
-## English Example
-
-```markdown
-# Pre-Commit Review
-
-**VERDICT:** SAFE_TO_COMMIT_WITH_NOTES
-**Conclusion:** Safe to commit, but run the affected tests first.
-**Diff source:** staged diff
-**Review scope:** full review
-**Change scale:** 2 files, +20 / -4
-**Unreviewed changes:** none
-
-## Priority Findings
-
-None
-
-## Commit Guidance
-- **Before commit:** None
-- **Suggested verification:** Run the affected module tests
-
-## What Changed
-- **Modified:** `src/auth/validator.js` — added null check on session token
-- **New:** None - modifications only.
-
-## Risk Summary
-- **Logic shift:** session token validation now rejects null/undefined explicitly
-- **Blast radius:** self-contained — only affects `validateSession` callers
-- **Regression risk:** 🟢 Low — stricter validation, no previously-passing tokens rejected
-```
-
-## English Example with Blocking Issue
-
-```markdown
-# Pre-Commit Review
-
-**VERDICT:** DO_NOT_COMMIT
-**Conclusion:** Hardcoded API key found — remove before committing.
-**Diff source:** staged diff
-**Review scope:** full review
-**Change scale:** 1 file, +8 / -2
-**Unreviewed changes:** none
-
-## Priority Findings
-
-1. 🔒 `src/config.js:14` - Hardcoded API key in source
-   - Evidence: `const API_KEY = "sk-prod-..."`
-   - Impact: Credential exposure in version control
-   - Fix: Move to environment variable, rotate the leaked key
-   - Blocking reason: Committing would expose a credential and require key rotation
-
-## Commit Guidance
-- **Before commit:** Remove hardcoded key, use `process.env.API_KEY`
-- **Suggested verification:** Confirm key is rotated in the provider dashboard
 ```
