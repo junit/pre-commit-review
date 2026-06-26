@@ -7,10 +7,10 @@ set -euo pipefail
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
 
-# 1. Extract the legacy Shell script from HEAD (before replacement)
+# 1. Copy the restored legacy Shell script
 LEGACY_SH="/tmp/collect_diff_context_legacy.sh"
-echo "Extracting legacy shell script from HEAD..."
-git show HEAD:scripts/collect_diff_context.sh > "$LEGACY_SH"
+echo "Copying legacy shell script from scripts/collect_diff_context.legacy.sh..."
+cp "$REPO_ROOT/scripts/collect_diff_context.legacy.sh" "$LEGACY_SH"
 chmod +x "$LEGACY_SH"
 
 # Patch legacy script to fix path quoting bugs so it can be compared fairly
@@ -235,6 +235,10 @@ sys.stdout.write('\n'.join(cleaned))
   # Perform strict diff comparison
   if ! diff -u output_legacy.txt output_rust.txt; then
     echo "❌ ERROR: Parity mismatch in scenario: $scenario"
+    if [ -f stderr_rust.txt ]; then
+      echo "=== Rust Stderr ==="
+      cat stderr_rust.txt
+    fi
     exit 1
   fi
   echo "✅ SUCCESS: Scenario $scenario matched perfectly."

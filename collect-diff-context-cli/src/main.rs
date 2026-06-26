@@ -148,8 +148,10 @@ struct NameStatusEntry {
 
 #[derive(Debug, Clone)]
 struct NumstatEntry {
-    add: usize,
-    del: usize,
+    add: String,
+    del: String,
+    path: String,
+    old_path: Option<String>,
     path_spec: String,
 }
 
@@ -267,7 +269,8 @@ struct DependencyEntry {
     detail: String,
 }
 
-// Helper to escape path characters for shell commands (replicating printf %q)
+// Render a best-effort shell-display token for human-copyable commands.
+// Not a byte-perfect shell escaping format.
 fn shell_quote(s: &str) -> String {
     if s.is_empty() {
         return "''".to_string();
@@ -339,7 +342,18 @@ fn git_has_staged_changes(cwd: &str) -> Result<bool, AppError> {
     cmd.args(["diff", "--cached", "--quiet", "--exit-code", "--", "."]);
     cmd.current_dir(cwd);
     match cmd.status() {
-        Ok(status) => Ok(status.code() == Some(1)),
+        Ok(status) => match status.code() {
+            Some(0) => Ok(false),
+            Some(1) => Ok(true),
+            Some(code) => Err(AppError::GitError {
+                cmd: "git diff --cached --quiet --exit-code -- .".to_string(),
+                details: format!("unexpected exit code: {}", code),
+            }),
+            None => Err(AppError::GitError {
+                cmd: "git diff --cached --quiet --exit-code -- .".to_string(),
+                details: "process terminated by signal".to_string(),
+            }),
+        },
         Err(e) => {
             if e.kind() == std::io::ErrorKind::NotFound {
                 Err(AppError::GitMissing {
@@ -359,7 +373,18 @@ fn git_has_unstaged_changes(cwd: &str) -> Result<bool, AppError> {
     cmd.args(["diff", "--quiet", "--exit-code", "--", "."]);
     cmd.current_dir(cwd);
     match cmd.status() {
-        Ok(status) => Ok(status.code() == Some(1)),
+        Ok(status) => match status.code() {
+            Some(0) => Ok(false),
+            Some(1) => Ok(true),
+            Some(code) => Err(AppError::GitError {
+                cmd: "git diff --quiet --exit-code -- .".to_string(),
+                details: format!("unexpected exit code: {}", code),
+            }),
+            None => Err(AppError::GitError {
+                cmd: "git diff --quiet --exit-code -- .".to_string(),
+                details: "process terminated by signal".to_string(),
+            }),
+        },
         Err(e) => {
             if e.kind() == std::io::ErrorKind::NotFound {
                 Err(AppError::GitMissing {
@@ -380,7 +405,18 @@ fn git_has_diff_for_ref(ref_name: &str, cwd: &str) -> Result<bool, AppError> {
     cmd.args(["diff", "--quiet", "--exit-code", &ref_expr, "--", "."]);
     cmd.current_dir(cwd);
     match cmd.status() {
-        Ok(status) => Ok(status.code() == Some(1)),
+        Ok(status) => match status.code() {
+            Some(0) => Ok(false),
+            Some(1) => Ok(true),
+            Some(code) => Err(AppError::GitError {
+                cmd: format!("git diff --quiet --exit-code {} -- .", ref_expr),
+                details: format!("unexpected exit code: {}", code),
+            }),
+            None => Err(AppError::GitError {
+                cmd: format!("git diff --quiet --exit-code {} -- .", ref_expr),
+                details: "process terminated by signal".to_string(),
+            }),
+        },
         Err(e) => {
             if e.kind() == std::io::ErrorKind::NotFound {
                 Err(AppError::GitMissing {
@@ -527,6 +563,49 @@ fn unquote_git_path(s: &str) -> String {
     } else {
         s.to_string()
     }
+}
+
+fn quote_git_path(s: &str) -> String {
+    let mut needs_quoting = false;
+    for b in s.bytes() {
+        if b == b'\t'
+            || b == b'\n'
+            || b == b'\r'
+            || b == b'"'
+            || b == b'\\'
+            || !(32..127).contains(&b)
+        {
+            needs_quoting = true;
+            break;
+        }
+    }
+    if !needs_quoting {
+        return s.to_string();
+    }
+    let mut quoted = String::new();
+    quoted.push('"');
+    for b in s.bytes() {
+        match b {
+            7 => quoted.push_str("\\a"),
+            8 => quoted.push_str("\\b"),
+            9 => quoted.push_str("\\t"),
+            10 => quoted.push_str("\\n"),
+            11 => quoted.push_str("\\v"),
+            12 => quoted.push_str("\\f"),
+            13 => quoted.push_str("\\r"),
+            b'"' => quoted.push_str("\\\""),
+            b'\\' => quoted.push_str("\\\\"),
+            other => {
+                if !(32..127).contains(&other) {
+                    quoted.push_str(&format!("\\{:03o}", other));
+                } else {
+                    quoted.push(other as char);
+                }
+            }
+        }
+    }
+    quoted.push('"');
+    quoted
 }
 
 fn git_run_diff_bytes(
@@ -689,73 +768,115 @@ fn safe_group_component(component: &str) -> String {
         .collect()
 }
 
-fn parse_name_status(output: &str) -> Vec<NameStatusEntry> {
+fn parse_name_status_z(bytes: &[u8]) -> Vec<NameStatusEntry> {
     let mut entries = Vec::new();
-    for line in output.lines() {
-        let trimmed = line.trim();
-        if trimmed.is_empty() {
+    let mut parts = bytes.split(|&b| b == 0);
+    while let Some(status_bytes) = parts.next() {
+        if status_bytes.is_empty() {
             continue;
         }
-        let parts: Vec<&str> = trimmed.split('\t').collect();
-        if parts.len() >= 2 {
-            let status = parts[0].to_string();
-            if (status.starts_with('R') || status.starts_with('C')) && parts.len() >= 3 {
-                entries.push(NameStatusEntry {
-                    status,
-                    path: parts[2].to_string(),
-                    old_path: Some(parts[1].to_string()),
-                });
-            } else {
-                entries.push(NameStatusEntry {
-                    status,
-                    path: parts[1].to_string(),
-                    old_path: None,
-                });
-            }
-        }
-    }
-    entries
-}
-
-fn parse_numstat(output: &str) -> Vec<NumstatEntry> {
-    let mut entries = Vec::new();
-    for line in output.lines() {
-        let trimmed = line.trim();
-        if trimmed.is_empty() {
-            continue;
-        }
-        let parts: Vec<&str> = trimmed.split('\t').collect();
-        if parts.len() >= 3 {
-            let add = parts[0].parse::<usize>().unwrap_or(0);
-            let del = parts[1].parse::<usize>().unwrap_or(0);
-            entries.push(NumstatEntry {
-                add,
-                del,
-                path_spec: parts[2].to_string(),
+        let status = String::from_utf8_lossy(status_bytes).into_owned();
+        if status.starts_with('R') || status.starts_with('C') {
+            let src_bytes = match parts.next() {
+                Some(b) => b,
+                None => break,
+            };
+            let dest_bytes = match parts.next() {
+                Some(b) => b,
+                None => break,
+            };
+            entries.push(NameStatusEntry {
+                status,
+                path: String::from_utf8_lossy(dest_bytes).into_owned(),
+                old_path: Some(String::from_utf8_lossy(src_bytes).into_owned()),
+            });
+        } else {
+            let path_bytes = match parts.next() {
+                Some(b) => b,
+                None => break,
+            };
+            entries.push(NameStatusEntry {
+                status,
+                path: String::from_utf8_lossy(path_bytes).into_owned(),
+                old_path: None,
             });
         }
     }
     entries
 }
 
-fn lookup_numstat(entries: &[NumstatEntry], path: &str, old_path: Option<&str>) -> (usize, usize) {
+fn parse_numstat_z(bytes: &[u8]) -> Vec<NumstatEntry> {
+    let mut entries = Vec::new();
+    let mut parts = bytes.split(|&b| b == 0);
+    while let Some(first_part) = parts.next() {
+        if first_part.is_empty() {
+            continue;
+        }
+        if let Some(first_tab) = first_part.iter().position(|&b| b == b'\t') {
+            let add_bytes = &first_part[..first_tab];
+            let rest = &first_part[first_tab + 1..];
+            if let Some(second_tab) = rest.iter().position(|&b| b == b'\t') {
+                let del_bytes = &rest[..second_tab];
+                let path_bytes = &rest[second_tab + 1..];
+
+                let add_str = String::from_utf8_lossy(add_bytes);
+                let del_str = String::from_utf8_lossy(del_bytes);
+                let add = add_str.trim().to_string();
+                let del = del_str.trim().to_string();
+
+                if path_bytes.is_empty() {
+                    // Rename!
+                    let src_bytes = match parts.next() {
+                        Some(b) => b,
+                        None => break,
+                    };
+                    let dest_bytes = match parts.next() {
+                        Some(b) => b,
+                        None => break,
+                    };
+                    let src = String::from_utf8_lossy(src_bytes).into_owned();
+                    let dest = String::from_utf8_lossy(dest_bytes).into_owned();
+                    let path_spec = format!("{} => {}", src, dest);
+                    entries.push(NumstatEntry {
+                        add,
+                        del,
+                        path: dest,
+                        old_path: Some(src),
+                        path_spec,
+                    });
+                } else {
+                    let path = String::from_utf8_lossy(path_bytes).into_owned();
+                    entries.push(NumstatEntry {
+                        add,
+                        del,
+                        path: path.clone(),
+                        old_path: None,
+                        path_spec: path,
+                    });
+                }
+            }
+        }
+    }
+    entries
+}
+
+fn lookup_numstat(entries: &[NumstatEntry], path: &str, old_path: Option<&str>) -> (String, String) {
     if let Some(old) = old_path {
         for entry in entries {
-            if entry.path_spec.contains("=>")
-                && entry.path_spec.contains(old)
-                && entry.path_spec.contains(path)
-            {
-                return (entry.add, entry.del);
+            if let Some(entry_old) = &entry.old_path {
+                if entry_old == old && entry.path == path {
+                    return (entry.add.clone(), entry.del.clone());
+                }
             }
         }
     } else {
         for entry in entries {
-            if entry.path_spec == path {
-                return (entry.add, entry.del);
+            if entry.path == path && entry.old_path.is_none() {
+                return (entry.add.clone(), entry.del.clone());
             }
         }
     }
-    (0, 0)
+    ("0".to_string(), "0".to_string())
 }
 
 fn split_diff_into_hunks(diff: &str) -> Vec<Hunk> {
@@ -800,12 +921,16 @@ fn generate_dependency_summary(diff: &str) -> Vec<DependencyEntry> {
 
     let re_import = Regex::new(r"(?i)^(import\s.*|from\s.*\simport\s.*|.*require\(.+\).*|use\s.*;|package\s.*|#include\s.*)$").unwrap();
     let re_export = Regex::new(r"^(export\s.*|pub\s.*)$").unwrap();
-    let re_sig = Regex::new(r"^(export\s+)?(async\s+)?function\s|[A-Za-z0-9_$]+\s*\(|def\s.*\(|fn\s.*\(|func\s.*\(|class\s.*|interface\s.*|type\s.*\s(struct|interface)|struct\s.*|enum\s.*|impl\s.*").unwrap();
+    let re_sig = Regex::new(r"^(?:(?:(?:export\s+|async\s+|pub\s+|static\s+)*function\s+[A-Za-z0-9_$]+\s*\()|(?:(?:export\s+|pub\s+)*(?:class|struct|interface|enum|impl|type)\s+[A-Za-z0-9_$]+)|(?:def\s+[A-Za-z0-9_]+\s*\()|(?:fn\s+[A-Za-z0-9_]+\s*\()|(?:func\s+[A-Za-z0-9_]+\s*\()|(?:[A-Za-z0-9_$]+\s+[A-Za-z0-9_$]+\s*\()|(?:[A-Za-z0-9_$]+\s*\(\s*\)\s*\{))").unwrap();
     let re_schema = Regex::new(r"(?i)^(alter\s+table|create\s+table|drop\s+table|create\s+index|drop\s+index|grant\s+|revoke\s+|add\s+column|drop\s+column)").unwrap();
 
     for line in diff.lines() {
         if let Some(stripped) = line.strip_prefix("+++ b/") {
-            current_file = stripped.to_string();
+            current_file = unquote_git_path(stripped);
+            continue;
+        } else if let Some(stripped) = line.strip_prefix("+++ \"b/") {
+            let unquoted = unquote_git_path(&format!("\"{}", stripped));
+            current_file = unquoted.strip_prefix("b/").unwrap_or(&unquoted).to_string();
             continue;
         } else if line.starts_with("+++ ") {
             current_file = String::new();
@@ -831,9 +956,8 @@ fn generate_dependency_summary(diff: &str) -> Vec<DependencyEntry> {
             }
 
             let emit = |kind: &str, entries: &mut Vec<DependencyEntry>| {
-                let mut safe_current = current_file.clone();
+                let safe_current = quote_git_path(&current_file);
                 let detail = clean.replace('\t', " ");
-                safe_current = safe_current.replace('\t', " ");
                 entries.push(DependencyEntry {
                     file: safe_current,
                     change: change.to_string(),
@@ -849,7 +973,23 @@ fn generate_dependency_summary(diff: &str) -> Vec<DependencyEntry> {
                 emit("export", &mut entries);
             }
             if re_sig.is_match(clean) {
-                emit("signature", &mut entries);
+                let is_control_flow = {
+                    let s = clean.trim();
+                    s.starts_with("if ") || s.starts_with("if(") ||
+                    s.starts_with("while ") || s.starts_with("while(") ||
+                    s.starts_with("for ") || s.starts_with("for(") ||
+                    s.starts_with("switch ") || s.starts_with("switch(") ||
+                    s.starts_with("catch ") || s.starts_with("catch(") ||
+                    s.starts_with("return ") || s.starts_with("return(") ||
+                    s.starts_with("else ") || s.starts_with("else{") || s.starts_with("else {") ||
+                    s.starts_with("elif ") || s.starts_with("elif(") ||
+                    s.starts_with("gsub(") || s.starts_with("printf ") ||
+                    s.starts_with("printf(") || s.starts_with("print ") ||
+                    s.starts_with("print(")
+                };
+                if !is_control_flow {
+                    emit("signature", &mut entries);
+                }
             }
             if re_schema.is_match(clean) {
                 emit("schema", &mut entries);
@@ -1021,22 +1161,23 @@ fn run_app() -> Result<(), AppError> {
                 .to_string();
 
         // Check for overlap
-        let staged_list_out = run_command_string(
-            &["git", "diff", "--cached", "--name-only", "--", "."],
+        let staged_list_bytes = run_command_bytes(
+            &["git", "diff", "--cached", "--name-only", "-z", "--", "."],
             &repo_root,
-        )
-        .unwrap_or_default();
-        let unstaged_list_out =
-            run_command_string(&["git", "diff", "--name-only", "--", "."], &repo_root)
-                .unwrap_or_default();
+        )?;
+        let unstaged_list_bytes =
+            run_command_bytes(&["git", "diff", "--name-only", "-z", "--", "."], &repo_root)?;
+
+        let staged_list_out = String::from_utf8_lossy(&staged_list_bytes);
+        let unstaged_list_out = String::from_utf8_lossy(&unstaged_list_bytes);
 
         let staged_set: HashSet<&str> = staged_list_out
-            .lines()
+            .split('\0')
             .map(|l| l.trim())
             .filter(|l| !l.is_empty())
             .collect();
         let unstaged_set: HashSet<&str> = unstaged_list_out
-            .lines()
+            .split('\0')
             .map(|l| l.trim())
             .filter(|l| !l.is_empty())
             .collect();
@@ -1071,26 +1212,26 @@ fn run_app() -> Result<(), AppError> {
     });
 
     // 1. Gather all name-status changes globally
-    let global_name_status = if mode != "none" {
-        git_run_diff_string(mode, &selected_ref, &["--name-status"], None, &repo_root)?
+    let global_name_status_bytes = if mode != "none" {
+        git_run_diff_bytes(mode, &selected_ref, &["--name-status", "-z"], None, &repo_root)?
     } else {
-        String::new()
+        Vec::new()
     };
-    let name_status_entries = parse_name_status(&global_name_status);
+    let name_status_entries = parse_name_status_z(&global_name_status_bytes);
 
     // 2. Gather all numstat entries globally
-    let global_numstat = if mode != "none" {
-        git_run_diff_string(mode, &selected_ref, &["--numstat"], None, &repo_root)?
+    let global_numstat_bytes = if mode != "none" {
+        git_run_diff_bytes(mode, &selected_ref, &["--numstat", "-z"], None, &repo_root)?
     } else {
-        String::new()
+        Vec::new()
     };
-    let numstat_entries = parse_numstat(&global_numstat);
+    let numstat_entries = parse_numstat_z(&global_numstat_bytes);
 
     // 3. Gather untracked files count/details
     let mut files_changed_str = "0 files, 0 insertions(+), 0 deletions(-)".to_string();
     if mode != "none" {
-        let total_add: usize = numstat_entries.iter().map(|e| e.add).sum();
-        let total_del: usize = numstat_entries.iter().map(|e| e.del).sum();
+        let total_add: usize = numstat_entries.iter().map(|e| e.add.parse::<usize>().unwrap_or(0)).sum();
+        let total_del: usize = numstat_entries.iter().map(|e| e.del.parse::<usize>().unwrap_or(0)).sum();
         files_changed_str = format!(
             "{} files, {} insertions(+), {} deletions(-)",
             name_status_entries.len(),
@@ -1102,14 +1243,16 @@ fn run_app() -> Result<(), AppError> {
     // 4. Calculate top-churn (top 5 files by total add+del)
     let mut churn_list = Vec::new();
     for entry in &numstat_entries {
-        let total = entry.add + entry.del;
-        churn_list.push((total, entry.path_spec.clone(), entry.add, entry.del));
+        let add_val = entry.add.parse::<usize>().unwrap_or(0);
+        let del_val = entry.del.parse::<usize>().unwrap_or(0);
+        let total = add_val + del_val;
+        churn_list.push((total, entry.path_spec.clone(), entry.add.clone(), entry.del.clone()));
     }
     churn_list.sort_by(|a, b| b.0.cmp(&a.0)); // descending
     let top_churn_entries: Vec<String> = churn_list
         .iter()
         .take(5)
-        .map(|item| format!("{} (+{}/-{})", item.1, item.2, item.3))
+        .map(|item| format!("{} (+{}/-{})", quote_git_path(&item.1), item.2, item.3))
         .collect();
     let top_churn_files = if top_churn_entries.is_empty() {
         "none".to_string()
@@ -1148,7 +1291,11 @@ fn run_app() -> Result<(), AppError> {
     let mut current_file_in_diff = String::new();
     for line in global_diff.lines() {
         if let Some(stripped) = line.strip_prefix("+++ b/") {
-            current_file_in_diff = stripped.to_string();
+            current_file_in_diff = unquote_git_path(stripped);
+            continue;
+        } else if let Some(stripped) = line.strip_prefix("+++ \"b/") {
+            let unquoted = unquote_git_path(&format!("\"{}", stripped));
+            current_file_in_diff = unquoted.strip_prefix("b/").unwrap_or(&unquoted).to_string();
             continue;
         } else if line.starts_with("+++ ") {
             current_file_in_diff = String::new();
@@ -1186,14 +1333,14 @@ fn run_app() -> Result<(), AppError> {
             }
         }
     }
-    let mut content_risk_vec: Vec<String> = content_risk_files.into_iter().collect();
-    content_risk_vec.sort();
+    let mut content_risk_vec_raw: Vec<String> = content_risk_files.into_iter().collect();
+    content_risk_vec_raw.sort();
 
     // Map files to path risk status
-    let mut path_risk_files = Vec::new();
-    let mut generated_files_list = Vec::new();
-    let mut lock_files_list = Vec::new();
-    let mut high_risk_candidates_set = HashSet::new();
+    let mut path_risk_files_raw = Vec::new();
+    let mut generated_files_list_raw = Vec::new();
+    let mut lock_files_list_raw = Vec::new();
+    let mut high_risk_candidates_set_raw = HashSet::new();
 
     for entry in &name_status_entries {
         let path = &entry.path;
@@ -1215,13 +1362,13 @@ fn run_app() -> Result<(), AppError> {
             }
         }
         if is_path_risk {
-            path_risk_files.push(path.clone());
-            high_risk_candidates_set.insert(path.clone());
+            path_risk_files_raw.push(path.clone());
+            high_risk_candidates_set_raw.insert(path.clone());
         }
 
         // Content risk also promotes to high-risk candidate
-        if content_risk_vec.contains(path) {
-            high_risk_candidates_set.insert(path.clone());
+        if content_risk_vec_raw.contains(path) {
+            high_risk_candidates_set_raw.insert(path.clone());
         }
 
         // Generated check
@@ -1233,21 +1380,30 @@ fn run_app() -> Result<(), AppError> {
             }
         }
         if is_gen {
-            generated_files_list.push(path.clone());
+            generated_files_list_raw.push(path.clone());
         }
 
         // Lockfile check
         if lockfile_regex.is_match(path) {
-            lock_files_list.push(path.clone());
+            lock_files_list_raw.push(path.clone());
         }
     }
 
-    path_risk_files.sort();
-    generated_files_list.sort();
-    lock_files_list.sort();
+    path_risk_files_raw.sort();
+    generated_files_list_raw.sort();
+    lock_files_list_raw.sort();
 
-    let mut high_risk_candidates_vec: Vec<String> = high_risk_candidates_set.into_iter().collect();
+    let mut high_risk_candidates_vec_raw: Vec<String> = high_risk_candidates_set_raw.into_iter().collect();
+    high_risk_candidates_vec_raw.sort();
+
+    // Create display quoted lists
+    let _path_risk_files: Vec<String> = path_risk_files_raw.iter().map(|p| quote_git_path(p)).collect();
+    let generated_files_list: Vec<String> = generated_files_list_raw.iter().map(|p| quote_git_path(p)).collect();
+    let lock_files_list: Vec<String> = lock_files_list_raw.iter().map(|p| quote_git_path(p)).collect();
+    let mut high_risk_candidates_vec: Vec<String> = high_risk_candidates_vec_raw.iter().map(|p| quote_git_path(p)).collect();
     high_risk_candidates_vec.sort();
+    let mut content_risk_vec: Vec<String> = content_risk_vec_raw.iter().map(|p| quote_git_path(p)).collect();
+    content_risk_vec.sort();
 
     let high_risk_candidates = if high_risk_candidates_vec.is_empty() {
         "none".to_string()
@@ -1334,14 +1490,13 @@ fn run_app() -> Result<(), AppError> {
     // 6. Prints git status
     println!("## Status");
     if let Some(ref p) = args.path {
-        let status_out = run_command_string(&["git", "status", "--short", "--", p], &repo_root)
-            .unwrap_or_default();
+        let status_out = run_command_string(&["git", "status", "--short", "--", p], &repo_root)?;
         print!("{}", status_out);
     } else if args.group.is_some() {
         println!("group-specific status is emitted after group resolution");
     } else {
         let status_out =
-            run_command_string(&["git", "status", "--short"], &repo_root).unwrap_or_default();
+            run_command_string(&["git", "status", "--short"], &repo_root)?;
         print!("{}", status_out);
     }
     println!();
@@ -1363,6 +1518,8 @@ fn run_app() -> Result<(), AppError> {
         let path = &entry.path;
         let old_path = entry.old_path.as_deref();
 
+        let display_path = quote_git_path(path);
+
         let (add, del) = lookup_numstat(&numstat_entries, path, old_path);
 
         // Single file diff byte size (calculating raw bytes to prevent UTF-8 loss)
@@ -1370,26 +1527,28 @@ fn run_app() -> Result<(), AppError> {
             git_run_diff_bytes(mode, &selected_ref, &[], Some(path), &repo_root)?;
         let file_diff_bytes = file_diff_bytes_vec.len();
 
-        let top_component = group_component_for_path(path);
+        let top_component = group_component_for_path(&display_path);
         let safe_component = safe_group_component(&top_component);
 
         let mut risk_tags = Vec::new();
         let group_id;
 
         // Group assignment logic
-        if high_risk_candidates_vec.contains(path) {
+        if high_risk_candidates_vec_raw.contains(path) {
             risk_tags.push("high-risk".to_string());
             group_id = format!("high-risk-{}", safe_component);
-            group_risk_map.insert(group_id.clone(), "high".to_string());
-            group_reason_map.insert(group_id.clone(), "path-or-content-risk".to_string());
-        } else if generated_files_list.contains(path) {
+            if !group_risk_map.contains_key(&group_id) {
+                group_risk_map.insert(group_id.clone(), "high".to_string());
+                group_reason_map.insert(group_id.clone(), "path-or-content-risk".to_string());
+            }
+        } else if generated_files_list_raw.contains(path) {
             risk_tags.push("generated-like".to_string());
             group_id = format!("consistency-{}", safe_component);
             if group_risk_map.get(&group_id).map(|s| s.as_str()) != Some("high") {
                 group_risk_map.insert(group_id.clone(), "consistency".to_string());
                 group_reason_map.insert(group_id.clone(), "generated-like".to_string());
             }
-        } else if lock_files_list.contains(path) {
+        } else if lock_files_list_raw.contains(path) {
             risk_tags.push("lockfile".to_string());
             group_id = "consistency-lockfiles".to_string();
             if group_risk_map.get(&group_id).map(|s| s.as_str()) != Some("high") {
@@ -1405,7 +1564,7 @@ fn run_app() -> Result<(), AppError> {
             }
         }
 
-        let quoted_path = shell_quote(path);
+        let quoted_path = shell_quote(&display_path);
         let review_command = match mode {
             "staged" => format!("git diff --cached -- {}", quoted_path),
             "unstaged" => format!("git diff -- {}", quoted_path),
@@ -1428,18 +1587,18 @@ fn run_app() -> Result<(), AppError> {
         group_files_map
             .entry(group_id.clone())
             .or_default()
-            .push(path.clone());
+            .push(display_path.clone());
         group_commands_map
             .entry(group_id.clone())
             .or_default()
             .push(review_command.clone());
 
         manifest_units.push(ManifestUnit {
-            unit_id: format!("file:{}", path),
-            file_path: path.clone(),
+            unit_id: format!("file:{}", display_path),
+            file_path: display_path.clone(),
             status: entry.status.clone(),
-            additions: add,
-            deletions: del,
+            additions: add.parse::<usize>().unwrap_or(0),
+            deletions: del.parse::<usize>().unwrap_or(0),
             diff_bytes: file_diff_bytes,
             risk_tags,
             group_id,
@@ -1489,7 +1648,7 @@ fn run_app() -> Result<(), AppError> {
             &selected_ref,
             max_diff_bytes,
             &repo_root,
-        );
+        )?;
         return Ok(());
     }
 
@@ -1500,11 +1659,22 @@ fn run_app() -> Result<(), AppError> {
     println!();
 
     println!("## File List");
-    print!("{}", global_name_status);
+    for entry in &name_status_entries {
+        let disp_path = quote_git_path(&entry.path);
+        if let Some(ref old) = entry.old_path {
+            let disp_old = quote_git_path(old);
+            println!("{}\t{}\t{}", entry.status, disp_old, disp_path);
+        } else {
+            println!("{}\t{}", entry.status, disp_path);
+        }
+    }
     println!();
 
     println!("## Numstat");
-    print!("{}", global_numstat);
+    for entry in &numstat_entries {
+        let disp_spec = quote_git_path(&entry.path_spec);
+        println!("{}\t{}\t{}", entry.add, entry.del, disp_spec);
+    }
     println!();
 
     if let Some(ref req_path) = args.path {
@@ -1537,8 +1707,9 @@ fn run_app() -> Result<(), AppError> {
         println!("review_command: {}", r_cmd);
         println!("context_command: {}", c_cmd);
 
+        let raw_req_path = unquote_git_path(req_path);
         let file_diff_bytes =
-            git_run_diff_bytes(mode, &selected_ref, &[], Some(req_path), &repo_root)?;
+            git_run_diff_bytes(mode, &selected_ref, &[], Some(&raw_req_path), &repo_root)?;
         if file_diff_bytes.is_empty() {
             println!();
             println!("No diff available for requested path in the selected diff source.");
@@ -1724,8 +1895,9 @@ fn run_app() -> Result<(), AppError> {
     println!("parent_group_id\tunit_id\tpath\tsplit_kind\tdiff_bytes\thunk_header\treview_command");
     if !split_files.is_empty() {
         for (parent_group, path, r_cmd) in &split_files {
+            let raw_path = unquote_git_path(path);
             let f_diff_bytes =
-                git_run_diff_bytes(mode, &selected_ref, &[], Some(path), &repo_root)?;
+                git_run_diff_bytes(mode, &selected_ref, &[], Some(&raw_path), &repo_root)?;
             let f_diff = String::from_utf8_lossy(&f_diff_bytes);
             let hunks = split_diff_into_hunks(&f_diff);
             if hunks.is_empty() {
@@ -1761,8 +1933,9 @@ fn run_app() -> Result<(), AppError> {
     println!("## Split Unit Diff Preview");
     if !split_files.is_empty() {
         for (parent_group, path, _) in &split_files {
+            let raw_path = unquote_git_path(path);
             let f_diff_bytes =
-                git_run_diff_bytes(mode, &selected_ref, &[], Some(path), &repo_root)?;
+                git_run_diff_bytes(mode, &selected_ref, &[], Some(&raw_path), &repo_root)?;
             let f_diff = String::from_utf8_lossy(&f_diff_bytes);
             let hunks = split_diff_into_hunks(&f_diff);
             for (h_idx, hunk) in hunks.iter().enumerate() {
@@ -2045,8 +2218,8 @@ fn run_app() -> Result<(), AppError> {
         for query in &custom_queries {
             let safe_query = query.replace('\t', " ");
 
-            // Execute git grep
-            let mut grep_args = vec!["grep", "-n", "-I", "-E", "-e", query];
+            // Execute git grep with NUL delimiters for path and line numbers
+            let mut grep_args = vec!["grep", "-n", "-z", "-I", "-E", "-e", query];
 
             let ref_expr;
             if mode == "staged" {
@@ -2063,53 +2236,59 @@ fn run_app() -> Result<(), AppError> {
             cmd.current_dir(&repo_root);
 
             let mut count = 0;
-            if let Ok(out) = cmd.output() {
-                let stdout_str = String::from_utf8_lossy(&out.stdout);
-
-                for line in stdout_str.lines() {
-                    if count >= context_query_limit {
-                        break;
-                    }
-                    // parse format safely using splitn (protecting colon-rich matching text)
-                    if mode == "branch" && line.starts_with("HEAD:") {
-                        let parts: Vec<&str> = line.splitn(4, ':').collect();
-                        if parts.len() >= 4 {
-                            let file = parts[1];
-                            let line_num = parts[2].parse::<usize>().unwrap_or(0);
-                            let match_text = parts[3];
-
-                            if file == ".pre-commit-review/context-queries" {
+            match cmd.output() {
+                Ok(out) => {
+                    let status_code = out.status.code();
+                    if out.status.success() || status_code == Some(1) {
+                        for line_bytes in out.stdout.split(|&b| b == b'\n') {
+                            if line_bytes.is_empty() {
                                 continue;
                             }
+                            if count >= context_query_limit {
+                                break;
+                            }
+                            if let Some(first_nul) = line_bytes.iter().position(|&b| b == 0) {
+                                let file_bytes = &line_bytes[..first_nul];
+                                let rest = &line_bytes[first_nul + 1..];
+                                if let Some(second_nul) = rest.iter().position(|&b| b == 0) {
+                                    let line_num_bytes = &rest[..second_nul];
+                                    let match_bytes = &rest[second_nul + 1..];
 
-                            let safe_file = file.replace('\t', " ");
-                            let safe_match_text = match_text.replace('\t', " ");
-                            println!(
-                                "{}\t{}\t{}\t{}",
-                                safe_query, safe_file, line_num, safe_match_text
-                            );
-                            count += 1;
+                                    let file_str = String::from_utf8_lossy(file_bytes);
+                                    let line_num_str = String::from_utf8_lossy(line_num_bytes);
+                                    let match_str = String::from_utf8_lossy(match_bytes);
+
+                                    let file_parsed = if mode == "branch" && file_str.starts_with("HEAD:") {
+                                        file_str.strip_prefix("HEAD:").unwrap().to_string()
+                                    } else {
+                                        file_str.into_owned()
+                                    };
+
+                                    if file_parsed == ".pre-commit-review/context-queries" {
+                                        continue;
+                                    }
+
+                                    let line_num = line_num_str.parse::<usize>().unwrap_or(0);
+                                    let safe_file = file_parsed.replace('\t', " ");
+                                    let safe_match_text = match_str.replace('\t', " ");
+
+                                    println!(
+                                        "{}\t{}\t{}\t{}",
+                                        safe_query, safe_file, line_num, safe_match_text
+                                    );
+                                    count += 1;
+                                }
+                            }
                         }
                     } else {
-                        let parts: Vec<&str> = line.splitn(3, ':').collect();
-                        if parts.len() >= 3 {
-                            let file = parts[0];
-                            let line_num = parts[1].parse::<usize>().unwrap_or(0);
-                            let match_text = parts[2];
-
-                            if file == ".pre-commit-review/context-queries" {
-                                continue;
-                            }
-
-                            let safe_file = file.replace('\t', " ");
-                            let safe_match_text = match_text.replace('\t', " ");
-                            println!(
-                                "{}\t{}\t{}\t{}",
-                                safe_query, safe_file, line_num, safe_match_text
-                            );
-                            count += 1;
-                        }
+                        return Err(AppError::GitError {
+                            cmd: format!("git grep {:?}", grep_args),
+                            details: String::from_utf8_lossy(&out.stderr).into_owned(),
+                        });
                     }
+                }
+                Err(e) => {
+                    return Err(AppError::IoError(e));
                 }
             }
 
@@ -2145,22 +2324,23 @@ fn run_app() -> Result<(), AppError> {
 
     // Staged Files with Unstaged Changes Too
     if mode == "staged" && unstaged_avail {
-        let staged_list_out = run_command_string(
-            &["git", "diff", "--cached", "--name-only", "--", "."],
+        let staged_list_bytes = run_command_bytes(
+            &["git", "diff", "--cached", "--name-only", "-z", "--", "."],
             &repo_root,
-        )
-        .unwrap_or_default();
-        let unstaged_list_out =
-            run_command_string(&["git", "diff", "--name-only", "--", "."], &repo_root)
-                .unwrap_or_default();
+        )?;
+        let unstaged_list_bytes =
+            run_command_bytes(&["git", "diff", "--name-only", "-z", "--", "."], &repo_root)?;
+
+        let staged_list_out = String::from_utf8_lossy(&staged_list_bytes);
+        let unstaged_list_out = String::from_utf8_lossy(&unstaged_list_bytes);
 
         let staged_set: HashSet<&str> = staged_list_out
-            .lines()
+            .split('\0')
             .map(|l| l.trim())
             .filter(|l| !l.is_empty())
             .collect();
         let unstaged_set: HashSet<&str> = unstaged_list_out
-            .lines()
+            .split('\0')
             .map(|l| l.trim())
             .filter(|l| !l.is_empty())
             .collect();
@@ -2189,7 +2369,7 @@ fn emit_requested_group(
     selected_ref: &str,
     max_diff_bytes: usize,
     repo_root: &str,
-) {
+) -> Result<(), AppError> {
     let group = match groups.iter().find(|g| g.group_id == req_grp) {
         Some(g) => g,
         None => {
@@ -2197,7 +2377,7 @@ fn emit_requested_group(
             println!("group_id: {}", req_grp);
             println!();
             println!("No review group found for requested group in the selected diff source.");
-            return;
+            return Ok(());
         }
     };
 
@@ -2254,8 +2434,8 @@ fn emit_requested_group(
                 Some(u) => u,
                 None => continue,
             };
-            let f_diff_bytes =
-                git_run_diff_bytes(mode, selected_ref, &[], Some(f), repo_root).unwrap_or_default();
+            let raw_f = unquote_git_path(f);
+            let f_diff_bytes = git_run_diff_bytes(mode, selected_ref, &[], Some(&raw_f), repo_root)?;
             let f_diff = String::from_utf8_lossy(&f_diff_bytes);
             let hunks = split_diff_into_hunks(&f_diff);
             if hunks.is_empty() {
@@ -2282,8 +2462,8 @@ fn emit_requested_group(
         println!();
         println!("## Split Unit Diff Preview");
         for f in &group.files {
-            let f_diff_bytes =
-                git_run_diff_bytes(mode, selected_ref, &[], Some(f), repo_root).unwrap_or_default();
+            let raw_f = unquote_git_path(f);
+            let f_diff_bytes = git_run_diff_bytes(mode, selected_ref, &[], Some(&raw_f), repo_root)?;
             let f_diff = String::from_utf8_lossy(&f_diff_bytes);
             let hunks = split_diff_into_hunks(&f_diff);
             for (h_idx, hunk) in hunks.iter().enumerate() {
@@ -2294,23 +2474,24 @@ fn emit_requested_group(
                 println!("```");
             }
         }
-        return;
+        return Ok(());
     }
 
     let mut group_diff = String::new();
     for f in &group.files {
-        let f_diff_bytes =
-            git_run_diff_bytes(mode, selected_ref, &[], Some(f), repo_root).unwrap_or_default();
+        let raw_f = unquote_git_path(f);
+        let f_diff_bytes = git_run_diff_bytes(mode, selected_ref, &[], Some(&raw_f), repo_root)?;
         group_diff.push_str(&String::from_utf8_lossy(&f_diff_bytes));
     }
 
     if group_diff.is_empty() {
         println!();
         println!("No diff available for requested group in the selected diff source.");
-        return;
+        return Ok(());
     }
 
     emit_diff_limited(&group_diff, max_diff_bytes);
+    Ok(())
 }
 
 fn main() {
@@ -2322,20 +2503,22 @@ fn main() {
                 std::process::exit(2);
             }
             AppError::GitError { cmd, details } => {
-                // If it is a GitError, print details and delegate to fail_no_repo()
                 eprintln!(
-                    "collect_diff_context: GitError under cmd: {}\nDetails: {}",
+                    "collect_diff_context: git command failed\ncmd: {}\n{}",
                     cmd, details
                 );
-                fail_no_repo();
+                std::process::exit(1);
             }
             AppError::IoError(e) => {
-                eprintln!("collect_diff_context: IoError: {}", e);
-                fail_no_repo();
+                eprintln!("collect_diff_context: I/O error: {}", e);
+                std::process::exit(1);
             }
             AppError::GitMissing { details, cmd, cwd } => {
-                eprintln!("collect_diff_context: Git executable missing or invalid cwd: {}\nAttempted cmd: {}\nCwd: {}", details, cmd, cwd);
-                std::process::exit(1);
+                eprintln!(
+                    "collect_diff_context: git missing: {}\ncmd: {}\ncwd: {}",
+                    details, cmd, cwd
+                );
+                std::process::exit(127);
             }
         },
     }

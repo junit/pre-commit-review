@@ -129,7 +129,16 @@
 
 默认 diff 输出预算是 200KB。可通过 `PRE_COMMIT_REVIEW_MAX_DIFF_BYTES` 覆盖；当当前对话上下文已经很大时应调低，只有在确认输出完整 diff 安全时才设为 `0`。
 
-Review group 预算默认目标值为 120KB，硬上限为 160KB。可通过 `PRE_COMMIT_REVIEW_GROUP_TARGET_BYTES` 和 `PRE_COMMIT_REVIEW_GROUP_HARD_BYTES` 覆盖；超过硬上限的 group 会标记为 `split-required`。
+Review group 预算默认目标值为 120KB，硬上限为 160KB。可通过 `PRE_COMMIT_REVIEW_GROUP_TARGET_BYTES` and `PRE_COMMIT_REVIEW_GROUP_HARD_BYTES` 覆盖；超过硬上限的 group 会标记为 `split-required`。
+
+### 灰度发布与多实现控制（Rollout & Multi-Implementation Controls）
+入口包装脚本 `scripts/collect_diff_context.sh` 支持多种运行模式，以确保版本过渡期的安全：
+- `PRE_COMMIT_REVIEW_HELPER_IMPL`: 指定底层调用的辅助脚本实现模式。
+  - `rust` (默认值): 优先执行编译后的 Rust CLI 二进制程序。如果执行失败，会在 `stderr` 打印警告，并**自动无缝降级执行**旧版 Shell 脚本 `collect_diff_context.legacy.sh`。
+  - `legacy` 或 `shell`: 强制直接运行旧版 Shell 脚本。
+  - `shadow`: 双路执行模式。同时运行旧版 Shell 脚本和 Rust 二进制程序，比对它们的标准输出，将差异记录至 `/tmp/collect_diff_context_shadow_diff.log` 中。此模式下返回旧版 Shell 的结果以绝对保障生产安全。
+- `PRE_COMMIT_REVIEW_SHADOW_MODE`: 设为 `1` 时强制开启上述 `shadow` 双路比对模式。
+- `PRE_COMMIT_REVIEW_DISABLE_FALLBACK`: 设为 `1` 时禁用 Rust 失败降级机制，直接透传 Rust 程序的异常和退出码（用于测试与 CI）。
 
 当全局 diff 被截断时，可用 `scripts/collect_diff_context.sh --source <staged|unstaged|branch> --group <group_id>` 只输出一个未超硬预算 review group 的 diff。需要更窄上下文或 group 已拆分时，用 `--path <path>` 做文件级补取。helper 输出的 `context_command` 会包含 `--source`，确保后续取上下文时仍固定在原始 diff source；`split-required` group 必须通过 split suggestions 审查，不能作为一个整体 group 审查。
 

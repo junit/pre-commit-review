@@ -131,6 +131,15 @@ The default diff output budget is 200KB. Override it with `PRE_COMMIT_REVIEW_MAX
 
 Review group budgets default to 120KB target and 160KB hard limit. Override them with `PRE_COMMIT_REVIEW_GROUP_TARGET_BYTES` and `PRE_COMMIT_REVIEW_GROUP_HARD_BYTES`; groups over the hard limit are marked `split-required`.
 
+### Rollout and Multi-Implementation Controls
+The entrypoint wrapper `scripts/collect_diff_context.sh` supports multiple execution modes for transition and safety:
+- `PRE_COMMIT_REVIEW_HELPER_IMPL`: Specifies the helper implementation mode.
+  - `rust` (default): Executes the compiled Rust CLI binary. If it fails, prints a warning to `stderr` and gracefully falls back to the legacy script `collect_diff_context.legacy.sh`.
+  - `legacy` or `shell`: Forces execution of the legacy Shell script.
+  - `shadow`: Runs both the legacy Shell script and the Rust binary, compares their stdout, logs any differences to `/tmp/collect_diff_context_shadow_diff.log`, and returns the legacy script's stdout to ensure safety.
+- `PRE_COMMIT_REVIEW_SHADOW_MODE`: If set to `1`, forces Shadow Mode comparison.
+- `PRE_COMMIT_REVIEW_DISABLE_FALLBACK`: If set to `1`, disables the legacy script fallback, strictly propagating Rust CLI process failures.
+
 Use `scripts/collect_diff_context.sh --source <staged|unstaged|branch> --group <group_id>` to retrieve one in-budget review group's diff after a global diff is truncated. Use `--path <path>` for file-level follow-up when a group needs narrower context or has been split. Helper-emitted `context_command` values include `--source` so follow-up retrieval stays pinned to the original diff source; `split-required` groups must be reviewed through split suggestions instead of as one group.
 
 Project-specific risk hints can live in `.pre-commit-review/risk-paths` and `.pre-commit-review/risk-content`. Each non-empty, non-comment line is an extended regular expression; matches promote files into high-risk ordering but do not change coverage requirements.
