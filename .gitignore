@@ -19,3 +19,7 @@
 # Python cache
 __pycache__/
 *.pyc
+
+# Rust
+target/
+*.rs.bk
