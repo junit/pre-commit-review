@@ -91,3 +91,20 @@ Use `Reducer Finalization Template` for the final synthesis; do not produce the 
 Set `Review scope` to `full review` only when coverage validation is empty. If any material unit remains unreviewed, use partial review wording and explain the coverage gap.
 
 Unreviewed high-risk candidates make commit-readiness `DO_NOT_COMMIT`; advisory fallback must not present a commit-safe verdict.
+
+## Review Limits
+
+A review limit is the human-readable companion to a coverage gap, not a second coverage ledger. The `manifest_units - reviewed_units` computation above is the single source of truth for what was not reviewed; this section governs how each gap is surfaced to the developer so it cannot be quietly dropped.
+
+For each unit that coverage validation reports as unreviewed, or each area you could not fully inspect (truncated diff, generated output without source, binary asset, missing screenshot, runtime state you cannot observe), name it in `Unreviewed changes` and give:
+
+- **Scope:** the file, group, generated artifact, or runtime state not fully inspected.
+- **Reason:** why full inspection was impossible — truncation, missing source, binary/unreadable content, no repository or helper access, or a state only visible at runtime.
+- **Impact if material:** what risk this gap could hide, scoped to what that unit actually does (a trust boundary, a migration, a shared contract).
+- **Unblock:** the concrete artifact that would close the gap — a smaller diff slice via `context_command`, the generating source/config, a screenshot, a test run, or runtime output.
+
+Do not enumerate a review limit without reconciling it against coverage validation first. A limit that names a unit already recorded as reviewed is stale; a material unit missing from both the coverage ledger and the limit list is the failure mode this section exists to prevent.
+
+Limits are blocking when the gap covers a high-risk unit that could change the verdict; this mirrors the rule above, so do not re-derive the verdict from the limit prose. Cosmetic or low-risk areas not fully inspected stay non-blocking but still appear in `Unreviewed changes` so the developer knows they exist.
+
+Do not enter the Tiny Diff path when a review limit exists. Any unreviewed area requires the Default Developer Review or coverage-led format with the Partial Review Warning, because a commit decision made over an unbounded gap is not a tiny decision.

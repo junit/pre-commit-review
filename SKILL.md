@@ -13,6 +13,7 @@ Review a Git diff as a commit-quality gate. Build a clear model of what changed,
 - Optimize for developer actionability, not visual completeness. Every output element must help the developer decide: can I commit, what must I fix, what should I test, or what risk should I watch.
 - After the title, put the verdict first, then a one-sentence action summary in the selected output language. Example: `Conclusion: Safe to commit after running the updated auth test.` or `结论：先修复空值分支，再提交。`
 - Do not pretend to inspect local changes. If no repository or shell access is available, review only the diff or code the user supplied and state that boundary in `Diff source` and `Review scope`.
+- Choose `Review scope` by what was actually reviewed, not by what you could not observe. `Full review` means every hunk of the supplied diff was inspected — this holds even when you have no repository access, no caller context, and no runtime state. `Partial review` is reserved for cases where part of the diff itself could not be reviewed (truncation, binary content, missing source, unreadable generated output). Lacking access to files outside the diff is a normal blind spot, not a partial review: surface it under `Impact Scope` or `Unreviewed changes` with whether it affects the verdict, but keep `Review scope` as `full` whenever the whole diff was read. The only exception is a review with no before/after diff at all, which is partial by definition.
 - Prefer the exact user-provided diff when the user pasted or uploaded one. Do not replace it with local Git output unless the user asks.
 - When repository access is available, prefer running the bundled helper script `scripts/collect_diff_context.sh` from this skill package before composing manual Git commands. Do not substitute a similarly named script from the target repository. Use the helper output as the source of truth for `Diff source`, `Review scope`, `Change scale`, changed files, staged/unstaged notes, untracked-file notes, and review boundaries. For very large diffs, use `PRE_COMMIT_REVIEW_MAX_DIFF_BYTES=0` only when printing the full diff is safe.
 - Treat `PRE_COMMIT_REVIEW_MAX_DIFF_BYTES` as an output budget, not a safety boundary; lower it when conversation context is crowded, and raise it or set it to `0` only when printing the larger diff is safe.
@@ -23,7 +24,7 @@ Review a Git diff as a commit-quality gate. Build a clear model of what changed,
 - The helper may read optional project-level risk hints from `.pre-commit-review/risk-paths` and `.pre-commit-review/risk-content`; each non-empty, non-comment line is an extended regular expression used only to promote matching files into high-risk ordering.
 - Remember that untracked files are not included in `git diff`; review them only when they are staged, provided by the user, or otherwise readable.
 - When flagging secrets, credentials, tokens, connection strings, or private hosts, never reproduce the full value. Show the file, line if known, secret type, and a redacted preview only.
-- Select the output language in this order: first, obey any explicit user request such as `use English` or `用中文输出`; otherwise, use the dominant language of the user's latest request. If the latest request is mainly Chinese, render the review in Chinese. If it is mainly English, render the review in English. Only ask for clarification when the request is genuinely mixed-language and no dominant language is clear. Preserve only the verdict tokens `SAFE_TO_COMMIT`, `SAFE_TO_COMMIT_WITH_NOTES`, and `DO_NOT_COMMIT` in English. For non-English output, translate headings, field labels, and connective prose naturally. Do not leave labels such as `Diff source`, `Review scope`, `Priority Findings`, or `Commit Guidance` in English unless the user asked for English output.
+- Select the output language in this order: first, obey any explicit user request such as `use English` or `用中文输出`. Second, if the latest request consists solely of a slash command (e.g., `/pre-commit-review`), fall back to the dominant language of the conversation history or the user's global settings/rules. Otherwise, use the dominant language of the user's latest request. If the detected language is mainly Chinese, render the review in Chinese; if English, in English. Only ask for clarification when the request is genuinely mixed-language and no dominant language is clear. Preserve only the verdict tokens `SAFE_TO_COMMIT`, `SAFE_TO_COMMIT_WITH_NOTES`, and `DO_NOT_COMMIT` in English. For non-English output, translate headings, field labels, and connective prose naturally. Do not leave labels such as `Diff source`, `Review scope`, `Priority Findings`, or `Commit Guidance` in English unless the user asked for English output.
 
 ## Input Resolution
 
@@ -178,6 +179,8 @@ Apply these only when relevant to the diff:
 
 Produce exactly one verdict token: `SAFE_TO_COMMIT`, `SAFE_TO_COMMIT_WITH_NOTES`, or `DO_NOT_COMMIT`.
 
+Load `references/review-verdict-rules.md` to access the detailed Blocker/Non-blocking matrices and the Output Quality Gate before selecting a verdict.
+
 ### Decision guide
 
 - **SAFE_TO_COMMIT**: No issues found within the reviewed scope. Safe to commit now.
@@ -196,11 +199,33 @@ Use `DO_NOT_COMMIT` for blocking issues including:
 
 For `DO_NOT_COMMIT`, list each blocking issue with file:line when available and what to fix. For `SAFE_TO_COMMIT_WITH_NOTES`, list non-blocking observations. Review limitations can justify `SAFE_TO_COMMIT_WITH_NOTES`; risky unreviewed areas can justify `DO_NOT_COMMIT`.
 
+### Blocker / Non-blocking Matrix
+
+This is a quick-reference restatement of the rules above — when a finding's category is ambiguous, scan the row rather than re-deriving from prose. It does not add new blocking conditions or override the decision guide.
+
+| Category | Default blocking? | Block when | Note (non-blocking) when |
+|---|---|---|---|
+| Secret/credential | Yes | Live value in source/log/error; private host bypassing env config | Placeholder or obviously fake fixture value |
+| Security (auth/injection/XSS/deserialization) | Yes | Reachable trust boundary, missing auth on a real entry point | Hardened path, defense-in-depth suggestion |
+| Correctness/build/runtime | Yes | Will be called and can throw, crash, or misbehave | Defensive edge case in uncalled/new code without callers yet |
+| Data/migration | Yes | Irreversible, non-idempotent, or rollback-incompatible | Reversible, guarded by feature flag, additive column |
+| Compatibility | Yes | Breaks a public API/contract/serialization without protection | Internal-only change, callers updated in same diff |
+| Dependency/lockfile | Context | Untrusted source, license risk, lockfile↔source mismatch | Patch/minor bump, reproducible lock |
+| Performance/cost | Context | N+1 or unbounded loop on a hot path that can move a real metric | Off hot path, negligible at expected scale |
+| Test gap | Context | High-risk logic with no test and no manual substitute | Low-risk path already covered elsewhere |
+| Review scope | Context | High-risk unit unreviewed and could change the verdict | Cosmetic/low-risk area not reviewed, clearly bounded |
+| Readability/naming/comment | No | — | Always non-blocking unless it obscures a real bug |
+| Doc/example | No | — | Always non-blocking unless it misleads users |
+
+Rows marked **Context** flip to blocking only when the concrete evidence meets the *Block when* condition; otherwise treat as a note.
+
 ## Output Format
 
 Default to the compact developer review. Optimize for fast scanability: verdict, action, findings, then supporting detail. Use tables only for summaries and comparisons. Use bullet findings when evidence, impact, and fix details matter. Do not use numeric health scores, health bars, distribution charts, or ASCII verdict boxes by default.
 
 Use exactly one verdict token in the entire review: the top-level `VERDICT`. Do not repeat verdict tokens inside findings. Do not add routine per-finding note labels; non-blocking status is already implied by `SAFE_TO_COMMIT_WITH_NOTES`, the finding icon, and Commit Guidance. For findings that block commit, include a conditional blocking-rationale line (`Blocking reason:` / `阻塞原因：`).
+
+Load `references/review-risk-taxonomy.md` to access the exact Severity Levels, Statistics Rules, Finding Structure, and Evidence Rules before writing findings.
 
 #### Non-Translatable Verdict Field
 
@@ -256,7 +281,29 @@ The review must be fully monolingual in the selected output language. This means
 
 Do not leave headings or labels in English when the rest of the review is in another language, except for the required `VERDICT` field. Mixed-language headings are a formatting violation.
 
-For expanded localized examples, consult `references/output-examples.md` only when needed. Do not depend on it for the default path.
+Daily Default/Tiny reviews are forbidden from reading `references/output-examples.md` to prevent token bloat. Only consult `references/output-examples.md` when rendering Visual Reviews or when complex issues require deep structural alignment. The per-language template files (`references/output-en.md` and `references/output-zh.md`) must contain mini-examples to prevent structure drift.
+
+#### Placeholder Quality Rules
+
+Every placeholder in the review output must convey concrete information and decision-making utility. The model must not output generic placeholders, boilerplate phrases, or low-information text.
+
+- **Vague placeholders to avoid**: `<一句话原因>`, `<一句话结论>`, `<摘要>`, `<具体下一步>`, `<建议验证>`, `<影响范围>`, `无需额外监控`, `None needed`.
+- **Compound quality placeholders to fulfill**:
+  - `**结论：**` / `**Conclusion:**`: `<short, actionable 1-2 sentence decision summary: whether to commit + primary basis/highest risk + required before-commit action or suggested verification>`
+  - `**验证：**` / `**Verification:**`: `<minimal verification loop: specific command/test name/manual path + scenarios covered + expected result>`
+  - `**证据：**` / `**Evidence:**`: `<shortest direct evidence: diff hunk, surrounding context, test/config/schema/screenshot location; must support the finding, do not copy large blocks>`
+  - `**影响：**` / `**Impact:**`: `<affected object + trigger conditions + failure mode + worst consequence; state whether user visible, data related, or production related>`
+  - `**修复：**` / `**Fix:**`: `<code-level modification direction + boundary conditions to handle + preferred solution>`
+  - `**差异来源：**` / `**Diff source:**`: `<source + exact scope: command/PR/commit range/user-pasted diff; specify staged/unstaged/base branch>`
+  - `**审查范围：**` / `**Review scope:**`: `<full/partial review + covered content + uncovered content + reasons + whether it impacts verdict>`
+  - `**未审查变更：**` / `**Unreviewed changes:**`: `<none | list items: object + reason unreviewed + potential hidden risk + whether it blocks commit/affects verdict>`
+  - `**需要领域确认：**` / `**Domain confirmation needed:**`: `<none | domain + question to confirm + blocking/non-blocking>`
+  - `**监控点：**` / `**Watchpoints:**`: `<metrics/logs/alerts + observation window + expected changes + rollback signals>`
+
+- **Rule for writing "None" / "无"**:
+  1. The dimension must be completely irrelevant, or the diff/context must provide absolute high-confidence proof that no risk exists (e.g. static docs updates).
+  2. Never write "None" or "无" simply because the dimension was not checked or verification context is missing.
+  3. If unchecked, write "Under-verified" / "未充分验证" or list it as a review limitation.
 
 ### Default Developer Review
 
@@ -274,7 +321,7 @@ Apply the same localization rule from the Localization Rule section above: all h
 
 ### Full Visual Mode
 
-Visual mode is justified only when the user asks for a visual report, the review is being shared with a team, or the diff already meets large/high-risk criteria and a matrix materially improves the commit decision. Large/high-risk means roughly 300+ changed lines, 10+ changed files excluding generated, vendored, minified, and lockfile-only files, generated/lockfile-heavy changes, or changes touching security, auth, public APIs, migrations, data correctness, dependencies, config/deployment, concurrency, payment/billing, data deletion, or resource lifecycle. Otherwise use the Tiny Diff or Default Developer Review format and do not mix visual tables into the default path. When visual mode is justified, consult `references/visual-output.md`.
+Visual mode is justified only when the user asks for a visual report, the review is being shared with a team, or the diff already meets large/high-risk criteria and a matrix materially improves the commit decision. Large/high-risk means roughly 300+ changed lines, 10+ changed files excluding generated, vendored, minified, and lockfile-only files, generated/lockfile-heavy changes, or changes touching security, auth, public APIs, migrations, data correctness, dependencies, config/deployment, concurrency, payment/billing, data deletion, or resource lifecycle. Otherwise use the Tiny Diff or Default Developer Review format and do not mix visual tables into the default path. When visual mode is justified, consult `references/visual-output.md` and load `references/visual-review-rules.md` for detailed rules.
 
 Rules for visual mode:
 
