@@ -1,0 +1,55 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "review-plan.schema.json",
+  "title": "ReviewPlan",
+  "description": "The complete review plan JSON output containing groups, units, and coverage information.",
+  "type": "object",
+  "required": ["schema_version", "source", "group_target_bytes", "group_hard_bytes", "manifest_units", "review_groups", "split_required_groups", "high_risk_units", "context_mode", "state_snapshot_section", "semantic_context_section", "groups", "coverage_validation"],
+  "properties": {
+    "schema_version": { "type": "integer", "const": 1 },
+    "source": { "type": "string", "description": "Diff source mode (staged, unstaged, branch)" },
+    "group_target_bytes": { "type": "integer", "minimum": 0 },
+    "group_hard_bytes": { "type": "integer", "minimum": 0 },
+    "manifest_units": { "type": "integer", "minimum": 0, "description": "Total number of manifest units" },
+    "review_groups": { "type": "integer", "minimum": 0, "description": "Total number of review groups" },
+    "split_required_groups": { "type": "integer", "minimum": 0 },
+    "high_risk_units": { "type": "integer", "minimum": 0 },
+    "context_mode": { "type": "string" },
+    "state_snapshot_section": { "type": "string" },
+    "semantic_context_section": { "type": "string" },
+    "groups": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["group_id", "risk", "reason", "priority", "action", "budget_status", "diff_bytes", "required_units", "files", "review_commands", "context_mode", "context_command", "split_source", "notes"],
+        "properties": {
+          "group_id": { "type": "string" },
+          "risk": { "type": "string" },
+          "reason": { "type": "string" },
+          "priority": { "type": "integer", "minimum": 0 },
+          "action": { "type": "string" },
+          "budget_status": { "type": "string" },
+          "diff_bytes": { "type": "integer", "minimum": 0 },
+          "required_units": { "type": "array", "items": { "type": "string" } },
+          "files": { "type": "array", "items": { "type": "string" } },
+          "review_commands": { "type": "array", "items": { "type": "string" } },
+          "context_mode": { "type": "string" },
+          "context_command": { "type": "string" },
+          "split_source": { "type": "string" },
+          "notes": { "type": "string" }
+        },
+        "additionalProperties": false
+      }
+    },
+    "coverage_validation": {
+      "type": "object",
+      "required": ["rule", "blocking_rule"],
+      "properties": {
+        "rule": { "type": "string" },
+        "blocking_rule": { "type": "string" }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

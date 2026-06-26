@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "manifest-unit.schema.json",
+  "title": "ManifestUnit",
+  "description": "A single file unit in the review manifest, representing one changed file with its metadata.",
+  "type": "object",
+  "required": ["unit_id", "path", "status", "additions", "deletions", "diff_bytes", "risk_tags", "group_id", "review_command", "context_command"],
+  "properties": {
+    "unit_id": { "type": "string", "description": "Unique identifier for this manifest unit" },
+    "path": { "type": "string", "description": "File path (display-quoted if special characters present)" },
+    "status": { "type": "string", "description": "Git status code (M, A, D, R, C, etc.)" },
+    "additions": { "type": "integer", "minimum": 0, "description": "Number of lines added" },
+    "deletions": { "type": "integer", "minimum": 0, "description": "Number of lines deleted" },
+    "diff_bytes": { "type": "integer", "minimum": 0, "description": "Size of the diff in bytes" },
+    "risk_tags": { "type": "array", "items": { "type": "string" }, "description": "Risk classification tags" },
+    "group_id": { "type": "string", "description": "ID of the review group this unit belongs to" },
+    "review_command": { "type": "string", "description": "Shell command to review this specific file" },
+    "context_command": { "type": "string", "description": "Shell command to get context for this file" }
+  },
+  "additionalProperties": false
+}

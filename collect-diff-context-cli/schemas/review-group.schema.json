@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "review-group.schema.json",
+  "title": "ReviewGroup",
+  "description": "A review group containing related files for batch review.",
+  "type": "object",
+  "required": ["group_id", "risk", "reason", "diff_bytes", "files", "budget_status"],
+  "properties": {
+    "group_id": { "type": "string", "description": "Unique identifier for this review group" },
+    "risk": { "type": "string", "enum": ["high", "normal", "low"], "description": "Risk level of the group" },
+    "reason": { "type": "string", "description": "Explanation of why this risk level was assigned" },
+    "diff_bytes": { "type": "integer", "minimum": 0, "description": "Total diff size in bytes for all files in this group" },
+    "files": { "type": "array", "items": { "type": "string" }, "description": "List of file paths in this group" },
+    "budget_status": { "type": "string", "enum": ["within-budget", "over-target", "split-required"], "description": "Whether the group fits within the review budget" }
+  },
+  "additionalProperties": false
+}

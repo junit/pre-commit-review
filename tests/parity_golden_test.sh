@@ -325,6 +325,60 @@ done
 git add base_budget.txt
 compare_output "budget_exceeded_split" ""
 
+# Scenario 14: File Copy detection
+git commit -m "pre-copy state"
+cp base_budget.txt base_budget_copy.txt
+git add base_budget_copy.txt
+compare_output "file_copy" ""
+
+# Scenario 15: Binary file handling
+git commit -m "pre-binary state"
+printf '\x89PNG\r\n\x1a\n\x00\x00\x00' > binary_image.png
+git add binary_image.png
+compare_output "binary_file" ""
+
+# Scenario 16: Unicode path names (emoji / CJK characters)
+git commit -m "pre-unicode-path state"
+unicode_file="测试文件_🎉.txt"
+echo "unicode path content" > "$unicode_file"
+git add "$unicode_file"
+compare_output "unicode_path_names" ""
+
+# Scenario 17: Branch vs base mode
+git commit -m "pre-branch-mode state"
+git checkout -b feature-test-branch
+echo "branch-specific change" > branch_change.txt
+git add branch_change.txt
+git commit -m "branch commit"
+compare_output "branch_vs_base" "--source branch"
+git checkout -
+
+# Scenario 18: Explicit --group argument
+# First run without --group to find a group_id, then test with --group
+git checkout main 2>/dev/null || git checkout master 2>/dev/null || true
+echo "group test content" > group_test.txt
+git add group_test.txt
+# Capture group_id from full output
+full_output=$("$RUST_BIN" 2>/dev/null || true)
+group_id=$(echo "$full_output" | grep '^group_id:' | head -1 | awk '{print $2}')
+if [ -n "$group_id" ]; then
+  compare_output "explicit_group_request" "--group $group_id"
+else
+  echo "⚠️  SKIP: Scenario 18 (explicit_group_request) — could not extract group_id"
+fi
+
+# Scenario 19: Multiple files in a single commit (group budgeting)
+git commit -m "pre-multi-file state" 2>/dev/null || true
+for i in $(seq 1 5); do
+  echo "multi file content $i with some padding to increase size" > "multi_file_$i.txt"
+done
+git add multi_file_*.txt
+compare_output "multiple_files_grouping" ""
+
+# Scenario 20: Empty diff (no changes)
+git commit -m "pre-empty-diff state" 2>/dev/null || true
+compare_output "empty_diff_no_changes" "--source staged"
+
 # Cleanup
 rm -f "$LEGACY_SH"
 rm -rf "$TEST_DIR"

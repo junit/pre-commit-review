@@ -1006,6 +1006,10 @@ fn fail_no_repo() {
     println!("review_limits: no local repository access");
     println!();
     println!("No diff available. Stage your changes or provide a diff to review.");
+    // Exit 0 intentionally: downstream consumers (Skill / reducer) expect
+    // structured stdout even when no repository is found. A non-zero exit here
+    // would cause the consumer to discard the diagnostic output. The output
+    // content itself ("not a git repository") signals the error condition.
     std::process::exit(0);
 }
 
@@ -1040,8 +1044,8 @@ fn run_app() -> Result<(), AppError> {
     let repo_root = match git_rev_parse_toplevel() {
         Ok(path) => path,
         Err(_) => {
-            fail_no_repo();
-            return Ok(());
+            fail_no_repo(); // exits the process; never returns
+            unreachable!();
         }
     };
 
@@ -2239,7 +2243,13 @@ fn run_app() -> Result<(), AppError> {
             match cmd.output() {
                 Ok(out) => {
                     let status_code = out.status.code();
-                    if out.status.success() || status_code == Some(1) {
+                    if out.status.success() {
+                        // exit 0: matches found, parse output
+                        // NOTE: git grep -z replaces field separators (file:line:match)
+                        // with NUL bytes, but records are still newline-separated.
+                        // This means filenames containing literal newlines would be
+                        // mis-parsed. This is an accepted limitation matching the
+                        // legacy shell behavior.
                         for line_bytes in out.stdout.split(|&b| b == b'\n') {
                             if line_bytes.is_empty() {
                                 continue;
@@ -2280,7 +2290,10 @@ fn run_app() -> Result<(), AppError> {
                                 }
                             }
                         }
+                    } else if status_code == Some(1) {
+                        // exit 1: no matches found — this is normal, not an error
                     } else {
+                        // exit >1: actual error (bad regex, permission denied, etc.)
                         return Err(AppError::GitError {
                             cmd: format!("git grep {:?}", grep_args),
                             details: String::from_utf8_lossy(&out.stderr).into_owned(),
@@ -2521,5 +2534,262 @@ fn main() {
                 std::process::exit(127);
             }
         },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_sanitize_tsv_field() {
+        assert_eq!(sanitize_tsv_field("hello\tworld"), "hello world");
+        assert_eq!(sanitize_tsv_field("line1\nline2"), "line1 line2");
+        assert_eq!(sanitize_tsv_field("cr\rhere"), "cr here");
+        assert_eq!(sanitize_tsv_field("no special chars"), "no special chars");
+        assert_eq!(sanitize_tsv_field(""), "");
+        assert_eq!(
+            sanitize_tsv_field("mixed\ttab\nand\rnewline"),
+            "mixed tab and newline"
+        );
+    }
+
+    #[test]
+    fn test_shell_quote_simple() {
+        assert_eq!(shell_quote("simple"), "simple");
+        assert_eq!(shell_quote(""), "''");
+    }
+
+    #[test]
+    fn test_shell_quote_special_chars() {
+        assert_eq!(shell_quote("hello world"), "hello\\ world");
+        assert_eq!(shell_quote("it's"), "it\\'s");
+        assert_eq!(shell_quote("a\tb"), "a\\\tb");
+        assert_eq!(shell_quote("$HOME"), "\\$HOME");
+    }
+
+    #[test]
+    fn test_quote_git_path_no_quoting() {
+        assert_eq!(quote_git_path("simple.txt"), "simple.txt");
+        assert_eq!(quote_git_path("src/main.rs"), "src/main.rs");
+        assert_eq!(quote_git_path("file-name_v2.0.txt"), "file-name_v2.0.txt");
+    }
+
+    #[test]
+    fn test_quote_git_path_special_chars() {
+        assert_eq!(
+            quote_git_path("hello\tworld.txt"),
+            "\"hello\\tworld.txt\""
+        );
+        assert_eq!(
+            quote_git_path("line\nbreak.txt"),
+            "\"line\\nbreak.txt\""
+        );
+        assert_eq!(
+            quote_git_path("file\"name.txt"),
+            "\"file\\\"name.txt\""
+        );
+    }
+
+    #[test]
+    fn test_unquote_git_path_passthrough() {
+        assert_eq!(unquote_git_path("simple.txt"), "simple.txt");
+        assert_eq!(unquote_git_path("src/main.rs"), "src/main.rs");
+    }
+
+    #[test]
+    fn test_unquote_git_path_quoted() {
+        assert_eq!(
+            unquote_git_path("\"hello\\tworld.txt\""),
+            "hello\tworld.txt"
+        );
+        assert_eq!(
+            unquote_git_path("\"line\\nbreak.txt\""),
+            "line\nbreak.txt"
+        );
+        assert_eq!(
+            unquote_git_path("\"file\\\"name.txt\""),
+            "file\"name.txt"
+        );
+    }
+
+    #[test]
+    fn test_quote_unquote_roundtrip() {
+        let test_paths = vec![
+            "simple.txt",
+            "path with spaces.txt",
+            "tab\there.txt",
+            "new\nline.txt",
+            "quote\"mark.txt",
+            "backslash\\here.txt",
+            "src/normal/path.rs",
+        ];
+        for path in test_paths {
+            let quoted = quote_git_path(path);
+            let unquoted = unquote_git_path(&quoted);
+            assert_eq!(unquoted, path, "Roundtrip failed for: {:?}", path);
+        }
+    }
+
+    #[test]
+    fn test_parse_name_status_z_basic() {
+        let bytes = b"M\0file.txt\0";
+        let entries = parse_name_status_z(bytes);
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].status, "M");
+        assert_eq!(entries[0].path, "file.txt");
+        assert!(entries[0].old_path.is_none());
+    }
+
+    #[test]
+    fn test_parse_name_status_z_rename() {
+        let bytes = b"R100\0old.txt\0new.txt\0";
+        let entries = parse_name_status_z(bytes);
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].status, "R100");
+        assert_eq!(entries[0].path, "new.txt");
+        assert_eq!(entries[0].old_path.as_deref(), Some("old.txt"));
+    }
+
+    #[test]
+    fn test_parse_name_status_z_multiple() {
+        let bytes = b"M\0a.txt\0A\0b.txt\0D\0c.txt\0";
+        let entries = parse_name_status_z(bytes);
+        assert_eq!(entries.len(), 3);
+        assert_eq!(entries[0].status, "M");
+        assert_eq!(entries[0].path, "a.txt");
+        assert_eq!(entries[1].status, "A");
+        assert_eq!(entries[1].path, "b.txt");
+        assert_eq!(entries[2].status, "D");
+        assert_eq!(entries[2].path, "c.txt");
+    }
+
+    #[test]
+    fn test_parse_name_status_z_copy() {
+        let bytes = b"C100\0src.txt\0dest.txt\0";
+        let entries = parse_name_status_z(bytes);
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].status, "C100");
+        assert_eq!(entries[0].path, "dest.txt");
+        assert_eq!(entries[0].old_path.as_deref(), Some("src.txt"));
+    }
+
+    #[test]
+    fn test_parse_name_status_z_empty() {
+        let entries = parse_name_status_z(b"");
+        assert!(entries.is_empty());
+    }
+
+    #[test]
+    fn test_parse_numstat_z_basic() {
+        let bytes = b"10\t5\tfile.txt\0";
+        let entries = parse_numstat_z(bytes);
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].add, "10");
+        assert_eq!(entries[0].del, "5");
+        assert_eq!(entries[0].path, "file.txt");
+        assert!(entries[0].old_path.is_none());
+    }
+
+    #[test]
+    fn test_parse_numstat_z_rename() {
+        let bytes = b"3\t2\t\0old.txt\0new.txt\0";
+        let entries = parse_numstat_z(bytes);
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].add, "3");
+        assert_eq!(entries[0].del, "2");
+        assert_eq!(entries[0].path, "new.txt");
+        assert_eq!(entries[0].old_path.as_deref(), Some("old.txt"));
+    }
+
+    #[test]
+    fn test_parse_numstat_z_binary() {
+        let bytes = b"-\t-\tbinary.png\0";
+        let entries = parse_numstat_z(bytes);
+        assert_eq!(entries.len(), 1);
+        assert_eq!(entries[0].add, "-");
+        assert_eq!(entries[0].del, "-");
+        assert_eq!(entries[0].path, "binary.png");
+    }
+
+    #[test]
+    fn test_parse_numstat_z_empty() {
+        let entries = parse_numstat_z(b"");
+        assert!(entries.is_empty());
+    }
+
+    #[test]
+    fn test_group_component_for_path() {
+        assert_eq!(group_component_for_path("src/main.rs"), "src");
+        assert_eq!(group_component_for_path("README.md"), "README.md");
+        assert_eq!(
+            group_component_for_path("deeply/nested/file.txt"),
+            "deeply"
+        );
+    }
+
+    #[test]
+    fn test_safe_group_component() {
+        assert_eq!(safe_group_component("normal"), "normal");
+        assert_eq!(safe_group_component("has space"), "has_space");
+        assert_eq!(safe_group_component("UPPER"), "UPPER");
+        assert_eq!(safe_group_component("special!@#chars"), "special___chars");
+    }
+
+    #[test]
+    fn test_lookup_numstat_found() {
+        let entries = vec![NumstatEntry {
+            add: "10".to_string(),
+            del: "5".to_string(),
+            path: "file.txt".to_string(),
+            old_path: None,
+            path_spec: "file.txt".to_string(),
+        }];
+        let (add, del) = lookup_numstat(&entries, "file.txt", None);
+        assert_eq!(add, "10");
+        assert_eq!(del, "5");
+    }
+
+    #[test]
+    fn test_lookup_numstat_not_found() {
+        let entries = vec![NumstatEntry {
+            add: "10".to_string(),
+            del: "5".to_string(),
+            path: "file.txt".to_string(),
+            old_path: None,
+            path_spec: "file.txt".to_string(),
+        }];
+        let (add, del) = lookup_numstat(&entries, "other.txt", None);
+        assert_eq!(add, "0");
+        assert_eq!(del, "0");
+    }
+
+    #[test]
+    fn test_lookup_numstat_rename() {
+        let entries = vec![NumstatEntry {
+            add: "3".to_string(),
+            del: "2".to_string(),
+            path: "new.txt".to_string(),
+            old_path: Some("old.txt".to_string()),
+            path_spec: "old.txt => new.txt".to_string(),
+        }];
+        let (add, del) = lookup_numstat(&entries, "new.txt", Some("old.txt"));
+        assert_eq!(add, "3");
+        assert_eq!(del, "2");
+    }
+
+    #[test]
+    fn test_split_diff_into_hunks() {
+        let diff = "diff --git a/file.txt b/file.txt\n--- a/file.txt\n+++ b/file.txt\n@@ -1,3 +1,4 @@\n line1\n+added\n line2\n line3\n@@ -10,3 +11,3 @@\n line10\n-old\n+new\n line12\n";
+        let hunks = split_diff_into_hunks(diff);
+        assert_eq!(hunks.len(), 2);
+        assert!(hunks[0].header.contains("@@ -1,3 +1,4 @@"));
+        assert!(hunks[1].header.contains("@@ -10,3 +11,3 @@"));
+    }
+
+    #[test]
+    fn test_split_diff_into_hunks_empty() {
+        let hunks = split_diff_into_hunks("");
+        assert!(hunks.is_empty());
     }
 }
