@@ -19,4 +19,4 @@ jobs:
           SHELLCHECK_OPTS: -s bash
         with:
           severity: warning
-          additional_paths: scripts install.sh tests
+          additional_paths: scripts install.sh tests evals

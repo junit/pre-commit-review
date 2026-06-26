@@ -7,6 +7,10 @@
 *.swp
 *.swo
 
+# Local agent tooling state
+.serena/
+.tmp/
+
 # Logs and temp files
 *.log
 *.tmp

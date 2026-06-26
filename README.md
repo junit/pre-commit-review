@@ -27,6 +27,7 @@ Translations should stay functionally aligned. If you update one version, update
   - logic shifts
   - blast radius
   - regression risk
+  - performance & cost impact (only on hot paths, queries, loops, or network/IO calls)
 - Returns a clear verdict:
   - `SAFE_TO_COMMIT`
   - `SAFE_TO_COMMIT_WITH_NOTES`
@@ -50,31 +51,43 @@ This repository is not an application or framework. It is a small, portable skil
 ├── agents/
 │   └── openai.yaml
 ├── references/
-│   ├── coverage-led-review.md
-│   ├── engineering-audit.md
-│   ├── output-en.md
-│   ├── output-examples.md
-│   ├── output-zh.md
-│   └── visual-output.md
 ├── scripts/
 │   └── collect_diff_context.sh
-└── tests/
-    ├── collect_diff_context_test.sh
+├── tests/
+│   ├── collect_diff_context_test.sh
+│   ├── full_review_workflow_test.sh
+│   ├── install_agent_matrix_test.sh
+│   ├── install_smoke_test.sh
+│   └── skill_contract_test.sh
+└── evals/
     ├── eval_contract_test.sh
-    ├── full_review_workflow_test.sh
-    ├── install_agent_matrix_test.sh
-    ├── output_eval_claude_case.sh
-    ├── output_eval_claude_runner.sh
-    ├── output_eval_codex_case.sh
-    ├── output_eval_codex_runner.sh
-    ├── output_eval_host_wrappers_test.sh
+    ├── output-eval.json
+    ├── trigger-eval.json
     ├── output_eval_runner.sh
     ├── output_eval_runner_test.sh
-    ├── output-eval.json
-    ├── skill_contract_test.sh
-    ├── trigger-eval.json
-    └── install_smoke_test.sh
+    ├── output_eval_codex_runner.sh
+    ├── output_eval_claude_runner.sh
+    ├── output_eval_codex_case.sh
+    ├── output_eval_claude_case.sh
+    └── output_eval_host_wrappers_test.sh
 ```
+
+### `references/`
+
+Loaded on demand by `SKILL.md`. Each file has a single responsibility:
+
+| File | Loaded when | Purpose |
+|------|-------------|---------|
+| `coverage-led-review.md` | Large/truncated diffs, delegated review, or reducer state | Coverage ledger, review groups, split suggestions, reducer templates |
+| `output-en.md` | English review output | English Default, Tiny Diff, and Visual Review templates |
+| `output-zh.md` | Chinese review output | Chinese Default, Tiny Diff, and Visual Review templates |
+| `output-examples.md` | Visual Reviews or complex structural alignment | Concrete worked examples per language |
+| `review-risk-taxonomy.md` | Writing Priority Findings | Severity levels, finding structure, evidence rules |
+| `review-verdict-rules.md` | Selecting a verdict | Blocker/non-blocking matrices, output quality gate |
+| `visual-output.md` | Full Visual Mode | Visual report formatting and skeletons |
+| `visual-review-rules.md` | Full Visual Mode | Detailed visual-mode rules |
+
+Daily Default/Tiny reviews intentionally do not load `output-examples.md` to avoid token bloat.
 
 ### `SKILL.md`
 
@@ -128,9 +141,13 @@ Review-planning tables and `Dependency Summary` use TSV because paths, commands,
 
 Reducer and subagent automation should prefer `Review Plan JSON`, `Reducer State Snapshot Template`, and JSONL sections when present; TSV tables are primarily for human scanning.
 
-### `references/`
+### `tests/`
 
-Contains optional guidance loaded only when needed, including the detailed coverage-led review workflow, localized output examples, and visual report formatting.
+Deterministic shell tests with no model dependency. `skill_contract_test.sh` pins the cross-document contract between `SKILL.md` and `references/` (forbidden placeholders, required labels, the untranslatable `VERDICT` field). `collect_diff_context_test.sh` and `full_review_workflow_test.sh` exercise the helper script against temporary real Git repositories. `install_smoke_test.sh` and `install_agent_matrix_test.sh` verify the installer across copy/link/dry-run modes and the supported agent matrix. All of them run with plain `bash` and `jq`, never call a model, and are safe in CI.
+
+### `evals/`
+
+The LLM-backed output evaluation harness. `output-eval.json` and `trigger-eval.json` define eval cases (expected verdicts and required phrases). `output_eval_runner.sh` prepares real local fixtures for every case, can optionally invoke an external model runner, and grades saved responses against the expected verdict and required phrases. `output_eval_runner_test.sh` is the deterministic self-test: it synthesizes mock responses and verifies the grading logic without a model. `output_eval_codex_runner.sh` and `output_eval_claude_runner.sh` are host-specific thin wrappers that link this checkout into the fixture's project-local skill directory (`.agents/skills` for Codex, `.claude/skills` for Claude Code) and delegate to `output_eval_runner.sh` with host-appropriate non-interactive commands. `output_eval_codex_case.sh` and `output_eval_claude_case.sh` run a single case per host. `output_eval_host_wrappers_test.sh` verifies the wrappers with mock Codex and Claude binaries so host command templates regress without spending model calls. `eval_contract_test.sh` validates the structure of both eval JSON files.
 
 ### `agents/openai.yaml`
 
@@ -139,20 +156,6 @@ Provides lightweight agent metadata for environments that expose skills through 
 ### `install.sh`
 
 Installs this skill package into host-specific skills directories for supported AI coding agents.
-
-### Output Benchmark Harness
-
-`tests/output_eval_runner.sh` prepares real local fixtures for every scenario in `tests/output-eval.json`, can optionally invoke an external model runner, and grades saved responses against expected verdicts and required phrases.
-
-`tests/output_eval_runner_test.sh` is the deterministic self-test for that harness. It prepares fixtures, synthesizes mock responses, and verifies the grading logic without calling a real model.
-
-`tests/output_eval_codex_runner.sh` and `tests/output_eval_claude_runner.sh` are host-specific thin wrappers. They link this checkout into the fixture's project-local skill directory (`.agents/skills` for Codex, `.claude/skills` for Claude Code) and then delegate to `tests/output_eval_runner.sh` with host-appropriate non-interactive commands.
-
-`tests/output_eval_host_wrappers_test.sh` verifies those wrappers with mock Codex and Claude binaries so the host command templates can regress safely without spending model calls.
-
-### `tests/install_smoke_test.sh`
-
-Runs a small end-to-end installer smoke test against temporary directories.
 
 ## Quick Install
 
@@ -276,8 +279,9 @@ Final verdicts mean:
 This package is intentionally conservative:
 
 - it avoids pretending to see local changes when no repository is available
-- it distinguishes staged and unstaged review scope
+- it distinguishes staged and unstaged review scope, and flags when unstaged changes touch files also staged
 - it warns about untracked files not present in `git diff`
+- it never reproduces secret values; flagged credentials are shown as a redacted preview with a rotate suggestion
 - it treats large or truncated diffs as a reason to split work and retrieve smaller context, not as permission to skip material units
 - it reserves partial triage for advisory fallback and blocks commit-readiness when high-risk units are unreviewed
 - it supports coverage-led commit-readiness by requiring every manifest unit to be accounted for before claiming full scope
@@ -306,7 +310,9 @@ If you update user-facing documentation, keep localized README files synchronize
 
 ### Development
 
-Shell scripts (`scripts/*.sh`, `install.sh`, `tests/*.sh`) are linted by [shellcheck](https://www.shellcheck.net/) in CI (`.github/workflows/lint.yml`). Install it locally (`brew install shellcheck` on macOS) and run `shellcheck -s bash scripts/*.sh install.sh tests/*.sh` before submitting changes. The full test suite is `bash tests/*_test.sh`.
+Shell scripts (`scripts/*.sh`, `install.sh`, `tests/*.sh`, `evals/*.sh`) are linted by [shellcheck](https://www.shellcheck.net/) in CI (`.github/workflows/lint.yml`). Install it locally (`brew install shellcheck` on macOS) and run `shellcheck -s bash scripts/*.sh install.sh tests/*.sh evals/*.sh` before submitting changes.
+
+The deterministic test suite is `bash tests/*_test.sh`. The eval harness also ships deterministic self-tests that do not call a model: `bash evals/eval_contract_test.sh`, `bash evals/output_eval_runner_test.sh`, and `bash evals/output_eval_host_wrappers_test.sh`. The model-backed runners (`evals/output_eval_codex_runner.sh`, `evals/output_eval_claude_runner.sh`) require a real Codex or Claude CLI and are not part of CI.
 
 ## License
 
