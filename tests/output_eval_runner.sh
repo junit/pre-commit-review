@@ -300,6 +300,20 @@ grade_case() {
   rm -f "$must_include_file"
   [ "$missing" -eq 0 ] || fail "scenario $scenario failed must_include checks"
 
+  local must_not_include_file forbidden_present=0
+  must_not_include_file="$(mktemp)"
+  jq -r '.expected.must_not_include[]?' <<<"$case_json" >"$must_not_include_file"
+
+  while IFS= read -r term; do
+    [ -n "$term" ] || continue
+    if grep -Fq "$term" "$response_file"; then
+      printf 'forbidden term present for %s: %s\n' "$scenario" "$term" >&2
+      forbidden_present=1
+    fi
+  done <"$must_not_include_file"
+  rm -f "$must_not_include_file"
+  [ "$forbidden_present" -eq 0 ] || fail "scenario $scenario failed must_not_include check: forbidden value reproduced"
+
   printf 'PASS %s\n' "$scenario"
 }
 

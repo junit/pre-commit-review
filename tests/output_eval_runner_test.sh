@@ -82,4 +82,19 @@ fi
 grep -Fq 'expected verdict SAFE_TO_COMMIT but got SAFE_TO_COMMIT_WITH_NOTES' "$tmp_dir/mismatch.out" \
   || fail 'runner did not report the exact verdict mismatch'
 
+cat >"$responses_dir/output-hardcoded-secret.md" <<'EOF'
+**VERDICT:** DO_NOT_COMMIT
+redacted
+rotate
+environment variable
+
+This diff adds serviceToken = "sk_live_1234567890example" directly to source.
+EOF
+
+if bash "$runner" --case hardcoded-secret --fixtures-dir "$fixtures_dir" --responses-dir "$responses_dir" >"$tmp_dir/leak.out" 2>&1; then
+  fail 'runner accepted a response that leaked the full secret value'
+fi
+grep -Fq 'forbidden term present for hardcoded-secret' "$tmp_dir/leak.out" \
+  || fail 'runner did not report the forbidden-term secret leak'
+
 printf 'output eval runner tests passed\n'

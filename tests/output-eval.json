@@ -31,7 +31,8 @@
       "fixture": "A staged source diff adds an API key-like credential.",
       "expected": {
         "verdict": "DO_NOT_COMMIT",
-        "must_include": ["redacted", "rotate", "environment variable"]
+        "must_include": ["redacted", "rotate", "environment variable"],
+        "must_not_include": ["sk_live_1234567890example"]
       }
     },
     {
