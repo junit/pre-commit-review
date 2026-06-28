@@ -154,7 +154,7 @@ run_shadow() {
     # Optional: log the diff
     local diff_log="/tmp/collect_diff_context_shadow_diff.log"
     echo "=== DIFF MISMATCH ON $(date) ===" >> "$diff_log"
-    echo "Args: $@" >> "$diff_log"
+    printf 'Args: %s\n' "$*" >> "$diff_log"
     diff -u "$legacy_out" "$rust_out" >> "$diff_log" 2>&1 || true
     echo "================================" >> "$diff_log"
   fi
@@ -170,10 +170,10 @@ run_shadow() {
 }
 
 # Execute based on configured mode
-if [ "$IMPL" = "legacy" ] || [ "$IMPL" = "shell" ]; then
-  run_legacy "$@"
-elif [ "$IMPL" = "shadow" ] || [ "$SHADOW_MODE" = "1" ]; then
+if [ "$IMPL" = "shadow" ] || [ "$SHADOW_MODE" = "1" ]; then
   run_shadow "$@"
+elif [ "$IMPL" = "legacy" ] || [ "$IMPL" = "shell" ]; then
+  run_legacy "$@"
 elif [ "${PRE_COMMIT_REVIEW_DISABLE_FALLBACK:-0}" = "1" ]; then
   run_rust_only "$@"
 else

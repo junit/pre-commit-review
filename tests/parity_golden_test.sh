@@ -6,6 +6,11 @@ set -euo pipefail
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
+PARITY_FIXTURES_LIB="$REPO_ROOT/tests/lib/parity_fixtures.sh"
+PARITY_NORMALIZER="$REPO_ROOT/tests/lib/normalize_parity_output.py"
+
+# shellcheck disable=SC1090
+source "$PARITY_FIXTURES_LIB"
 
 # 1. Copy the restored legacy Shell script
 LEGACY_SH="/tmp/collect_diff_context_legacy.sh"
@@ -46,93 +51,17 @@ RUST_BIN="$REPO_ROOT/collect-diff-context-cli/target/release/collect-diff-contex
 # 3. Create a temporary Git repository for parity testing
 TEST_DIR=$(mktemp -d -t review-parity-XXXXXX)
 echo "Creating temporary testing repository in $TEST_DIR..."
+create_parity_repo_fixture "$TEST_DIR"
 cd "$TEST_DIR"
-git init
-git config user.name "Test User"
-git config user.email "test@example.com"
-
-# Establish a baseline commit
-echo "initial commit content" > base.txt
-git add base.txt
-git commit -m "initial commit"
-
-# Setup custom risk pathways and content configuration
-mkdir -p .pre-commit-review
-echo "sensitive_configs" > .pre-commit-review/risk-paths
-echo "password_secret" > .pre-commit-review/risk-content
-echo "token" > .pre-commit-review/context-queries
-
-# Define a Python script to normalize JSON structures and spaces in outputs
-# to prevent formatting differences from failing the logic equivalence tests.
-PYTHON_NORM="import sys, json
-
-lines = sys.stdin.readlines()
-output = []
-in_json = False
-json_buffer = []
-
-for line in lines:
-    # Detect JSON block boundaries
-    if line.startswith('## ') and (line.strip().endswith('JSON') or line.strip().endswith('Template') or line.strip().endswith('JSONL')):
-        if json_buffer:
-            try:
-                data = json.loads(''.join(json_buffer))
-                output.append(json.dumps(data, indent=2, sort_keys=True) + '\n')
-            except Exception:
-                output.extend(json_buffer)
-            json_buffer = []
-        output.append(line)
-        in_json = True
-    elif line.startswith('## ') and not (line.strip().endswith('JSON') or line.strip().endswith('Template') or line.strip().endswith('JSONL')):
-        if json_buffer:
-            try:
-                data = json.loads(''.join(json_buffer))
-                output.append(json.dumps(data, indent=2, sort_keys=True) + '\n')
-            except Exception:
-                output.extend(json_buffer)
-            json_buffer = []
-        output.append(line)
-        in_json = False
-    elif in_json:
-        if line.strip() == '':
-            if json_buffer:
-                try:
-                    data = json.loads(''.join(json_buffer))
-                    output.append(json.dumps(data, indent=2, sort_keys=True) + '\n')
-                except Exception:
-                    output.extend(json_buffer)
-                json_buffer = []
-            output.append(line)
-            in_json = False
-        else:
-            json_buffer.append(line)
-    else:
-        # Auto-normalize multiple blank lines to a single blank line
-        if line.strip() == '' and len(output) > 0 and output[-1].strip() == '':
-            continue
-        output.append(line)
-
-if json_buffer:
-    try:
-        data = json.loads(''.join(json_buffer))
-        output.append(json.dumps(data, indent=2, sort_keys=True) + '\n')
-    except Exception:
-        output.extend(json_buffer)
-
-# Clean out double blank lines at the end of output list
-cleaned = []
-for l in output:
-    if l.strip() == '' and len(cleaned) > 0 and cleaned[-1].strip() == '':
-        continue
-    cleaned.append(l)
-
-sys.stdout.write(''.join(cleaned))
-"
 
 # Function to normalize and compare output files
 compare_output() {
   local scenario="$1"
   local args="${2:-}"
+  local -a cmd_args=()
+  if [ -n "$args" ]; then
+    read -r -a cmd_args <<<"$args"
+  fi
   
   echo "--------------------------------------------------"
   echo "Testing Scenario: $scenario (args: $args)"
@@ -140,11 +69,19 @@ compare_output() {
   
   # Run legacy shell version
   export PRE_COMMIT_REVIEW_HELPER_PATH="$LEGACY_SH"
-  bash "$LEGACY_SH" $args > output_legacy_raw.txt 2> stderr_legacy.txt || true
+  if [ "${#cmd_args[@]}" -gt 0 ]; then
+    bash "$LEGACY_SH" "${cmd_args[@]}" > output_legacy_raw.txt 2> stderr_legacy.txt || true
+  else
+    bash "$LEGACY_SH" > output_legacy_raw.txt 2> stderr_legacy.txt || true
+  fi
   
   # Run hardened Rust binary
   export PRE_COMMIT_REVIEW_HELPER_PATH="$RUST_BIN"
-  "$RUST_BIN" $args > output_rust_raw.txt 2> stderr_rust.txt || true
+  if [ "${#cmd_args[@]}" -gt 0 ]; then
+    "$RUST_BIN" "${cmd_args[@]}" > output_rust_raw.txt 2> stderr_rust.txt || true
+  else
+    "$RUST_BIN" > output_rust_raw.txt 2> stderr_rust.txt || true
+  fi
   
   # Normalize platform/absolute-path specifics to ensure exact golden comparisons
   for prefix in output_legacy output_rust; do
@@ -166,68 +103,8 @@ compare_output() {
              -e "/\?\? output_rust.txt/d" \
              "$raw_file" > "${raw_file}.tmp"
              
-      # 2. Run Python formatting normalizer to stabilize whitespace and JSON structures
-      python3 -c "import sys, json
-lines = sys.stdin.readlines()
-output = []
-in_json = False
-json_buffer = []
-
-for line in lines:
-    if line.startswith('## ') and (line.strip().endswith('JSON') or line.strip().endswith('Template') or line.strip().endswith('JSONL')):
-        if json_buffer:
-            try:
-                data = json.loads(''.join(json_buffer))
-                output.append(json.dumps(data, indent=2, sort_keys=True) + '\n')
-            except Exception:
-                output.extend(json_buffer)
-            json_buffer = []
-        output.append(line)
-        in_json = True
-    elif line.startswith('## ') and not (line.strip().endswith('JSON') or line.strip().endswith('Template') or line.strip().endswith('JSONL')):
-        if json_buffer:
-            try:
-                data = json.loads(''.join(json_buffer))
-                output.append(json.dumps(data, indent=2, sort_keys=True) + '\n')
-            except Exception:
-                output.extend(json_buffer)
-            json_buffer = []
-        output.append(line)
-        in_json = False
-    elif in_json:
-        if line.strip() == '':
-            if json_buffer:
-                try:
-                    data = json.loads(''.join(json_buffer))
-                    output.append(json.dumps(data, indent=2, sort_keys=True) + '\n')
-                except Exception:
-                    output.extend(json_buffer)
-                json_buffer = []
-            output.append(line)
-            in_json = False
-        else:
-            json_buffer.append(line)
-    else:
-        output.append(line)
-
-if json_buffer:
-    try:
-        data = json.loads(''.join(json_buffer))
-        output.append(json.dumps(data, indent=2, sort_keys=True) + '\n')
-    except Exception:
-        output.extend(json_buffer)
-
-# Robustly compress multiple newlines and trim end spaces
-split_lines = ''.join(output).split('\n')
-cleaned = []
-for l in split_lines:
-    trimmed = l.strip()
-    if trimmed == '' and len(cleaned) > 0 and cleaned[-1].strip() == '':
-        continue
-    cleaned.append(l)
-
-sys.stdout.write('\n'.join(cleaned))
-" < "${raw_file}.tmp" > "$norm_file"
+      # 2. Run the shared normalizer to stabilize whitespace and JSON structures
+      python3 "$PARITY_NORMALIZER" < "${raw_file}.tmp" > "$norm_file"
       rm -f "${raw_file}.tmp"
     fi
   done

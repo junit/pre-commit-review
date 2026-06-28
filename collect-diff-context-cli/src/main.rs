@@ -1250,9 +1250,16 @@ fn run_app() -> Result<(), AppError> {
         let add_val = entry.add.parse::<usize>().unwrap_or(0);
         let del_val = entry.del.parse::<usize>().unwrap_or(0);
         let total = add_val + del_val;
-        churn_list.push((total, entry.path_spec.clone(), entry.add.clone(), entry.del.clone()));
+        churn_list.push((total, entry.path_spec.clone(), add_val, del_val));
     }
-    churn_list.sort_by(|a, b| b.0.cmp(&a.0)); // descending
+    churn_list.sort_by(|a, b| {
+        let cmp = b.0.cmp(&a.0);
+        if cmp == std::cmp::Ordering::Equal {
+            b.1.cmp(&a.1)
+        } else {
+            cmp
+        }
+    }); // descending
     let top_churn_entries: Vec<String> = churn_list
         .iter()
         .take(5)

@@ -10,8 +10,18 @@ trap 'rm -rf "$tmp_dir"' EXIT
 [ -f "$tmp_dir/codex-skills/pre-commit-review/SKILL.md" ]
 [ -f "$tmp_dir/codex-skills/pre-commit-review/agents/openai.yaml" ]
 [ -f "$tmp_dir/codex-skills/pre-commit-review/scripts/collect_diff_context.sh" ]
-[ -f "$tmp_dir/codex-skills/pre-commit-review/references/output-examples.md" ]
-[ -f "$tmp_dir/codex-skills/pre-commit-review/references/visual-output.md" ]
+[ -f "$tmp_dir/codex-skills/pre-commit-review/references/decision/verdict-rules.md" ]
+[ -f "$tmp_dir/codex-skills/pre-commit-review/references/decision/risk-taxonomy.md" ]
+[ -f "$tmp_dir/codex-skills/pre-commit-review/references/rendering/output-en.md" ]
+[ -f "$tmp_dir/codex-skills/pre-commit-review/references/rendering/output-zh.md" ]
+[ -f "$tmp_dir/codex-skills/pre-commit-review/references/rendering/visual-output.md" ]
+[ -f "$tmp_dir/codex-skills/pre-commit-review/references/rendering/review-meta.md" ]
+[ -f "$tmp_dir/codex-skills/pre-commit-review/references/advanced/coverage-led-review.md" ]
+[ -f "$tmp_dir/codex-skills/pre-commit-review/references/advanced/visual-review-rules.md" ]
+[ -f "$tmp_dir/codex-skills/pre-commit-review/references/advanced/grading-compat.md" ]
+[ -f "$tmp_dir/codex-skills/pre-commit-review/references/examples/default-tiny-en.md" ]
+[ -f "$tmp_dir/codex-skills/pre-commit-review/references/examples/default-tiny-zh.md" ]
+[ -f "$tmp_dir/codex-skills/pre-commit-review/references/examples/complex-visual-and-coverage.md" ]
 
 "$repo_root/install.sh" codex --copy --dir "$tmp_dir/codex-skills"
 [ -d "$tmp_dir/codex-skills/pre-commit-review" ]
@@ -32,7 +42,7 @@ grep -Fq "Target: $tmp_dir/codex-home/skills/pre-commit-review" "$tmp_dir/codex-
 KIRO_SKILLS_DIR="$tmp_dir/kiro-skills" "$repo_root/install.sh" kiro --copy
 [ -f "$tmp_dir/kiro-skills/pre-commit-review/SKILL.md" ]
 [ -f "$tmp_dir/kiro-skills/pre-commit-review/scripts/collect_diff_context.sh" ]
-[ -f "$tmp_dir/kiro-skills/pre-commit-review/references/output-examples.md" ]
+[ -f "$tmp_dir/kiro-skills/pre-commit-review/references/examples/complex-visual-and-coverage.md" ]
 
 "$repo_root/install.sh" kiro --link --dir "$tmp_dir/workspace/.kiro/skills"
 [ -L "$tmp_dir/workspace/.kiro/skills/pre-commit-review" ]
