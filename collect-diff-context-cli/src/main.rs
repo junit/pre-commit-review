@@ -860,7 +860,11 @@ fn parse_numstat_z(bytes: &[u8]) -> Vec<NumstatEntry> {
     entries
 }
 
-fn lookup_numstat(entries: &[NumstatEntry], path: &str, old_path: Option<&str>) -> (String, String) {
+fn lookup_numstat(
+    entries: &[NumstatEntry],
+    path: &str,
+    old_path: Option<&str>,
+) -> (String, String) {
     if let Some(old) = old_path {
         for entry in entries {
             if let Some(entry_old) = &entry.old_path {
@@ -975,17 +979,28 @@ fn generate_dependency_summary(diff: &str) -> Vec<DependencyEntry> {
             if re_sig.is_match(clean) {
                 let is_control_flow = {
                     let s = clean.trim();
-                    s.starts_with("if ") || s.starts_with("if(") ||
-                    s.starts_with("while ") || s.starts_with("while(") ||
-                    s.starts_with("for ") || s.starts_with("for(") ||
-                    s.starts_with("switch ") || s.starts_with("switch(") ||
-                    s.starts_with("catch ") || s.starts_with("catch(") ||
-                    s.starts_with("return ") || s.starts_with("return(") ||
-                    s.starts_with("else ") || s.starts_with("else{") || s.starts_with("else {") ||
-                    s.starts_with("elif ") || s.starts_with("elif(") ||
-                    s.starts_with("gsub(") || s.starts_with("printf ") ||
-                    s.starts_with("printf(") || s.starts_with("print ") ||
-                    s.starts_with("print(")
+                    s.starts_with("if ")
+                        || s.starts_with("if(")
+                        || s.starts_with("while ")
+                        || s.starts_with("while(")
+                        || s.starts_with("for ")
+                        || s.starts_with("for(")
+                        || s.starts_with("switch ")
+                        || s.starts_with("switch(")
+                        || s.starts_with("catch ")
+                        || s.starts_with("catch(")
+                        || s.starts_with("return ")
+                        || s.starts_with("return(")
+                        || s.starts_with("else ")
+                        || s.starts_with("else{")
+                        || s.starts_with("else {")
+                        || s.starts_with("elif ")
+                        || s.starts_with("elif(")
+                        || s.starts_with("gsub(")
+                        || s.starts_with("printf ")
+                        || s.starts_with("printf(")
+                        || s.starts_with("print ")
+                        || s.starts_with("print(")
                 };
                 if !is_control_flow {
                     emit("signature", &mut entries);
@@ -1217,7 +1232,13 @@ fn run_app() -> Result<(), AppError> {
 
     // 1. Gather all name-status changes globally
     let global_name_status_bytes = if mode != "none" {
-        git_run_diff_bytes(mode, &selected_ref, &["--name-status", "-z"], None, &repo_root)?
+        git_run_diff_bytes(
+            mode,
+            &selected_ref,
+            &["--name-status", "-z"],
+            None,
+            &repo_root,
+        )?
     } else {
         Vec::new()
     };
@@ -1234,8 +1255,14 @@ fn run_app() -> Result<(), AppError> {
     // 3. Gather untracked files count/details
     let mut files_changed_str = "0 files, 0 insertions(+), 0 deletions(-)".to_string();
     if mode != "none" {
-        let total_add: usize = numstat_entries.iter().map(|e| e.add.parse::<usize>().unwrap_or(0)).sum();
-        let total_del: usize = numstat_entries.iter().map(|e| e.del.parse::<usize>().unwrap_or(0)).sum();
+        let total_add: usize = numstat_entries
+            .iter()
+            .map(|e| e.add.parse::<usize>().unwrap_or(0))
+            .sum();
+        let total_del: usize = numstat_entries
+            .iter()
+            .map(|e| e.del.parse::<usize>().unwrap_or(0))
+            .sum();
         files_changed_str = format!(
             "{} files, {} insertions(+), {} deletions(-)",
             name_status_entries.len(),
@@ -1404,16 +1431,32 @@ fn run_app() -> Result<(), AppError> {
     generated_files_list_raw.sort();
     lock_files_list_raw.sort();
 
-    let mut high_risk_candidates_vec_raw: Vec<String> = high_risk_candidates_set_raw.into_iter().collect();
+    let mut high_risk_candidates_vec_raw: Vec<String> =
+        high_risk_candidates_set_raw.into_iter().collect();
     high_risk_candidates_vec_raw.sort();
 
     // Create display quoted lists
-    let _path_risk_files: Vec<String> = path_risk_files_raw.iter().map(|p| quote_git_path(p)).collect();
-    let generated_files_list: Vec<String> = generated_files_list_raw.iter().map(|p| quote_git_path(p)).collect();
-    let lock_files_list: Vec<String> = lock_files_list_raw.iter().map(|p| quote_git_path(p)).collect();
-    let mut high_risk_candidates_vec: Vec<String> = high_risk_candidates_vec_raw.iter().map(|p| quote_git_path(p)).collect();
+    let _path_risk_files: Vec<String> = path_risk_files_raw
+        .iter()
+        .map(|p| quote_git_path(p))
+        .collect();
+    let generated_files_list: Vec<String> = generated_files_list_raw
+        .iter()
+        .map(|p| quote_git_path(p))
+        .collect();
+    let lock_files_list: Vec<String> = lock_files_list_raw
+        .iter()
+        .map(|p| quote_git_path(p))
+        .collect();
+    let mut high_risk_candidates_vec: Vec<String> = high_risk_candidates_vec_raw
+        .iter()
+        .map(|p| quote_git_path(p))
+        .collect();
     high_risk_candidates_vec.sort();
-    let mut content_risk_vec: Vec<String> = content_risk_vec_raw.iter().map(|p| quote_git_path(p)).collect();
+    let mut content_risk_vec: Vec<String> = content_risk_vec_raw
+        .iter()
+        .map(|p| quote_git_path(p))
+        .collect();
     content_risk_vec.sort();
 
     let high_risk_candidates = if high_risk_candidates_vec.is_empty() {
@@ -1506,8 +1549,7 @@ fn run_app() -> Result<(), AppError> {
     } else if args.group.is_some() {
         println!("group-specific status is emitted after group resolution");
     } else {
-        let status_out =
-            run_command_string(&["git", "status", "--short"], &repo_root)?;
+        let status_out = run_command_string(&["git", "status", "--short"], &repo_root)?;
         print!("{}", status_out);
     }
     println!();
@@ -2275,11 +2317,12 @@ fn run_app() -> Result<(), AppError> {
                                     let line_num_str = String::from_utf8_lossy(line_num_bytes);
                                     let match_str = String::from_utf8_lossy(match_bytes);
 
-                                    let file_parsed = if mode == "branch" && file_str.starts_with("HEAD:") {
-                                        file_str.strip_prefix("HEAD:").unwrap().to_string()
-                                    } else {
-                                        file_str.into_owned()
-                                    };
+                                    let file_parsed =
+                                        if mode == "branch" && file_str.starts_with("HEAD:") {
+                                            file_str.strip_prefix("HEAD:").unwrap().to_string()
+                                        } else {
+                                            file_str.into_owned()
+                                        };
 
                                     if file_parsed == ".pre-commit-review/context-queries" {
                                         continue;
@@ -2455,7 +2498,8 @@ fn emit_requested_group(
                 None => continue,
             };
             let raw_f = unquote_git_path(f);
-            let f_diff_bytes = git_run_diff_bytes(mode, selected_ref, &[], Some(&raw_f), repo_root)?;
+            let f_diff_bytes =
+                git_run_diff_bytes(mode, selected_ref, &[], Some(&raw_f), repo_root)?;
             let f_diff = String::from_utf8_lossy(&f_diff_bytes);
             let hunks = split_diff_into_hunks(&f_diff);
             if hunks.is_empty() {
@@ -2483,7 +2527,8 @@ fn emit_requested_group(
         println!("## Split Unit Diff Preview");
         for f in &group.files {
             let raw_f = unquote_git_path(f);
-            let f_diff_bytes = git_run_diff_bytes(mode, selected_ref, &[], Some(&raw_f), repo_root)?;
+            let f_diff_bytes =
+                git_run_diff_bytes(mode, selected_ref, &[], Some(&raw_f), repo_root)?;
             let f_diff = String::from_utf8_lossy(&f_diff_bytes);
             let hunks = split_diff_into_hunks(&f_diff);
             for (h_idx, hunk) in hunks.iter().enumerate() {
@@ -2584,18 +2629,9 @@ mod tests {
 
     #[test]
     fn test_quote_git_path_special_chars() {
-        assert_eq!(
-            quote_git_path("hello\tworld.txt"),
-            "\"hello\\tworld.txt\""
-        );
-        assert_eq!(
-            quote_git_path("line\nbreak.txt"),
-            "\"line\\nbreak.txt\""
-        );
-        assert_eq!(
-            quote_git_path("file\"name.txt"),
-            "\"file\\\"name.txt\""
-        );
+        assert_eq!(quote_git_path("hello\tworld.txt"), "\"hello\\tworld.txt\"");
+        assert_eq!(quote_git_path("line\nbreak.txt"), "\"line\\nbreak.txt\"");
+        assert_eq!(quote_git_path("file\"name.txt"), "\"file\\\"name.txt\"");
     }
 
     #[test]
@@ -2610,14 +2646,8 @@ mod tests {
             unquote_git_path("\"hello\\tworld.txt\""),
             "hello\tworld.txt"
         );
-        assert_eq!(
-            unquote_git_path("\"line\\nbreak.txt\""),
-            "line\nbreak.txt"
-        );
-        assert_eq!(
-            unquote_git_path("\"file\\\"name.txt\""),
-            "file\"name.txt"
-        );
+        assert_eq!(unquote_git_path("\"line\\nbreak.txt\""), "line\nbreak.txt");
+        assert_eq!(unquote_git_path("\"file\\\"name.txt\""), "file\"name.txt");
     }
 
     #[test]
@@ -2729,10 +2759,7 @@ mod tests {
     fn test_group_component_for_path() {
         assert_eq!(group_component_for_path("src/main.rs"), "src");
         assert_eq!(group_component_for_path("README.md"), "README.md");
-        assert_eq!(
-            group_component_for_path("deeply/nested/file.txt"),
-            "deeply"
-        );
+        assert_eq!(group_component_for_path("deeply/nested/file.txt"), "deeply");
     }
 
     #[test]
