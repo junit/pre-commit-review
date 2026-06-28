@@ -3,6 +3,7 @@ set -euo pipefail
 
 script_dir="$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd -P)"
 availability_gate="$script_dir/check_host_availability.sh"
+helper_gateway_probe="$script_dir/run_helper_gateway_probe.sh"
 layered_host_runner="$script_dir/run_layered_host_evals.sh"
 contract_subset="$script_dir/host_contract_subset.sh"
 
@@ -15,6 +16,7 @@ started_at="$(date -u +"%Y-%m-%dT%H:%M:%SZ")"
 started_epoch_ms="$(date -u +"%s000")"
 
 availability_status='skipped'
+helper_gateway_probe_status='skipped'
 layered_host_smoke_status='skipped'
 contract_subset_status='skipped'
 overall_status='failed'
@@ -29,8 +31,9 @@ Usage: run_host_readiness_pipeline.sh --host <claude|codex> [options]
 
 Run the single-host readiness sequence:
   1. availability
-  2. layered host smoke
-  3. contract subset
+  2. helper gateway probe
+  3. layered host smoke
+  4. contract subset
 EOF
 }
 
@@ -63,6 +66,7 @@ build_report_json() {
     --arg finished_at "$finished_at" \
     --argjson duration_ms "$duration_ms" \
     --arg availability_status "$availability_status" \
+    --arg helper_gateway_probe_status "$helper_gateway_probe_status" \
     --arg layered_host_smoke_status "$layered_host_smoke_status" \
     --arg contract_subset_status "$contract_subset_status" \
     --argjson failed_stage "$failed_stage" \
@@ -78,6 +82,7 @@ build_report_json() {
       duration_ms: $duration_ms,
       stages: {
         availability: {status: $availability_status},
+        helper_gateway_probe: {status: $helper_gateway_probe_status},
         layered_host_smoke: {status: $layered_host_smoke_status},
         contract_subset: {status: $contract_subset_status}
       }
@@ -119,6 +124,9 @@ run_stage_with_report() {
       availability)
         availability_status='passed'
         ;;
+      helper_gateway_probe)
+        helper_gateway_probe_status='passed'
+        ;;
       layered_host_smoke)
         layered_host_smoke_status='passed'
         ;;
@@ -136,6 +144,9 @@ run_stage_with_report() {
   case "$stage_key" in
     availability)
       availability_status='failed'
+      ;;
+    helper_gateway_probe)
+      helper_gateway_probe_status='failed'
       ;;
     layered_host_smoke)
       layered_host_smoke_status='failed'
@@ -178,6 +189,11 @@ while [ "$#" -gt 0 ]; do
       [ "$#" -gt 0 ] || fail '--layered-host-runner requires a value'
       layered_host_runner="$1"
       ;;
+    --helper-gateway-probe)
+      shift
+      [ "$#" -gt 0 ] || fail '--helper-gateway-probe requires a value'
+      helper_gateway_probe="$1"
+      ;;
     --contract-subset)
       shift
       [ "$#" -gt 0 ] || fail '--contract-subset requires a value'
@@ -205,18 +221,21 @@ done
 [ -n "$host" ] || fail '--host is required'
 
 availability_args=(--host "$host")
+helper_gateway_args=(--host "$host")
 layered_args=(--host "$host")
 
 case "$host" in
   claude)
     if [ -n "$claude_bin" ]; then
       availability_args+=(--claude-bin "$claude_bin")
+      helper_gateway_args+=(--claude-bin "$claude_bin")
       layered_args+=(--claude-bin "$claude_bin")
     fi
     ;;
   codex)
     if [ -n "$codex_bin" ]; then
       availability_args+=(--codex-bin "$codex_bin")
+      helper_gateway_args+=(--codex-bin "$codex_bin")
       layered_args+=(--codex-bin "$codex_bin")
     fi
     ;;
@@ -231,6 +250,13 @@ trap 'rm -rf "$tmp_dir"' EXIT
 printf '=== Availability: %s ===\n' "$host"
 if ! run_stage_with_report availability "$tmp_dir/availability.out" "$tmp_dir/availability.err" "$tmp_dir/availability-report.json" \
   bash "$availability_gate" "${availability_args[@]}"; then
+  emit_final_report
+  exit 1
+fi
+
+printf '=== Helper Gateway Probe: %s ===\n' "$host"
+if ! run_stage_with_report helper_gateway_probe "$tmp_dir/helper-gateway.out" "$tmp_dir/helper-gateway.err" "$tmp_dir/helper-gateway-report.json" \
+  bash "$helper_gateway_probe" "${helper_gateway_args[@]}"; then
   emit_final_report
   exit 1
 fi

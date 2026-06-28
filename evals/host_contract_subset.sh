@@ -79,6 +79,8 @@ require_runtime_file "$repo_root/evals/host_failure_taxonomy.sh" 'evals/host_fai
 require_runtime_file "$repo_root/evals/host_failure_taxonomy_test.sh" 'evals/host_failure_taxonomy_test.sh'
 require_runtime_file "$repo_root/evals/run_layered_host_evals.sh" 'evals/run_layered_host_evals.sh'
 require_runtime_file "$repo_root/evals/run_layered_host_evals_test.sh" 'evals/run_layered_host_evals_test.sh'
+require_runtime_file "$repo_root/evals/run_helper_gateway_probe.sh" 'evals/run_helper_gateway_probe.sh'
+require_runtime_file "$repo_root/evals/run_helper_gateway_probe_test.sh" 'evals/run_helper_gateway_probe_test.sh'
 require_runtime_file "$repo_root/evals/run_host_readiness_pipeline.sh" 'evals/run_host_readiness_pipeline.sh'
 require_runtime_file "$repo_root/evals/run_host_readiness_pipeline_test.sh" 'evals/run_host_readiness_pipeline_test.sh'
 

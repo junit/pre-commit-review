@@ -16,6 +16,8 @@ marker_eval_checker="$repo_root/evals/run_marker_eval_checks.sh"
 marker_eval_checker_test="$repo_root/evals/run_marker_eval_checks_test.sh"
 layered_host_runner="$repo_root/evals/run_layered_host_evals.sh"
 layered_host_runner_test="$repo_root/evals/run_layered_host_evals_test.sh"
+helper_gateway_probe="$repo_root/evals/run_helper_gateway_probe.sh"
+helper_gateway_probe_test="$repo_root/evals/run_helper_gateway_probe_test.sh"
 host_availability_gate="$repo_root/evals/check_host_availability.sh"
 host_availability_gate_test="$repo_root/evals/check_host_availability_test.sh"
 host_contract_subset="$repo_root/evals/host_contract_subset.sh"
@@ -68,6 +70,8 @@ assert_contains() {
 [ -f "$marker_eval_checker_test" ] || fail 'missing evals/run_marker_eval_checks_test.sh'
 [ -f "$layered_host_runner" ] || fail 'missing evals/run_layered_host_evals.sh'
 [ -f "$layered_host_runner_test" ] || fail 'missing evals/run_layered_host_evals_test.sh'
+[ -f "$helper_gateway_probe" ] || fail 'missing evals/run_helper_gateway_probe.sh'
+[ -f "$helper_gateway_probe_test" ] || fail 'missing evals/run_helper_gateway_probe_test.sh'
 [ -f "$host_availability_gate" ] || fail 'missing evals/check_host_availability.sh'
 [ -f "$host_availability_gate_test" ] || fail 'missing evals/check_host_availability_test.sh'
 [ -f "$host_contract_subset" ] || fail 'missing evals/host_contract_subset.sh'

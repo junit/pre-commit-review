@@ -171,6 +171,7 @@ Reducer 和 subagent 自动化应优先使用 `Review Plan JSON`、`Reducer Stat
 - `output_eval_codex_runner.sh` 和 `output_eval_claude_runner.sh` 是宿主专用薄封装，会把当前仓库链接到 fixture 的 project-local skill 目录（Codex 用 `.agents/skills`，Claude Code 用 `.claude/skills`），再用适合各自宿主的非交互命令委托给 `output_eval_runner.sh`
 - `output_eval_runner_test.sh` 是 fixture 准备与评分逻辑的确定性自测
 - `output_eval_host_wrappers_test.sh` 用 mock Codex/Claude 二进制验证这些 wrapper，确保宿主命令模板回归时不消耗真实模型调用
+- `run_helper_gateway_probe.sh` 是一个 real-host stage，会对 bundled helper 与选定的直接 Git 命令做日志探针；如果 host 在尝试 `scripts/collect_diff_context.sh` 之前就检查 Git diff 来源，则判定失败
 - `readme_surface_test.sh` 守护 README 面向外部暴露的 public surface，确保文档里的 contract gate 与入口清单保持一致
 - `readme_host_entrypoints_test.sh` 固化分层 `Host Entrypoints` 文档，确保 README 持续以 `Primary`、`Analysis`、`Stage` 和 `Internal / Repo-wide` 暴露 host lane surface
 - `eval_contract_test.sh` 是 repo 级门禁，统一守护 trigger eval、layered output eval、marker taxonomy 资产以及 host lane contract surface
@@ -187,11 +188,11 @@ Reducer 和 subagent 自动化应优先使用 `Review Plan JSON`、`Reducer Stat
 - 用于执行分层 output eval surface 与 marker taxonomy 检查，无需手工逐个挑选 eval 资产
 - `Analysis`: `evals/analyze_host_readiness_diff.sh`
 - 用于对比 cross-host readiness 输出，而不必重新跑每个阶段
-- `Stage`: `evals/check_host_availability.sh`、`evals/run_layered_host_evals.sh`、`evals/host_contract_subset.sh`
+- `Stage`: `evals/check_host_availability.sh`、`evals/run_helper_gateway_probe.sh`、`evals/run_layered_host_evals.sh`、`evals/host_contract_subset.sh`
 - 当你只想调试或单独运行某一层 host 边界时使用
 - `Internal / Repo-wide`: `evals/eval_contract_test.sh`、host `*_test.sh`、`evals/host_failure_taxonomy.sh`
 - 这些是重要的内部或仓库级 surface，不是普通用户入口
-- `Stage reports`: `check_host_availability.sh`、`run_layered_host_evals.sh` 和 `host_contract_subset.sh` 都可以输出 `host-stage-report/v1`
+- `Stage reports`: `check_host_availability.sh`、`run_helper_gateway_probe.sh`、`run_layered_host_evals.sh` 和 `host_contract_subset.sh` 都可以输出 `host-stage-report/v1`
 - `Pipeline report`: `run_host_readiness_pipeline.sh` 输出 `host-readiness-report/v1`
 - `Cross-host 与 diff reports`: `run_cross_host_readiness.sh` 输出 `cross-host-readiness-report/v1`，`analyze_host_readiness_diff.sh` 输出 `host-readiness-diff-report/v1`
 
@@ -265,7 +266,9 @@ skill 按以下顺序解析审查输入：
 - 将本次审查视为部分审查
 - 除非用户明确展示了先前行为，否则不推断历史行为
 
-当本地仓库可访问时，工作流将 `scripts/collect_diff_context.sh` 作为 helper-first 的事实来源：
+当本地仓库可访问且用户没有显式提供审查材料时，工作流会先尝试运行 `scripts/collect_diff_context.sh`。该路径应相对已安装的 `pre-commit-review` skill 包目录解析，也就是包含 `SKILL.md` 的目录，而不是相对用户项目根目录解析。
+
+helper 是以下信息的事实来源：
 
 - diff 来源
 - 审查边界
@@ -273,7 +276,7 @@ skill 按以下顺序解析审查输入：
 - staged 与 unstaged 的说明
 - untracked 文件警告
 
-只有在 helper 不可用、执行失败，或用户已经显式提供了审查材料时，才回退到直接 Git 检查。
+只有在 helper 在解析后的路径不可用、返回非零退出码、当前 host 无法执行，或用户已经显式提供了审查材料时，才回退到直接 Git 检查。
 
 ## 其他集成方式
 

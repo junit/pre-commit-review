@@ -171,6 +171,7 @@ Execution entrypoints are layered too:
 - `output_eval_codex_runner.sh` and `output_eval_claude_runner.sh` are host-specific thin wrappers that link this checkout into the fixture's project-local skill directory (`.agents/skills` for Codex, `.claude/skills` for Claude Code) and delegate to `output_eval_runner.sh` with host-appropriate non-interactive commands
 - `output_eval_runner_test.sh` is the deterministic self-test for fixture preparation and grading logic
 - `output_eval_host_wrappers_test.sh` verifies the wrappers with mock Codex and Claude binaries so host command templates regress without spending model calls
+- `run_helper_gateway_probe.sh` runs a real-host stage that instruments the bundled helper and selected direct Git commands, then fails if a host inspects Git diff source before attempting `scripts/collect_diff_context.sh`
 - `readme_surface_test.sh` keeps the README-facing public surface aligned with the documented contract gates and entrypoint inventory
 - `readme_host_entrypoints_test.sh` pins the tiered `Host Entrypoints` section so the README keeps exposing the host-lane surface by `Primary`, `Analysis`, `Stage`, and `Internal / Repo-wide`
 - `eval_contract_test.sh` is the repo-wide gate for trigger evals, layered output evals, marker taxonomy assets, and host-lane contract surfaces
@@ -187,11 +188,11 @@ For the host-lane workflow, use these scripts by tier:
 - Use these to run the layered output-eval surface and marker-taxonomy checks without hand-selecting individual eval assets
 - `Analysis`: `evals/analyze_host_readiness_diff.sh`
 - Use this to compare cross-host readiness outputs without rerunning each stage
-- `Stage`: `evals/check_host_availability.sh`, `evals/run_layered_host_evals.sh`, `evals/host_contract_subset.sh`
+- `Stage`: `evals/check_host_availability.sh`, `evals/run_helper_gateway_probe.sh`, `evals/run_layered_host_evals.sh`, `evals/host_contract_subset.sh`
 - Use these when debugging or running one host-lane boundary directly
 - `Internal / Repo-wide`: `evals/eval_contract_test.sh`, host `*_test.sh`, `evals/host_failure_taxonomy.sh`
 - Important support surfaces, but not normal user-facing entrypoints
-- `Stage reports`: `check_host_availability.sh`, `run_layered_host_evals.sh`, and `host_contract_subset.sh` can emit `host-stage-report/v1`
+- `Stage reports`: `check_host_availability.sh`, `run_helper_gateway_probe.sh`, `run_layered_host_evals.sh`, and `host_contract_subset.sh` can emit `host-stage-report/v1`
 - `Pipeline report`: `run_host_readiness_pipeline.sh` emits `host-readiness-report/v1`
 - `Cross-host and diff reports`: `run_cross_host_readiness.sh` emits `cross-host-readiness-report/v1`, and `analyze_host_readiness_diff.sh` emits `host-readiness-diff-report/v1`
 
@@ -265,7 +266,9 @@ If the user provides code without a before/after diff, the skill:
 - treats the review as partial
 - avoids inferring prior behavior unless the user explicitly showed it
 
-When local repository access is available, the workflow uses `scripts/collect_diff_context.sh` as the helper-first source of truth for:
+When local repository access is available and the user has not explicitly provided review material, the workflow first attempts the helper at `scripts/collect_diff_context.sh`. Resolve that path relative to the installed `pre-commit-review` skill package containing `SKILL.md`, not relative to the user's project root.
+
+The helper is the source of truth for:
 
 - diff source
 - review boundaries
@@ -273,7 +276,7 @@ When local repository access is available, the workflow uses `scripts/collect_di
 - staged vs. unstaged notes
 - untracked file warnings
 
-Only fall back to direct Git inspection when the helper is unavailable, fails, or the user already provided the review material explicitly.
+Only fall back to direct Git inspection when the helper is unavailable at that resolved path, exits non-zero, cannot be executed in the current host, or the user already provided the review material explicitly.
 
 ## Other Integration Modes
 

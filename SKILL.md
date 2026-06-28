@@ -49,17 +49,25 @@ Resolve the review source in this order:
 5. User-provided code without before/after diff
 6. No diff available
 
-When local repository access is available, prefer `scripts/collect_diff_context.sh` as the source of truth before falling back to raw Git inspection.
+### Local Repository Gateway
 
-Only fall back to direct Git inspection when the helper is unavailable, fails, or the user already provided the review material explicitly.
+When local repository access is available and the user has not explicitly provided the review material, the first repository command for this workflow is the helper:
 
-Use the helper to determine:
+```bash
+scripts/collect_diff_context.sh
+```
+
+Resolve this path relative to the skill package directory containing this `SKILL.md`. Do not assume `scripts/` exists in the user's project root.
+
+This is a mandatory gateway. Attempt the helper before any direct `git status`, `git diff`, `git diff --cached`, or branch comparison command. Treat the helper output as the source of truth for:
 
 - diff source
 - review boundaries
 - changed file counts
 - staged vs. unstaged notes
 - untracked file warnings
+
+Only fall back to direct Git inspection when the helper is unavailable at that resolved path, exits non-zero, cannot be executed in the current host, or the user already provided the review material explicitly. When falling back, keep the source selection order above.
 
 If only code is provided with no before/after diff:
 

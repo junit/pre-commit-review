@@ -41,6 +41,27 @@ printf 'availability ok\n'
 EOF
 chmod +x "$tmp_dir/mock-availability"
 
+cat >"$tmp_dir/mock-helper-gateway" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+report_json=''
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --report-json)
+      shift
+      report_json="$1"
+      ;;
+  esac
+  shift
+done
+printf 'helper-gateway|%s\n' "$*" >>"${PIPELINE_LOG_FILE:?}"
+cat >"$report_json" <<'JSON'
+{"schema_version":"host-stage-report/v1","stage":"helper_gateway_probe","host":"claude","status":"passed","failure_taxonomy":null}
+JSON
+printf 'helper gateway ok\n'
+EOF
+chmod +x "$tmp_dir/mock-helper-gateway"
+
 cat >"$tmp_dir/mock-layered" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
@@ -89,6 +110,7 @@ PIPELINE_LOG_FILE="$tmp_dir/pipeline.log" \
     --host claude \
     --claude-bin /tmp/mock-claude \
     --availability-gate "$tmp_dir/mock-availability" \
+    --helper-gateway-probe "$tmp_dir/mock-helper-gateway" \
     --layered-host-runner "$tmp_dir/mock-layered" \
     --contract-subset "$tmp_dir/mock-contract" \
     --report-json "$success_report" \
@@ -96,10 +118,12 @@ PIPELINE_LOG_FILE="$tmp_dir/pipeline.log" \
     --case mixed-staged-unstaged \
     --keep-fixtures >"$tmp_dir/success.out"
 
-[ "$(wc -l <"$tmp_dir/pipeline.log" | tr -d ' ')" = "3" ] \
-  || fail 'pipeline must invoke exactly three stages'
+[ "$(wc -l <"$tmp_dir/pipeline.log" | tr -d ' ')" = "4" ] \
+  || fail 'pipeline must invoke exactly four stages'
 grep -Fq '=== Availability: claude ===' "$tmp_dir/success.out" \
   || fail 'availability banner changed'
+grep -Fq '=== Helper Gateway Probe: claude ===' "$tmp_dir/success.out" \
+  || fail 'helper gateway banner changed'
 grep -Fq '=== Layered Host Smoke: claude ===' "$tmp_dir/success.out" \
   || fail 'layered banner changed'
 grep -Fq '=== Contract Subset: claude ===' "$tmp_dir/success.out" \
@@ -113,6 +137,7 @@ require_json_field "$success_report" '.overall_status == "passed"' 'success repo
 require_json_field "$success_report" '.failed_stage == null' 'success report failed_stage must be null'
 require_json_field "$success_report" '.failure_taxonomy == null' 'success report failure_taxonomy must be null'
 require_json_field "$success_report" '.stages.availability.status == "passed"' 'availability success status changed'
+require_json_field "$success_report" '.stages.helper_gateway_probe.status == "passed"' 'helper gateway success status changed'
 require_json_field "$success_report" '.stages.layered_host_smoke.status == "passed"' 'layered success status changed'
 require_json_field "$success_report" '.stages.contract_subset.status == "passed"' 'contract success status changed'
 require_json_field "$success_report" 'has("started_at") and has("finished_at") and has("duration_ms")' 'success report timing fields missing'
@@ -146,6 +171,7 @@ if PIPELINE_LOG_FILE="$tmp_dir/pipeline.log" \
     --host codex \
     --codex-bin /tmp/mock-codex \
     --availability-gate "$tmp_dir/mock-availability-fail" \
+    --helper-gateway-probe "$tmp_dir/mock-helper-gateway" \
     --layered-host-runner "$tmp_dir/mock-layered" \
     --contract-subset "$tmp_dir/mock-contract" \
     --report-json "$availability_report" >"$tmp_dir/fail-availability.out" 2>"$tmp_dir/fail-availability.err"; then
@@ -158,8 +184,55 @@ require_json_field "$availability_report" '.overall_status == "failed"' 'availab
 require_json_field "$availability_report" '.failed_stage == "availability"' 'availability failure stage changed'
 require_json_field "$availability_report" '.failure_taxonomy == "missing-binary"' 'availability failure taxonomy changed'
 require_json_field "$availability_report" '.stages.availability.status == "failed"' 'availability failure status changed'
+require_json_field "$availability_report" '.stages.helper_gateway_probe.status == "skipped"' 'helper gateway must be skipped after availability failure'
 require_json_field "$availability_report" '.stages.layered_host_smoke.status == "skipped"' 'layered must be skipped after availability failure'
 require_json_field "$availability_report" '.stages.contract_subset.status == "skipped"' 'contract must be skipped after availability failure'
+
+cat >"$tmp_dir/mock-helper-gateway-fail" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+report_json=''
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --report-json)
+      shift
+      report_json="$1"
+      ;;
+  esac
+  shift
+done
+printf 'helper-gateway-fail|%s\n' "$*" >>"${PIPELINE_LOG_FILE:?}"
+cat >"$report_json" <<'JSON'
+{"schema_version":"host-stage-report/v1","stage":"helper_gateway_probe","host":"codex","status":"failed","failure_taxonomy":"helper-gateway-violation"}
+JSON
+printf 'host eval failure [helper-gateway-violation]: mock helper gateway failed\n' >&2
+exit 8
+EOF
+chmod +x "$tmp_dir/mock-helper-gateway-fail"
+
+helper_gateway_report="$tmp_dir/helper-gateway-fail-report.json"
+: >"$tmp_dir/pipeline.log"
+if PIPELINE_LOG_FILE="$tmp_dir/pipeline.log" \
+  bash "$pipeline" \
+    --host codex \
+    --codex-bin /tmp/mock-codex \
+    --availability-gate "$tmp_dir/mock-availability" \
+    --helper-gateway-probe "$tmp_dir/mock-helper-gateway-fail" \
+    --layered-host-runner "$tmp_dir/mock-layered" \
+    --contract-subset "$tmp_dir/mock-contract" \
+    --report-json "$helper_gateway_report" >"$tmp_dir/fail-helper-gateway.out" 2>"$tmp_dir/fail-helper-gateway.err"; then
+  fail 'pipeline must fail when helper gateway stage fails'
+fi
+
+[ "$(wc -l <"$tmp_dir/pipeline.log" | tr -d ' ')" = "2" ] \
+  || fail 'helper gateway failure must short-circuit later stages'
+require_json_field "$helper_gateway_report" '.overall_status == "failed"' 'helper gateway failure report must be failed'
+require_json_field "$helper_gateway_report" '.failed_stage == "helper_gateway_probe"' 'helper gateway failure stage changed'
+require_json_field "$helper_gateway_report" '.failure_taxonomy == "helper-gateway-violation"' 'helper gateway failure taxonomy changed'
+require_json_field "$helper_gateway_report" '.stages.availability.status == "passed"' 'availability must stay passed after helper gateway failure'
+require_json_field "$helper_gateway_report" '.stages.helper_gateway_probe.status == "failed"' 'helper gateway failure status changed'
+require_json_field "$helper_gateway_report" '.stages.layered_host_smoke.status == "skipped"' 'layered must be skipped after helper gateway failure'
+require_json_field "$helper_gateway_report" '.stages.contract_subset.status == "skipped"' 'contract must be skipped after helper gateway failure'
 
 cat >"$tmp_dir/mock-layered-fail" <<'EOF'
 #!/usr/bin/env bash
@@ -190,18 +263,20 @@ if PIPELINE_LOG_FILE="$tmp_dir/pipeline.log" \
     --host codex \
     --codex-bin /tmp/mock-codex \
     --availability-gate "$tmp_dir/mock-availability" \
+    --helper-gateway-probe "$tmp_dir/mock-helper-gateway" \
     --layered-host-runner "$tmp_dir/mock-layered-fail" \
     --contract-subset "$tmp_dir/mock-contract" \
     --report-json "$layered_report" >"$tmp_dir/fail-layered.out" 2>"$tmp_dir/fail-layered.err"; then
   fail 'pipeline must fail when layered stage fails'
 fi
 
-[ "$(wc -l <"$tmp_dir/pipeline.log" | tr -d ' ')" = "2" ] \
+[ "$(wc -l <"$tmp_dir/pipeline.log" | tr -d ' ')" = "3" ] \
   || fail 'layered failure must short-circuit contract stage'
 require_json_field "$layered_report" '.overall_status == "failed"' 'layered failure report must be failed'
 require_json_field "$layered_report" '.failed_stage == "layered_host_smoke"' 'layered failure stage changed'
 require_json_field "$layered_report" '.failure_taxonomy == "runner-exit-nonzero"' 'layered failure taxonomy changed'
 require_json_field "$layered_report" '.stages.availability.status == "passed"' 'availability must stay passed after layered failure'
+require_json_field "$layered_report" '.stages.helper_gateway_probe.status == "passed"' 'helper gateway must stay passed after layered failure'
 require_json_field "$layered_report" '.stages.layered_host_smoke.status == "failed"' 'layered failure status changed'
 require_json_field "$layered_report" '.stages.contract_subset.status == "skipped"' 'contract must be skipped after layered failure'
 
@@ -234,6 +309,7 @@ if PIPELINE_LOG_FILE="$tmp_dir/pipeline.log" \
     --host codex \
     --codex-bin /tmp/mock-codex \
     --availability-gate "$tmp_dir/mock-availability-json-first-fail" \
+    --helper-gateway-probe "$tmp_dir/mock-helper-gateway" \
     --layered-host-runner "$tmp_dir/mock-layered" \
     --contract-subset "$tmp_dir/mock-contract" \
     --report-json "$json_first_report" >"$tmp_dir/json-first.out" 2>"$tmp_dir/json-first.err"; then

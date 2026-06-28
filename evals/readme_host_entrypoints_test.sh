@@ -31,6 +31,8 @@ assert_readme() {
     || fail "missing real-host smoke workflow in $file"
   grep -Fq 'check_host_availability.sh' "$file" \
     || fail "missing availability stage entrypoint in $file"
+  grep -Fq 'run_helper_gateway_probe.sh' "$file" \
+    || fail "missing helper gateway probe stage entrypoint in $file"
   grep -Fq 'run_layered_host_evals.sh' "$file" \
     || fail "missing layered stage entrypoint in $file"
   grep -Fq 'host_contract_subset.sh' "$file" \

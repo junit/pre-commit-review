@@ -80,10 +80,17 @@ grep -Fq 'references/advanced/grading-compat.md' "$skill_file" \
   || fail 'SKILL.md must route grading compatibility through references/advanced/grading-compat.md'
 grep -Fq 'Examples are optional calibration aids only.' "$skill_file" \
   || fail 'SKILL.md must keep examples optional rather than required'
-grep -Fq 'When local repository access is available, prefer `scripts/collect_diff_context.sh` as the source of truth before falling back to raw Git inspection.' "$skill_file" \
-  || fail 'SKILL.md must require collect_diff_context.sh as the helper-first repository context source'
-grep -Fq 'Only fall back to direct Git inspection when the helper is unavailable, fails, or the user already provided the review material explicitly.' "$skill_file" \
+grep -Fq '### Local Repository Gateway' "$skill_file" \
+  || fail 'SKILL.md must define the local repository helper gateway'
+grep -Fq 'Resolve this path relative to the skill package directory containing this `SKILL.md`. Do not assume `scripts/` exists in the user'\''s project root.' "$skill_file" \
+  || fail 'SKILL.md must disambiguate the helper path relative to the skill package'
+grep -Fq 'This is a mandatory gateway. Attempt the helper before any direct `git status`, `git diff`, `git diff --cached`, or branch comparison command.' "$skill_file" \
+  || fail 'SKILL.md must require the helper before direct Git inspection'
+grep -Fq 'Only fall back to direct Git inspection when the helper is unavailable at that resolved path, exits non-zero, cannot be executed in the current host, or the user already provided the review material explicitly.' "$skill_file" \
   || fail 'SKILL.md must bound direct Git fallback to explicit helper-unavailable scenarios'
+if grep -Fq 'prefer `scripts/collect_diff_context.sh`' "$skill_file"; then
+  fail 'SKILL.md must not describe helper-first collection as a soft preference'
+fi
 
 if grep -Fq 'references/coverage-led-review.md' "$skill_file"; then
   fail 'SKILL.md must not reference the deprecated flat coverage-led-review path'
