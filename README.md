@@ -50,16 +50,32 @@ This repository is not an application or framework. It is a small, portable skil
 ├── SKILL.md
 ├── agents/
 │   └── openai.yaml
+├── collect-diff-context-cli/
+│   ├── Cargo.toml
+│   └── src/
+├── docs/
+│   └── superpowers/
 ├── references/
 ├── scripts/
-│   └── collect_diff_context.sh
+│   ├── bin/
+│   ├── build_all_binaries.sh
+│   ├── build_with_docker.sh
+│   ├── collect_diff_context.sh
+│   ├── collect_diff_context.legacy.sh
+│   └── validate_schemas.py
 ├── tests/
+│   ├── lib/
 │   ├── collect_diff_context_test.sh
 │   ├── full_review_workflow_test.sh
+│   ├── helper_shadow_mode_test.sh
 │   ├── install_agent_matrix_test.sh
 │   ├── install_smoke_test.sh
+│   ├── parity_assets_test.sh
+│   ├── parity_golden_test.sh
 │   └── skill_contract_test.sh
 └── evals/
+    ├── output/
+    ├── taxonomy/
     ├── eval_contract_test.sh
     ├── readme_surface_test.sh
     ├── readme_host_entrypoints_test.sh
@@ -371,7 +387,9 @@ If you update user-facing documentation, keep localized README files synchronize
 
 Shell scripts (`scripts/*.sh`, `install.sh`, `tests/*.sh`, `evals/*.sh`) are linted by [shellcheck](https://www.shellcheck.net/) in CI (`.github/workflows/lint.yml`). Install it locally (`brew install shellcheck` on macOS) and run `shellcheck -s bash scripts/*.sh install.sh tests/*.sh evals/*.sh` before submitting changes.
 
-The deterministic test suite is `bash tests/*_test.sh`. The eval harness also ships deterministic self-tests that do not call a model: `bash evals/eval_contract_test.sh`, `bash evals/output_eval_runner_test.sh`, and `bash evals/output_eval_host_wrappers_test.sh`. The model-backed runners (`evals/output_eval_codex_runner.sh`, `evals/output_eval_claude_runner.sh`) require a real Codex or Claude CLI and are not part of CI.
+To build the Rust CLI binary locally, run `cargo build --release --manifest-path collect-diff-context-cli/Cargo.toml` or execute `scripts/build_all_binaries.sh`.
+
+The deterministic unit test suite is `bash tests/*_test.sh`. The eval harness also ships deterministic self-tests that do not call a model: `bash evals/eval_contract_test.sh`, `bash evals/output_eval_runner_test.sh`, and `bash evals/output_eval_host_wrappers_test.sh` (or run all eval self-tests via `for f in evals/*_test.sh; do bash "$f"; done`). The model-backed runners (`evals/output_eval_codex_runner.sh`, `evals/output_eval_claude_runner.sh`) require a real Codex or Claude CLI and are not part of CI.
 
 The manual real-host smoke workflow is `.github/workflows/real-host-smoke.yml`. It is intended for a self-hosted runner that already has authenticated `claude` and `codex` CLIs available, and it delegates to `evals/run_real_host_smoke.sh`.
 

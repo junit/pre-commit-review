@@ -50,16 +50,32 @@
 ├── SKILL.md
 ├── agents/
 │   └── openai.yaml
+├── collect-diff-context-cli/
+│   ├── Cargo.toml
+│   └── src/
+├── docs/
+│   └── superpowers/
 ├── references/
 ├── scripts/
-│   └── collect_diff_context.sh
+│   ├── bin/
+│   ├── build_all_binaries.sh
+│   ├── build_with_docker.sh
+│   ├── collect_diff_context.sh
+│   ├── collect_diff_context.legacy.sh
+│   └── validate_schemas.py
 ├── tests/
+│   ├── lib/
 │   ├── collect_diff_context_test.sh
 │   ├── full_review_workflow_test.sh
+│   ├── helper_shadow_mode_test.sh
 │   ├── install_agent_matrix_test.sh
 │   ├── install_smoke_test.sh
+│   ├── parity_assets_test.sh
+│   ├── parity_golden_test.sh
 │   └── skill_contract_test.sh
 └── evals/
+    ├── output/
+    ├── taxonomy/
     ├── eval_contract_test.sh
     ├── readme_surface_test.sh
     ├── readme_host_entrypoints_test.sh
@@ -127,7 +143,7 @@
 
 默认 diff 输出预算是 200KB。可通过 `PRE_COMMIT_REVIEW_MAX_DIFF_BYTES` 覆盖；当当前对话上下文已经很大时应调低，只有在确认输出完整 diff 安全时才设为 `0`。
 
-Review group 预算默认目标值为 120KB，硬上限为 160KB。可通过 `PRE_COMMIT_REVIEW_GROUP_TARGET_BYTES` and `PRE_COMMIT_REVIEW_GROUP_HARD_BYTES` 覆盖；超过硬上限的 group 会标记为 `split-required`。
+Review group 预算默认目标值为 120KB，硬上限为 160KB。可通过 `PRE_COMMIT_REVIEW_GROUP_TARGET_BYTES` 与 `PRE_COMMIT_REVIEW_GROUP_HARD_BYTES` 覆盖；超过硬上限的 group 会标记为 `split-required`。
 
 ### 灰度发布与多实现控制（Rollout & Multi-Implementation Controls）
 入口包装脚本 `scripts/collect_diff_context.sh` 支持多种运行模式，以确保版本过渡期的安全：
@@ -371,7 +387,9 @@ your-skills/
 
 Shell 脚本（`scripts/*.sh`、`install.sh`、`tests/*.sh`、`evals/*.sh`）在 CI（`.github/workflows/lint.yml`）中由 [shellcheck](https://www.shellcheck.net/) 检查。提交前请在本地安装（macOS 可用 `brew install shellcheck`）并运行 `shellcheck -s bash scripts/*.sh install.sh tests/*.sh evals/*.sh`。
 
-确定性测试套件为 `bash tests/*_test.sh`。eval harness 也附带不调用模型的确定性自测：`bash evals/eval_contract_test.sh`、`bash evals/output_eval_runner_test.sh` 和 `bash evals/output_eval_host_wrappers_test.sh`。基于模型的 runner（`evals/output_eval_codex_runner.sh`、`evals/output_eval_claude_runner.sh`）需要真实的 Codex 或 Claude CLI，不属于 CI。
+要在本地编译 Rust CLI 二进制，运行 `cargo build --release --manifest-path collect-diff-context-cli/Cargo.toml` 或执行 `scripts/build_all_binaries.sh`。
+
+确定性单元测试套件为 `bash tests/*_test.sh`。eval harness 也附带不调用模型的确定性自测：`bash evals/eval_contract_test.sh`、`bash evals/output_eval_runner_test.sh` 和 `bash evals/output_eval_host_wrappers_test.sh`（也可通过 `for f in evals/*_test.sh; do bash "$f"; done` 执行所有 eval 自测）。基于模型的 runner（`evals/output_eval_codex_runner.sh`、`evals/output_eval_claude_runner.sh`）需要真实的 Codex 或 Claude CLI，不属于 CI。
 
 手动触发的 real-host smoke workflow 位于 `.github/workflows/real-host-smoke.yml`。它面向已经安装并完成认证的 `claude` 与 `codex` CLI 的 self-hosted runner，并委托 `evals/run_real_host_smoke.sh` 执行。
 
