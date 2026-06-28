@@ -189,7 +189,7 @@ if [ "$claude_bin" = "$tmp_dir/mock-claude-good" ]; then
 
   grep -Fq 'PASS chinese-request' "$tmp_dir/claude.out" \
     || fail 'claude wrapper did not grade the chinese-request scenario'
-  grep -Fq 'claude|scenario=chinese-request|model=sonnet|print=yes|format=text|permission=dontAsk|bare=yes|persist=no|' "$tmp_dir/mock.log" \
+  grep -Fq 'claude|scenario=chinese-request|model=sonnet|print=yes|format=text|permission=dontAsk|bare=no|persist=no|' "$tmp_dir/mock.log" \
     || fail 'claude wrapper did not invoke claude -p with the expected flags'
   grep -Fq 'prompt=/pre-commit-review' "$tmp_dir/mock.log" \
     || fail 'claude wrapper did not pass the rendered prompt text'
