@@ -18,12 +18,11 @@ permissions:
 
 jobs:
   smoke:
-    if: ${{ github.event.inputs.host == 'all' || github.event.inputs.host == '' || github.event.inputs.host == matrix.host }}
     runs-on: self-hosted
     strategy:
       fail-fast: false
       matrix:
-        host: [claude, codex]
+        host: ${{ (github.event.inputs.host == 'claude' && fromJson('["claude"]')) || (github.event.inputs.host == 'codex' && fromJson('["codex"]')) || fromJson('["claude", "codex"]') }}
     steps:
       - uses: actions/checkout@v4
       - name: Check jq
