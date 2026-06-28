@@ -61,6 +61,8 @@
 │   └── skill_contract_test.sh
 └── evals/
     ├── eval_contract_test.sh
+    ├── readme_surface_test.sh
+    ├── readme_host_entrypoints_test.sh
     ├── output-eval.json
     ├── trigger-eval.json
     ├── output_eval_runner.sh
@@ -74,20 +76,16 @@
 
 ### `references/`
 
-由 `SKILL.md` 按需加载，每个文件职责单一：
+由 `SKILL.md` 按需加载，references 现在按职责分层：
 
-| 文件 | 加载时机 | 用途 |
-|------|----------|------|
-| `coverage-led-review.md` | 大体积/截断 diff、委派审查或 reducer 状态 | 覆盖账本、review groups、split suggestions、reducer 模板 |
-| `output-en.md` | 英文审查输出 | 英文 Default、Tiny Diff、Visual Review 模板 |
-| `output-zh.md` | 中文审查输出 | 中文 Default、Tiny Diff、Visual Review 模板 |
-| `output-examples.md` | Visual Review 或复杂结构对齐 | 各语言的具体示例 |
-| `review-risk-taxonomy.md` | 撰写 Priority Findings | 严重级别、finding 结构、证据规则 |
-| `review-verdict-rules.md` | 选择 verdict | 阻塞/非阻塞矩阵、输出质量门 |
-| `visual-output.md` | Full Visual Mode | 视觉报告格式与骨架 |
-| `visual-review-rules.md` | Full Visual Mode | 视觉模式详细规则 |
+| 层级 | 文件 | 加载时机 | 用途 |
+|------|------|----------|------|
+| `decision/` | `verdict-rules.md`、`risk-taxonomy.md` | 所有常规审查 | verdict 选择、阻塞阈值、finding 标记、统计口径与证据约束 |
+| `rendering/` | `output-en.md`、`output-zh.md`、`visual-output.md`、`review-meta.md` | 生成输出时 | 中英文审查骨架、可选视觉化呈现指导，以及机器可读元数据 |
+| `advanced/` | `coverage-led-review.md`、`visual-review-rules.md`、`grading-compat.md` | 仅复杂工作流 | coverage-led 审查流程、UI/视觉审查规则，以及评测兼容精确术语 |
+| `examples/` | `default-tiny-en.md`、`default-tiny-zh.md`、`complex-visual-and-coverage.md` | 仅在需要校准结构时 | 用于对齐结构与语气的具体示例，不重新定义规则 |
 
-日常 Default/Tiny 审查刻意不加载 `output-examples.md`，以避免 token 膨胀。
+日常 Default/Tiny 审查刻意不加载 `examples/` 层，除非确实需要结构校准，以避免 token 膨胀并保持常规运行稳定。
 
 ### `SKILL.md`
 
@@ -137,7 +135,7 @@ Review group 预算默认目标值为 120KB，硬上限为 160KB。可通过 `PR
   - `rust` (默认值): 优先执行编译后的 Rust CLI 二进制程序。如果执行失败，会在 `stderr` 打印警告，并**自动无缝降级执行**旧版 Shell 脚本 `collect_diff_context.legacy.sh`。
   - `legacy` 或 `shell`: 强制直接运行旧版 Shell 脚本。
   - `shadow`: 双路执行模式。同时运行旧版 Shell 脚本和 Rust 二进制程序，比对它们的标准输出，将差异记录至 `/tmp/collect_diff_context_shadow_diff.log` 中。此模式下返回旧版 Shell 的结果以绝对保障生产安全。
-- `PRE_COMMIT_REVIEW_SHADOW_MODE`: 设为 `1` 时强制开启上述 `shadow` 双路比对模式。
+- `PRE_COMMIT_REVIEW_SHADOW_MODE`: 设为 `1` 时会强制开启上述 `shadow` 双路比对模式，即使 `PRE_COMMIT_REVIEW_HELPER_IMPL` 被显式设为 `legacy` 或 `shell` 也一样。
 - `PRE_COMMIT_REVIEW_DISABLE_FALLBACK`: 设为 `1` 时禁用 Rust 失败降级机制，直接透传 Rust 程序的异常和退出码（用于测试与 CI）。
 
 当全局 diff 被截断时，可用 `scripts/collect_diff_context.sh --source <staged|unstaged|branch> --group <group_id>` 只输出一个未超硬预算 review group 的 diff。需要更窄上下文或 group 已拆分时，用 `--path <path>` 做文件级补取。helper 输出的 `context_command` 会包含 `--source`，确保后续取上下文时仍固定在原始 diff source；`split-required` group 必须通过 split suggestions 审查，不能作为一个整体 group 审查。
@@ -152,11 +150,50 @@ Reducer 和 subagent 自动化应优先使用 `Review Plan JSON`、`Reducer Stat
 
 ### `tests/`
 
-确定性 shell 测试，不依赖模型。`skill_contract_test.sh` 固化 `SKILL.md` 与 `references/` 之间的跨文档契约（禁止的占位符、必需的标签、不可翻译的 `VERDICT` 字段）。`collect_diff_context_test.sh` 和 `full_review_workflow_test.sh` 针对临时真实 Git 仓库测试辅助脚本。`install_smoke_test.sh` 和 `install_agent_matrix_test.sh` 在 copy/link/dry-run 模式和受支持的 agent 矩阵上验证安装器。它们全部只需 `bash` 和 `jq`，从不调用模型，可在 CI 中安全运行。
+确定性 shell 测试，不依赖模型。`skill_contract_test.sh` 固化 `SKILL.md` 与 `references/` 之间的跨文档契约（禁止的占位符、必需的标签、不可翻译的 `VERDICT` 字段）。`collect_diff_context_test.sh` 和 `full_review_workflow_test.sh` 针对临时真实 Git 仓库测试辅助脚本。`parity_golden_test.sh` 复用共享 parity 夹具和专用 normalize 脚本，确保 legacy 与 Rust 的比对结果稳定。`install_smoke_test.sh` 和 `install_agent_matrix_test.sh` 在 copy/link/dry-run 模式和受支持的 agent 矩阵上验证安装器。它们全部只需 `bash` 和 `jq`，从不调用模型，可在 CI 中安全运行。
 
 ### `evals/`
 
-基于 LLM 的输出评估 harness。`output-eval.json` 和 `trigger-eval.json` 定义评估用例（期望 verdict 与必含短语）。`output_eval_runner.sh` 为每个用例准备真实本地 fixture，可选地调用外部模型 runner，并按期望 verdict 与必含短语对保存的响应评分。`output_eval_runner_test.sh` 是确定性自测：它合成 mock 响应，在不调用模型的情况下验证评分逻辑。`output_eval_codex_runner.sh` 和 `output_eval_claude_runner.sh` 是宿主专用薄封装，会把当前仓库链接到 fixture 的 project-local skill 目录（Codex 用 `.agents/skills`，Claude Code 用 `.claude/skills`），再用适合各自宿主的非交互命令委托给 `output_eval_runner.sh`。`output_eval_codex_case.sh` 和 `output_eval_claude_case.sh` 每个宿主跑单个用例。`output_eval_host_wrappers_test.sh` 用 mock Codex/Claude 二进制验证这些 wrapper，确保宿主命令模板回归时不消耗真实模型调用。`eval_contract_test.sh` 校验两个 eval JSON 文件的结构。
+基于 LLM 的评估 harness 现在按职责分层：
+
+- `trigger-eval.json` 负责 skill 触发行为评估
+- `output-eval.json` 保留为核心输出场景的兼容总入口
+- `evals/output/routine-output-eval.json`、`advanced-output-eval.json`、`visual-output-eval.json`、`localization-output-eval.json` 将输出评测拆分为 routine、复杂、视觉和本地化四套矩阵
+- `evals/taxonomy/marker-eval.json` 独立承载 `🔒`、`❌`、`⚠️`、`🧪`、`👁️`、`📈`、`🧭` 的 finding marker 与统计口径预期
+
+执行入口也做了分层：
+
+- `output_eval_runner.sh` 针对任意单个 eval 文件准备真实本地 fixture，可选调用外部模型 runner，并按期望 verdict 与必含短语对保存响应评分
+- `--eval-file` 可让 `output_eval_runner.sh` 指向任意单个分层 output eval JSON，例如 `evals/output/visual-output-eval.json`。
+- `run_layered_output_evals.sh` 端到端执行 layered output eval 矩阵，覆盖 routine、advanced、visual 和 localization 四套 eval 文件
+- `run_marker_eval_checks.sh` 校验 marker taxonomy 覆盖，并汇总 blocking / non-blocking case 数量
+- `output_eval_codex_case.sh` 和 `output_eval_claude_case.sh` 每个宿主执行单个 eval case
+- `output_eval_codex_runner.sh` 和 `output_eval_claude_runner.sh` 是宿主专用薄封装，会把当前仓库链接到 fixture 的 project-local skill 目录（Codex 用 `.agents/skills`，Claude Code 用 `.claude/skills`），再用适合各自宿主的非交互命令委托给 `output_eval_runner.sh`
+- `output_eval_runner_test.sh` 是 fixture 准备与评分逻辑的确定性自测
+- `output_eval_host_wrappers_test.sh` 用 mock Codex/Claude 二进制验证这些 wrapper，确保宿主命令模板回归时不消耗真实模型调用
+- `readme_surface_test.sh` 守护 README 面向外部暴露的 public surface，确保文档里的 contract gate 与入口清单保持一致
+- `readme_host_entrypoints_test.sh` 固化分层 `Host Entrypoints` 文档，确保 README 持续以 `Primary`、`Analysis`、`Stage` 和 `Internal / Repo-wide` 暴露 host lane surface
+- `eval_contract_test.sh` 是 repo 级门禁，统一守护 trigger eval、layered output eval、marker taxonomy 资产以及 host lane contract surface
+
+### Host Entrypoints
+
+对于 host lane 工作流，可按下面的层级使用这些脚本：
+
+- `Primary`: `evals/run_host_readiness_pipeline.sh`、`evals/run_cross_host_readiness.sh`
+- 默认入口，用于执行端到端单 host 或跨 host 验证
+- `Primary / Real Host Smoke`: `evals/run_real_host_smoke.sh`、`.github/workflows/real-host-smoke.yml`
+- 当你需要一个稳定入口去跑真实、已认证 host 的 smoke 验证并收集产物时，使用这两个入口
+- `Primary / Output Matrix`: `evals/run_layered_output_evals.sh`、`evals/run_marker_eval_checks.sh`
+- 用于执行分层 output eval surface 与 marker taxonomy 检查，无需手工逐个挑选 eval 资产
+- `Analysis`: `evals/analyze_host_readiness_diff.sh`
+- 用于对比 cross-host readiness 输出，而不必重新跑每个阶段
+- `Stage`: `evals/check_host_availability.sh`、`evals/run_layered_host_evals.sh`、`evals/host_contract_subset.sh`
+- 当你只想调试或单独运行某一层 host 边界时使用
+- `Internal / Repo-wide`: `evals/eval_contract_test.sh`、host `*_test.sh`、`evals/host_failure_taxonomy.sh`
+- 这些是重要的内部或仓库级 surface，不是普通用户入口
+- `Stage reports`: `check_host_availability.sh`、`run_layered_host_evals.sh` 和 `host_contract_subset.sh` 都可以输出 `host-stage-report/v1`
+- `Pipeline report`: `run_host_readiness_pipeline.sh` 输出 `host-readiness-report/v1`
+- `Cross-host 与 diff reports`: `run_cross_host_readiness.sh` 输出 `cross-host-readiness-report/v1`，`analyze_host_readiness_diff.sh` 输出 `host-readiness-diff-report/v1`
 
 ### `agents/openai.yaml`
 
@@ -218,15 +255,25 @@ skill 按以下顺序解析审查输入：
 2. 当前仓库中的 staged 变更
 3. 如果没有 staged，则使用 unstaged 变更
 4. 当前分支与检测到的 base 分支进行比较
-5. 如果没有可用 diff，则提示用户先 stage 变更或直接提供 diff
+5. 用户提供代码但没有 before/after diff
+6. 如果既没有可用 diff，也没有可审查代码，则提示用户先 stage 变更或直接提供 diff
 
-当本地仓库可访问时，工作流优先使用 `scripts/collect_diff_context.sh` 作为以下信息的事实来源：
+如果用户只提供代码而没有 before/after diff，skill 会：
+
+- 执行静态的提交前风格审查
+- 将审查来源标记为用户提供的代码
+- 将本次审查视为部分审查
+- 除非用户明确展示了先前行为，否则不推断历史行为
+
+当本地仓库可访问时，工作流将 `scripts/collect_diff_context.sh` 作为 helper-first 的事实来源：
 
 - diff 来源
 - 审查边界
 - 变更文件统计
 - staged 与 unstaged 的说明
 - untracked 文件警告
+
+只有在 helper 不可用、执行失败，或用户已经显式提供了审查材料时，才回退到直接 Git 检查。
 
 ## 其他集成方式
 
@@ -322,6 +369,8 @@ your-skills/
 Shell 脚本（`scripts/*.sh`、`install.sh`、`tests/*.sh`、`evals/*.sh`）在 CI（`.github/workflows/lint.yml`）中由 [shellcheck](https://www.shellcheck.net/) 检查。提交前请在本地安装（macOS 可用 `brew install shellcheck`）并运行 `shellcheck -s bash scripts/*.sh install.sh tests/*.sh evals/*.sh`。
 
 确定性测试套件为 `bash tests/*_test.sh`。eval harness 也附带不调用模型的确定性自测：`bash evals/eval_contract_test.sh`、`bash evals/output_eval_runner_test.sh` 和 `bash evals/output_eval_host_wrappers_test.sh`。基于模型的 runner（`evals/output_eval_codex_runner.sh`、`evals/output_eval_claude_runner.sh`）需要真实的 Codex 或 Claude CLI，不属于 CI。
+
+手动触发的 real-host smoke workflow 位于 `.github/workflows/real-host-smoke.yml`。它面向已经安装并完成认证的 `claude` 与 `codex` CLI 的 self-hosted runner，并委托 `evals/run_real_host_smoke.sh` 执行。
 
 ## License
 

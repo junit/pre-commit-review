@@ -61,6 +61,8 @@ This repository is not an application or framework. It is a small, portable skil
 │   └── skill_contract_test.sh
 └── evals/
     ├── eval_contract_test.sh
+    ├── readme_surface_test.sh
+    ├── readme_host_entrypoints_test.sh
     ├── output-eval.json
     ├── trigger-eval.json
     ├── output_eval_runner.sh
@@ -74,20 +76,16 @@ This repository is not an application or framework. It is a small, portable skil
 
 ### `references/`
 
-Loaded on demand by `SKILL.md`. Each file has a single responsibility:
+Loaded on demand by `SKILL.md`. References are now layered by responsibility:
 
-| File | Loaded when | Purpose |
-|------|-------------|---------|
-| `coverage-led-review.md` | Large/truncated diffs, delegated review, or reducer state | Coverage ledger, review groups, split suggestions, reducer templates |
-| `output-en.md` | English review output | English Default, Tiny Diff, and Visual Review templates |
-| `output-zh.md` | Chinese review output | Chinese Default, Tiny Diff, and Visual Review templates |
-| `output-examples.md` | Visual Reviews or complex structural alignment | Concrete worked examples per language |
-| `review-risk-taxonomy.md` | Writing Priority Findings | Severity levels, finding structure, evidence rules |
-| `review-verdict-rules.md` | Selecting a verdict | Blocker/non-blocking matrices, output quality gate |
-| `visual-output.md` | Full Visual Mode | Visual report formatting and skeletons |
-| `visual-review-rules.md` | Full Visual Mode | Detailed visual-mode rules |
+| Layer | Files | Loaded when | Purpose |
+|------|-------|-------------|---------|
+| `decision/` | `verdict-rules.md`, `risk-taxonomy.md` | Every routine review | Verdict selection, blocker thresholds, finding markers, tally rules, and evidence discipline |
+| `rendering/` | `output-en.md`, `output-zh.md`, `visual-output.md`, `review-meta.md` | When rendering the response | Per-language review skeletons, optional visual presentation guidance, and machine-readable metadata |
+| `advanced/` | `coverage-led-review.md`, `visual-review-rules.md`, `grading-compat.md` | Only for complex workflows | Coverage-led review flow, UI/visual review rules, and grading-sensitive exact phrases |
+| `examples/` | `default-tiny-en.md`, `default-tiny-zh.md`, `complex-visual-and-coverage.md` | Optional calibration only | Concrete examples for aligning structure and tone without redefining the rules |
 
-Daily Default/Tiny reviews intentionally do not load `output-examples.md` to avoid token bloat.
+Daily Default/Tiny reviews intentionally avoid loading the `examples/` layer unless structure calibration is needed, which keeps routine runs small and stable.
 
 ### `SKILL.md`
 
@@ -137,7 +135,7 @@ The entrypoint wrapper `scripts/collect_diff_context.sh` supports multiple execu
   - `rust` (default): Executes the compiled Rust CLI binary. If it fails, prints a warning to `stderr` and gracefully falls back to the legacy script `collect_diff_context.legacy.sh`.
   - `legacy` or `shell`: Forces execution of the legacy Shell script.
   - `shadow`: Runs both the legacy Shell script and the Rust binary, compares their stdout, logs any differences to `/tmp/collect_diff_context_shadow_diff.log`, and returns the legacy script's stdout to ensure safety.
-- `PRE_COMMIT_REVIEW_SHADOW_MODE`: If set to `1`, forces Shadow Mode comparison.
+- `PRE_COMMIT_REVIEW_SHADOW_MODE`: If set to `1`, forces Shadow Mode comparison even when `PRE_COMMIT_REVIEW_HELPER_IMPL` is explicitly set to `legacy` or `shell`.
 - `PRE_COMMIT_REVIEW_DISABLE_FALLBACK`: If set to `1`, disables the legacy script fallback, strictly propagating Rust CLI process failures.
 
 Use `scripts/collect_diff_context.sh --source <staged|unstaged|branch> --group <group_id>` to retrieve one in-budget review group's diff after a global diff is truncated. Use `--path <path>` for file-level follow-up when a group needs narrower context or has been split. Helper-emitted `context_command` values include `--source` so follow-up retrieval stays pinned to the original diff source; `split-required` groups must be reviewed through split suggestions instead of as one group.
@@ -152,11 +150,50 @@ Reducer and subagent automation should prefer `Review Plan JSON`, `Reducer State
 
 ### `tests/`
 
-Deterministic shell tests with no model dependency. `skill_contract_test.sh` pins the cross-document contract between `SKILL.md` and `references/` (forbidden placeholders, required labels, the untranslatable `VERDICT` field). `collect_diff_context_test.sh` and `full_review_workflow_test.sh` exercise the helper script against temporary real Git repositories. `install_smoke_test.sh` and `install_agent_matrix_test.sh` verify the installer across copy/link/dry-run modes and the supported agent matrix. All of them run with plain `bash` and `jq`, never call a model, and are safe in CI.
+Deterministic shell tests with no model dependency. `skill_contract_test.sh` pins the cross-document contract between `SKILL.md` and `references/` (forbidden placeholders, required labels, the untranslatable `VERDICT` field). `collect_diff_context_test.sh` and `full_review_workflow_test.sh` exercise the helper script against temporary real Git repositories. `parity_golden_test.sh` reuses shared parity fixtures plus a dedicated normalizer to keep legacy-vs-Rust comparisons stable. `install_smoke_test.sh` and `install_agent_matrix_test.sh` verify the installer across copy/link/dry-run modes and the supported agent matrix. All of them run with plain `bash` and `jq`, never call a model, and are safe in CI.
 
 ### `evals/`
 
-The LLM-backed output evaluation harness. `output-eval.json` and `trigger-eval.json` define eval cases (expected verdicts and required phrases). `output_eval_runner.sh` prepares real local fixtures for every case, can optionally invoke an external model runner, and grades saved responses against the expected verdict and required phrases. `output_eval_runner_test.sh` is the deterministic self-test: it synthesizes mock responses and verifies the grading logic without a model. `output_eval_codex_runner.sh` and `output_eval_claude_runner.sh` are host-specific thin wrappers that link this checkout into the fixture's project-local skill directory (`.agents/skills` for Codex, `.claude/skills` for Claude Code) and delegate to `output_eval_runner.sh` with host-appropriate non-interactive commands. `output_eval_codex_case.sh` and `output_eval_claude_case.sh` run a single case per host. `output_eval_host_wrappers_test.sh` verifies the wrappers with mock Codex and Claude binaries so host command templates regress without spending model calls. `eval_contract_test.sh` validates the structure of both eval JSON files.
+The LLM-backed evaluation harness is now layered by responsibility:
+
+- `trigger-eval.json` covers skill triggering behavior
+- `output-eval.json` remains the compatibility umbrella for core output scenarios
+- `evals/output/routine-output-eval.json`, `advanced-output-eval.json`, `visual-output-eval.json`, and `localization-output-eval.json` split output grading into routine, complex, visual, and localization-specific matrices
+- `evals/taxonomy/marker-eval.json` isolates finding-marker and tally expectations for `🔒`, `❌`, `⚠️`, `🧪`, `👁️`, `📈`, and `🧭`
+
+Execution entrypoints are layered too:
+
+- `output_eval_runner.sh` prepares real local fixtures for any one eval file, can optionally invoke an external model runner, and grades saved responses against expected verdicts and required phrases
+- `--eval-file` lets `output_eval_runner.sh` target one layered output eval JSON such as `evals/output/visual-output-eval.json`.
+- `run_layered_output_evals.sh` runs the layered output eval matrix end-to-end across the routine, advanced, visual, and localization eval files
+- `run_marker_eval_checks.sh` validates marker-taxonomy coverage and summarizes blocking vs non-blocking case counts
+- `output_eval_codex_case.sh` and `output_eval_claude_case.sh` run a single eval case per host
+- `output_eval_codex_runner.sh` and `output_eval_claude_runner.sh` are host-specific thin wrappers that link this checkout into the fixture's project-local skill directory (`.agents/skills` for Codex, `.claude/skills` for Claude Code) and delegate to `output_eval_runner.sh` with host-appropriate non-interactive commands
+- `output_eval_runner_test.sh` is the deterministic self-test for fixture preparation and grading logic
+- `output_eval_host_wrappers_test.sh` verifies the wrappers with mock Codex and Claude binaries so host command templates regress without spending model calls
+- `readme_surface_test.sh` keeps the README-facing public surface aligned with the documented contract gates and entrypoint inventory
+- `readme_host_entrypoints_test.sh` pins the tiered `Host Entrypoints` section so the README keeps exposing the host-lane surface by `Primary`, `Analysis`, `Stage`, and `Internal / Repo-wide`
+- `eval_contract_test.sh` is the repo-wide gate for trigger evals, layered output evals, marker taxonomy assets, and host-lane contract surfaces
+
+### Host Entrypoints
+
+For the host-lane workflow, use these scripts by tier:
+
+- `Primary`: `evals/run_host_readiness_pipeline.sh`, `evals/run_cross_host_readiness.sh`
+- Default entrypoints for end-to-end single-host or cross-host verification
+- `Primary / Real Host Smoke`: `evals/run_real_host_smoke.sh`, `.github/workflows/real-host-smoke.yml`
+- Use these when you want one stable entrypoint for real authenticated host smoke runs and artifact collection
+- `Primary / Output Matrix`: `evals/run_layered_output_evals.sh`, `evals/run_marker_eval_checks.sh`
+- Use these to run the layered output-eval surface and marker-taxonomy checks without hand-selecting individual eval assets
+- `Analysis`: `evals/analyze_host_readiness_diff.sh`
+- Use this to compare cross-host readiness outputs without rerunning each stage
+- `Stage`: `evals/check_host_availability.sh`, `evals/run_layered_host_evals.sh`, `evals/host_contract_subset.sh`
+- Use these when debugging or running one host-lane boundary directly
+- `Internal / Repo-wide`: `evals/eval_contract_test.sh`, host `*_test.sh`, `evals/host_failure_taxonomy.sh`
+- Important support surfaces, but not normal user-facing entrypoints
+- `Stage reports`: `check_host_availability.sh`, `run_layered_host_evals.sh`, and `host_contract_subset.sh` can emit `host-stage-report/v1`
+- `Pipeline report`: `run_host_readiness_pipeline.sh` emits `host-readiness-report/v1`
+- `Cross-host and diff reports`: `run_cross_host_readiness.sh` emits `cross-host-readiness-report/v1`, and `analyze_host_readiness_diff.sh` emits `host-readiness-diff-report/v1`
 
 ### `agents/openai.yaml`
 
@@ -218,15 +255,25 @@ The skill resolves review input in this order:
 2. Staged changes in the current repository
 3. Unstaged changes if nothing is staged
 4. Current branch compared with a detected base branch
-5. If no diff is available, the skill asks for staged changes or a provided diff
+5. User-provided code without before/after diff
+6. If no diff or code is available, the skill asks for staged changes or a provided diff
 
-When local repository access is available, the workflow prefers using `scripts/collect_diff_context.sh` as the source of truth for:
+If the user provides code without a before/after diff, the skill:
+
+- perform a static pre-commit-style review
+- labels the review source as user-provided code
+- treats the review as partial
+- avoids inferring prior behavior unless the user explicitly showed it
+
+When local repository access is available, the workflow uses `scripts/collect_diff_context.sh` as the helper-first source of truth for:
 
 - diff source
 - review boundaries
 - changed file counts
 - staged vs. unstaged notes
 - untracked file warnings
+
+Only fall back to direct Git inspection when the helper is unavailable, fails, or the user already provided the review material explicitly.
 
 ## Other Integration Modes
 
@@ -322,6 +369,8 @@ If you update user-facing documentation, keep localized README files synchronize
 Shell scripts (`scripts/*.sh`, `install.sh`, `tests/*.sh`, `evals/*.sh`) are linted by [shellcheck](https://www.shellcheck.net/) in CI (`.github/workflows/lint.yml`). Install it locally (`brew install shellcheck` on macOS) and run `shellcheck -s bash scripts/*.sh install.sh tests/*.sh evals/*.sh` before submitting changes.
 
 The deterministic test suite is `bash tests/*_test.sh`. The eval harness also ships deterministic self-tests that do not call a model: `bash evals/eval_contract_test.sh`, `bash evals/output_eval_runner_test.sh`, and `bash evals/output_eval_host_wrappers_test.sh`. The model-backed runners (`evals/output_eval_codex_runner.sh`, `evals/output_eval_claude_runner.sh`) require a real Codex or Claude CLI and are not part of CI.
+
+The manual real-host smoke workflow is `.github/workflows/real-host-smoke.yml`. It is intended for a self-hosted runner that already has authenticated `claude` and `codex` CLIs available, and it delegates to `evals/run_real_host_smoke.sh`.
 
 ## License
 

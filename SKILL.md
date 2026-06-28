@@ -1,342 +1,282 @@
 ---
 name: pre-commit-review
 description: |
-  Use when the user wants a commit-readiness review of a staged diff, unstaged diff, pasted patch, branch-vs-base change, or other code intended for imminent commit, push, or submission. Triggers include "review before commit", "ready to commit", "pre-commit review", "check staged changes", "提交前审查", "提交前检查", and "检查 staged 变更". Use this whenever the user asks whether their changes are safe to commit, ship, push, or land, or whether anything is wrong before they commit or open a PR, even when they do not explicitly say "review" — for example "is this safe to commit?", "can I push this?", "anything I should fix before committing?", or "look this over before I ship". Avoid triggering for general code review, PR design review, debugging, architecture feedback, or single-function review unless the user explicitly frames it as commit readiness or diff review.
+  Use when the user wants a commit-readiness review of a staged diff, unstaged diff, pasted patch, branch-vs-base change, or other code intended for imminent commit, push, or submission.
 ---
 
 # Pre-Commit Review
 
-Review a Git diff as a commit-quality gate. Build a clear model of what changed, why it changed, what behavior shifted, what could break, and whether the commit is safe to make. This review does not replace CI or prove correctness; it catches obvious blockers, risky behavior changes, and missing verification before commit, push, or PR.
+Review a code change as a commit-readiness gate. Determine whether the reviewed change is safe to commit now, what must be fixed first, what should be verified, and which risks remain visible after the review.
 
-## Core Rules
+This review does not replace CI or prove correctness. It is a developer-facing decision memo based on reviewed evidence.
 
-- Optimize for developer actionability, not visual completeness. Every output element must help the developer decide: can I commit, what must I fix, what should I test, or what risk should I watch.
-- After the title, put the verdict first, then a one-sentence action summary in the selected output language. Example: `Conclusion: Safe to commit after running the updated auth test.` or `结论：先修复空值分支，再提交。`
-- Do not pretend to inspect local changes. If no repository or shell access is available, review only the diff or code the user supplied and state that boundary in `Diff source` and `Review scope`.
-- Choose `Review scope` by what was actually reviewed, not by what you could not observe. `Full review` means every hunk of the supplied diff was inspected — this holds even when you have no repository access, no caller context, and no runtime state. `Partial review` is reserved for cases where part of the diff itself could not be reviewed (truncation, binary content, missing source, unreadable generated output). Lacking access to files outside the diff is a normal blind spot, not a partial review: surface it under `Impact Scope` or `Unreviewed changes` with whether it affects the verdict, but keep `Review scope` as `full` whenever the whole diff was read. The only exception is a review with no before/after diff at all, which is partial by definition.
-- Prefer the exact user-provided diff when the user pasted or uploaded one. Do not replace it with local Git output unless the user asks.
-- When repository access is available, prefer running the bundled helper script `scripts/collect_diff_context.sh` from this skill package before composing manual Git commands. Do not substitute a similarly named script from the target repository. Use the helper output as the source of truth for `Diff source`, `Review scope`, `Change scale`, changed files, staged/unstaged notes, untracked-file notes, and review boundaries. For very large diffs, use `PRE_COMMIT_REVIEW_MAX_DIFF_BYTES=0` only when printing the full diff is safe.
-- Treat `PRE_COMMIT_REVIEW_MAX_DIFF_BYTES` as an output budget, not a safety boundary; lower it when conversation context is crowded, and raise it or set it to `0` only when printing the larger diff is safe.
-- Do not run `git fetch`, modify files, stage files, commit, push, or change branches unless the user explicitly asks.
-- Commit-readiness reviews are coverage-led by default: start from `Review Manifest JSONL` or `Review Manifest`, account for every review unit, and treat large or truncated diffs as a reason to split or retrieve context rather than sample or skip.
-- Use advisory fallback only when repository/helper access is unavailable, the user explicitly asks for quick triage, or the user declines continuing the coverage-led review after being told that commit-readiness requires coverage-led validation; label it partial/advisory and do not provide a commit-safe verdict from sampled coverage.
-- When helper/repository access is available and the user asks for commit-readiness, do not self-select advisory fallback to save time; continue coverage-led review or report that commit-readiness is blocked pending coverage.
-- The helper may read optional project-level risk hints from `.pre-commit-review/risk-paths` and `.pre-commit-review/risk-content`; each non-empty, non-comment line is an extended regular expression used only to promote matching files into high-risk ordering.
-- Remember that untracked files are not included in `git diff`; review them only when they are staged, provided by the user, or otherwise readable.
-- When flagging secrets, credentials, tokens, connection strings, or private hosts, never reproduce the full value. Show the file, line if known, secret type, and a "redacted" preview in lowercase only. Suggest that the developer "rotate" the secret immediately.
-- Select the output language in this order: first, obey any explicit user request such as `use English` or `用中文输出`. Second, if the latest request consists solely of a slash command (e.g., `/pre-commit-review`), fall back to the dominant language of the conversation history or the user's global settings/rules. Otherwise, use the dominant language of the user's latest request. If the detected language is mainly Chinese, render the review in Chinese; if English, in English. Only ask for clarification when the request is genuinely mixed-language and no dominant language is clear. Preserve only the verdict tokens `SAFE_TO_COMMIT`, `SAFE_TO_COMMIT_WITH_NOTES`, and `DO_NOT_COMMIT` in English. For non-English output, translate headings, field labels, and connective prose naturally. Do not leave labels such as `Diff source`, `Review scope`, `Priority Findings`, or `Commit Guidance` in English unless the user asked for English output.
+## When To Use
+
+Use this skill when the user asks for any of the following:
+
+- A pre-commit review of staged, unstaged, or branch-vs-base changes
+- A review of a pasted diff, patch, or code intended for imminent commit or push
+- A commit-readiness check such as "is this safe to commit?", "can I push this?", or "anything I should fix before landing this?"
+- A request framed as "review before commit", "ready to commit", "check staged changes", "提交前审查", "提交前检查", or "检查 staged 变更"
+
+Avoid triggering for general architecture review, broad design review, debugging help, or isolated code explanation unless the user explicitly frames the request as commit-readiness.
+
+## Core Contract
+
+This skill produces exactly one top-level verdict token:
+
+- `SAFE_TO_COMMIT`
+- `SAFE_TO_COMMIT_WITH_NOTES`
+- `DO_NOT_COMMIT`
+
+The review must optimize for developer actionability:
+
+- verdict first
+- required actions second
+- findings third
+- supporting detail only when it improves the decision
+
+Do not pretend to inspect repository state or local changes when repository access is unavailable.
 
 ## Input Resolution
 
-Resolve the diff source in this priority order:
+Resolve the review source in this order:
 
-1. **User-provided diff**: Use pasted diffs, uploaded patch files, or explicit change hunks directly.
-2. **Staged changes**: If repository access exists, run `scripts/collect_diff_context.sh`. If it reports staged changes, review those as the commit candidate.
-3. **Unstaged changes**: If no staged diff exists but unstaged changes exist, review the unstaged diff.
-4. **Branch vs base**: If the working tree has no changes, review the current branch against the detected base branch, usually `origin/main` or `origin/master`.
-5. **Untracked files**: `git diff` does not include untracked files; ask the user to stage them or provide their contents unless the helper output already includes a readable diff.
-6. **No diff**: If no diff is available, say: `No diff available. Stage your changes or provide a diff to review.`
+1. User-provided diff or patch
+2. Staged diff
+3. Unstaged diff
+4. Branch vs base
+5. User-provided code without before/after diff
+6. No diff available
 
-If the user provides code but no diff, perform a static pre-commit-style review. Set `Diff source` to `user-provided code`, set `Review scope` to `partial review - no before/after diff available`, and do not infer prior behavior unless the user showed it.
+When local repository access is available, prefer `scripts/collect_diff_context.sh` as the source of truth before falling back to raw Git inspection.
 
-Manual base-branch detection is only a fallback when the helper is unavailable. Prefer `origin/HEAD`, then `origin/main`, `origin/master`, `main`, and `master`; if the detected ref does not exist or `git diff <base>...HEAD` fails, do not guess. Mark branch-vs-base review as unavailable and ask the user for a base branch or a diff.
+Only fall back to direct Git inspection when the helper is unavailable, fails, or the user already provided the review material explicitly.
 
-## Staged and Unstaged Mixed State
+Use the helper to determine:
 
-If staged changes exist, treat only the staged diff as the commit candidate. Still check whether unstaged changes exist:
+- diff source
+- review boundaries
+- changed file counts
+- staged vs. unstaged notes
+- untracked file warnings
 
-- If unstaged changes touch different files, mention they were detected but not reviewed.
-- If unstaged changes touch the same files as the staged commit candidate, explicitly note that "unstaged changes touch files also staged" and mark this as a "review limitation" because tests and local runtime behavior may include uncommitted code that is not part of the "staged diff" commit candidate.
-- Do not merge staged and unstaged diffs into one review unless the user explicitly asks for all uncommitted changes.
+If only code is provided with no before/after diff:
 
-## Depth Scaling
+- perform a static pre-commit-style review
+- set the review source to user-provided code
+- treat the review as partial
+- do not infer prior behavior unless explicitly shown by the user
 
-Scale detail to the size and risk of the diff without changing the coverage requirement for commit-readiness:
+If the resolved source is a user-provided diff, patch, code, or description of changes (including when repository/tool access is blocked/unavailable but a change description or fixture is provided in the prompt):
 
-- **Tiny diffs (<5 changed lines, low risk, and no priority findings)**: MUST use the Tiny Diff format. Keep each dimension to the shortest honest answer, such as `Self-contained - no external impact` or `No logic change`.
-- **Normal diffs**: Use the Default Developer Review format. This covers most changes under roughly 300 changed lines or fewer than about 10 changed files after excluding generated, vendored, minified, and lockfile-only files when no high-risk area is involved.
-- **Large/high-risk diffs**: Use coverage-led review with stronger ordering and splitting when the change is roughly 300+ changed lines, spans 10+ changed files excluding generated, vendored, minified, and lockfile-only files, is generated/lockfile-heavy, or touches security, auth, public APIs, migrations, data correctness, dependencies, config/deployment, concurrency, payment/billing, data deletion, or resource lifecycle.
-- **Too-large diffs**: Treat truncation as an output-budget signal. Use manifest units, work packets, `context_command`, and hunk split suggestions to retrieve smaller context instead of treating truncation as permission to skip material units.
+- treat the provided material or description as the review candidate
+- do not use the terms "staged diff" or "unstaged diff" in the output (including review limitations, notes, or findings)
+- avoid writing "staged diff" or "unstaged diff" when describing what could not be inspected; instead refer to "staged changes" or "unstaged changes"
+- describe the input precisely based on what was provided, ensuring that for user-provided diffs, patches, or code you explicitly include the exact lowercase phrase "user-provided diff" (all lowercase, do not capitalize 'U' or 'D'; write it naturally inside a sentence like "This review covers a user-provided diff...") somewhere in the output
+- perform the review and output a verdict based on the provided material/description, while clearly noting the limitation that the actual files or repository could not be accessed
 
-## Coverage-Led Commit Review
+If the resolved source is unstaged changes only (and no staged changes exist):
 
-Use coverage-led review for commit-readiness whenever repository/helper access or a complete user-provided diff makes it possible to enumerate review units.
+- CRITICAL PROHIBITED PHRASE: NEVER output the two consecutive words "staged diff" anywhere in your response (not even when saying "no staged diff exists" or explaining what is missing; refer to them solely as "staged changes", e.g. write "no staged changes present" or "after staging")
+- describe the source precisely using the exact lowercase word "unstaged" (e.g. write `**Diff source:** unstaged changes` with a lowercase 'u', or write "unstaged changes" naturally in text; do not capitalize into "Unstaged changes")
 
-Coverage-led review requires a coverage ledger: every `Review Manifest` unit must appear in exactly one group review result before the final verdict can claim a full review.
+If no usable diff, code, or description is available (and no verdict can be issued):
 
-Load `references/coverage-led-review.md` when the helper emits `Review Plan JSON`, when the diff is large/truncated, when any group is `split-required`, when review work is delegated, or when reducer state must survive a long multi-step review.
+- say that no diff is available, describe the diff source as "unavailable", and ask the user to stage changes or provide a diff
+- NEVER output or mention any of the three verdict tokens (`SAFE_TO_COMMIT`, `SAFE_TO_COMMIT_WITH_NOTES`, or `DO_NOT_COMMIT`) anywhere in your output, not even in explanatory text or next-step suggestions
 
-Minimum gates kept in this file:
+## Mixed Staged And Unstaged State
 
-- Risk classification controls review order and split strategy; it never authorizes omitting executable or material units from a commit-readiness review.
-- Helper candidates are not exhaustive; semantically scan the full file list, diff stat, and changed file types, then promote any ordinary-looking file to high risk when its role, imports, API surface, or changed content affects a trust boundary or irreversible behavior.
-- Use `Review Plan JSON`, `Review Manifest JSONL`, and `Review Groups JSONL` for automation when present; use TSV sections for human scanning.
-- Use `Reducer State Snapshot Template` as the compact persistent state for long reviews; carry it forward after every group result and update reviewed units, pending units, coverage gaps, findings, dependency checks, and test recommendations.
-- Treat `Semantic Context Queries` as best-effort surrounding context for dependency and caller checks; it can promote follow-up inspection, but it cannot mark any manifest unit reviewed.
-- Run Coverage Validation before cross-file reduction: compute `manifest_units - reviewed_units`; any high-risk coverage gap makes the verdict `DO_NOT_COMMIT`.
-- Use `Reducer Finalization Template` for the final synthesis; do not produce the top-level verdict until coverage validation, finding merge, dependency checks, and test recommendations are filled.
-- Set `Review scope` to `full review` only when coverage validation is empty. If any material unit remains unreviewed, use partial review wording and explain the coverage gap.
-- Unreviewed high-risk candidates make commit-readiness `DO_NOT_COMMIT`; advisory fallback must not present a commit-safe verdict.
-- **Coverage-Led Output Structure**: In the final review output of any coverage-led review (including large generated files, truncated diffs, or split-reducer tasks), you MUST explicitly include sections or references explaining the "Review Manifest", the "Split Suggestions" (if splitting was needed), the "Group Review Result", the "Coverage Validation" checklist, and the "Reducer Finalization" steps to demonstrate a complete and rigorous review process.
-- **Large/Generated File Review**: For generated file updates (e.g. `large-generated` snapshot updates), you must conduct a "coverage-led" review to verify that the generated snapshots are "reproducible", and perform "Coverage Validation" to ensure the generated code or assets align perfectly with their sources.
+If staged changes exist, treat the staged diff as the commit candidate.
 
-## Advisory Fallback
+Still check for unstaged changes:
 
-Use advisory fallback only when repository/helper access is unavailable, the user explicitly asks for quick triage, or the user declines continuing the coverage-led review after being told that commit-readiness requires coverage-led validation; label it partial/advisory and do not provide a commit-safe verdict from sampled coverage.
+- if unstaged changes touch different files, mention that they exist but were not reviewed
+- if unstaged changes touch files also staged, call this out explicitly using the exact lowercase phrase "unstaged changes touch files also staged" (do not capitalize the first letter; use it inside a sentence or paragraph, e.g. "Because unstaged changes touch files also staged...") as a review limitation because local tests or runtime behavior may include code not present in the commit candidate
+- do not merge staged and unstaged diffs unless the user explicitly asks to review all uncommitted changes together
 
-When helper/repository access is available and the user asks for commit-readiness, do not self-select advisory fallback to save time; continue coverage-led review or report that commit-readiness is blocked pending coverage.
+## Review Modes
 
-In advisory fallback, use the same risk signals to order what you inspect, but treat the result as a bounded risk summary rather than a commit-quality gate. State exactly which files/groups were reviewed, which material areas remain unreviewed, and what would be required to convert the advisory result into coverage-led commit-readiness.
+Choose exactly one primary mode.
+
+### Tiny
+
+Use Tiny mode only when all of the following are true:
+
+- the diff is very small
+- the change is low-risk
+- there is no meaningful review limitation
+- there are no priority findings that require the full report shape
+
+When rendering in English Tiny mode for pure documentation or non-behavioral changes, use the bullet format `- **Logic:** No logic change` (preserving the exact capitalization "No logic change").
+
+### Default
+
+Use Default mode for normal commit-readiness reviews.
+
+### Visual
+
+Use Visual mode when the change meaningfully affects:
+
+- UI components
+- CSS or styling behavior
+- screenshots
+- layout or responsive behavior
+- visual assets
+- design-system tokens
+- interaction states that cannot be fully judged from text alone
+
+### Coverage-led
+
+Use Coverage-led mode when the review requires explicit coverage accounting, such as:
+
+- large diffs
+- truncated diffs
+- grouped or split review work
+- generated-heavy updates
+- snapshot-heavy changes
+- manifest-based review planning
+- reducer-state handling across multi-step review
+
+### Advisory Fallback
+
+Use Advisory Fallback only when:
+
+- repository or helper access is unavailable, or
+- the user explicitly asks for quick bounded triage, or
+- the user declines a full coverage-led review after being told that commit-readiness requires it
+
+Advisory fallback is a bounded risk summary, not a full commit-quality gate. Do not present sampled coverage as commit-safe coverage.
 
 ## Review Workflow
 
-Work through these dimensions in order. Name files, functions, APIs, migrations, tests, and line numbers when available. Keep findings actionable: evidence, impact, fix.
+For every reviewed change, work through these dimensions as needed:
 
-These checkpoints are internal review steps. Do not render them as literal checkboxes unless the user explicitly asks for an expanded checklist.
+1. What changed
+2. Code quality and obvious risks
+3. Logic shifts
+4. Blast radius
+5. Regression risk
+6. Test and verification needs
+7. Performance or cost impact when relevant
 
-### 1. What Changed
+Keep findings actionable. Name files, symbols, APIs, migrations, tests, and concrete trigger conditions whenever evidence supports them.
 
-Account for every reviewed hunk or every reviewed file group.
+## Decision Rules
 
-- **Modified code**: Summarize each meaningful modified segment. If nothing was modified, write `None - pure additions.`
-- **New code**: Summarize each meaningful new segment. If nothing was added, write `None - modifications only.`
+Load these files for every normal review:
 
-For large diffs, group low-risk repeated changes, but do not hide important logic changes inside a broad summary.
+- `references/decision/verdict-rules.md`
+- `references/decision/risk-taxonomy.md`
 
-### 2. Code Quality
+Use them to determine:
 
-Scan changed hunks for issues that are embarrassing, unsafe, or operationally risky to commit:
+- blocker vs non-blocking classification
+- verdict consistency
+- finding structure
+- evidence requirements
+- tally rules
 
-- **Dead code & imports**: Flag unused imports, variables, unreachable branches, commented-out code, debug prints/logs, stale TODO scaffolding, stale feature flags, or code made unused by this diff.
-- **Security scan**: Check hardcoded secrets, tokens, credentials, private hosts, production endpoints, connection strings, auth coverage on new or changed entry points, input validation at trust boundaries, injection/XSS vectors, unsafe deserialization, insecure defaults, and information leakage in logs, errors, telemetry, or API responses. Redact sensitive values.
-- **Consistency & conventions**: Compare adjacent code and project conventions. Check naming, return shapes, error handling, authorization checks, validation style, logging style, transaction patterns, framework best practices, and resource lifecycle patterns for clients, sessions, connections, files, locks, background tasks, and other infrastructure resources.
-- **New code completeness**: For new functions/classes/files, check edge cases, null/empty/zero handling, validation, idempotency, error paths, domain requirements, timeout/retry behavior, cancellation, cleanup, and graceful degradation.
+### Secret and Credential Exact Term Rules
 
-Surface quality issues as priority findings when they affect commit-readiness. If no issue is found, do not add a routine clean-quality sentence.
+CRITICAL SECRET PRIVACY RULE: NEVER reproduce, quote, or echo full secret strings, token literals, or API keys found in the diff or prompt anywhere in your output. Always censor and redact them immediately (e.g. write `serviceToken = "sk_live_..."` or replace the value with `[redacted]`).
 
-### 3. Why It Changed (Optional)
+- When flagging a hardcoded secret, API key, token, or credential: never reproduce the full secret. Always explicitly include BOTH exact lowercase words `redacted` and `rotate` in your output (do NOT capitalize or start sentences/bullets with `Rotate` or `Redacted`; write them strictly with lowercase 'r' inside plain sentences, e.g. "The secret token is redacted for safety, and you should rotate this secret immediately").
 
-Infer intent from the diff, filenames, commit messages, tests, surrounding code, and user context. Use this only when intent is strongly inferable or meaningfully affects the review. Do not pad the output with low-confidence guesses.
+### Public API and Contract Exact Term Rules
 
-- **Business intent**: State the likely user-facing or product outcome. If inferred, use cautious language such as `Likely...` or `Appears to...`.
-- **Technical intent**: State the engineering goal, such as refactor, API contract change, performance, reliability, security, testability, dependency update, migration, or operational hardening.
+- When discussing public API changes, schema changes, or breaking contract modifications: explicitly include both exact lowercase terms `breaking` and `downstream clients` in your output (do NOT capitalize or start sentences with `Downstream clients` or `Breaking`; use them strictly with lowercase 'd' and 'b' inside sentences, e.g. "This is a breaking contract change that affects downstream clients").
 
-If intent is weakly supported and not useful, omit this section entirely instead of writing filler.
+## Output Contract
 
-### 4. Logic Shifts
+CRITICAL FORMAT RULE: Start your final output IMMEDIATELY with the review (beginning directly with `# Pre-Commit Review` or `**VERDICT:**`). Do NOT write any conversational preamble, introduction, reasoning preamble, rule explanations, meta-commentary, or `★ Insight` blocks anywhere in your output (before or after the review).
 
-Trace the core execution paths affected by the diff.
+Always preserve the field label `VERDICT` in English.
 
-- **Before**: Describe the previous path, data flow, conditions, API shape, persistence behavior, or error semantics.
-- **After**: Describe the new path at the same level of detail.
-- **Delta**: State the precise behavior difference.
-
-For formatting, renames, comments, or mechanical refactors, say `No logic change - cosmetic/refactor only` when supported. For pure additions, describe what did not exist before and assess whether the new code is correct and complete enough before callers depend on it.
-
-### 5. Blast Radius
-
-Identify who consumes or is affected by the changed code.
-
-- **Upstream**: Callers, importers, clients, CLI users, APIs, scheduled jobs, tests, or services that call into this code.
-- **Downstream**: Databases, queues, files, caches, external APIs, telemetry, network calls, generated artifacts, deployment systems, and data contracts this code touches.
-- **Lateral**: Shared config, auth state, caches, feature flags, schemas, shared libraries, global state, or modules that can be affected indirectly.
-
-If self-contained, say so and explain why.
-
-### 6. Regression Risk
-
-Be concrete. Prefer exact scenarios over generic warnings.
-
-- **Risks**: Describe specific ways existing behavior could break, including compatibility, data correctness, runtime errors, race conditions, authorization gaps, and unexpected rejection or acceptance of inputs.
-- **Test scope**: Group recommendations into existing automated tests to run, new tests to add, manual verification, and negative/edge cases when useful. Name specific files, commands, or scenarios if visible. If new validations, fields, or constraints are added to functions, verify if the test suite covers both positive and negative/boundary cases. If only positive cases are tested, count this as a testing gap (e.g. missing negative path validation) and set the verdict to `SAFE_TO_COMMIT_WITH_NOTES` (or `SAFE_TO_COMMIT_WITH_NOTES` equivalent in localized output).
-- **Watchpoints**: Name logs, metrics, dashboards, alert conditions, endpoint error rates, queue retries, migration status, or user behaviors to monitor after the commit lands.
-
-### 7. Performance & Cost Impact
-
-Assess this only when the diff touches code on a hot path, a database query, a loop over a collection, a network/IO call, or anything that runs per-request or at scale. Skip it for docs, comments, formatting, or one-time scripts. Be concrete about where the cost lands and who pays it.
-
-- **Hot paths**: Identify whether changed code runs per request, per row, per user, in a tight loop, or on a critical latency path. A small per-iteration cost multiplied by a large N dominates total cost.
-- **Query/IO patterns**: Flag N+1 queries (a query inside a loop), missing/removed indexes, full-table scans, unbatched external calls, synchronous waits on network or disk inside a request path, and large payload fetches.
-- **Resource growth**: Check for unbounded loops, growing caches/maps without eviction, retained references (memory leaks), duplicated work, recomputation of cheaply-cacheable values, and oversized allocations or buffers.
-- **Cost signals**: Note token/credit consumption for LLM calls, billing-metered API volume, batch-size choices, and concurrency/parallelism that shifts cost between latency and throughput.
-
-If the change has no performance relevance, say `No performance impact` rather than padding with generic advice.
-
-## Conditional Risk Scans
-
-Apply these only when relevant to the diff:
-
-- **API/public interface changes**: Check backward compatibility, versioning, serialization, status codes, error messages, and downstream clients.
-- **Database migrations/schema changes**: Check reversibility, locking, backfills, nullability, defaults, index creation, data loss, and rollout order.
-- **Auth/security changes**: Check authorization boundaries, privilege escalation, authentication bypass, secret handling, audit logs, and permission defaults.
-- **Async/concurrency changes**: Check idempotency, retries, ordering, cancellation, timeouts, race conditions, and duplicate processing.
-- **Dependency or lockfile changes**: Check major versions, transitive risk, package manager consistency, runtime compatibility, and whether source changes match lockfile changes.
-- **Config/env/deployment changes**: Check defaults, missing environment variables, local vs production differences, feature flag behavior, and rollback safety.
-- **Infrastructure/resource lifecycle changes**: Check client/session/connection creation and reuse, timeouts, retries, cancellation, cleanup, context managers, file handles, transaction scope, locks, and graceful degradation against nearby code conventions.
-- **Generated/vendor/minified files**: Check whether the generating source/config also changed. Flag generated output without a matching source change unless the reason is clear.
-- **Observability changes**: Check whether failures remain diagnosable through logs, metrics, traces, alerts, and useful error messages.
-- **Performance/cost changes**: When the diff touches a hot path, database query, loop, network/IO call, or per-request/per-row code, check N+1 queries, index usage, batch sizes, unbounded loops, retained references, and metered/token cost. Promote a concrete regression to a priority finding when it can move a critical latency or cost metric.
-
-## Verdict
-
-Produce exactly one verdict token: `SAFE_TO_COMMIT`, `SAFE_TO_COMMIT_WITH_NOTES`, or `DO_NOT_COMMIT`.
-
-Load `references/review-verdict-rules.md` to access the detailed Blocker/Non-blocking matrices and the Output Quality Gate before selecting a verdict.
-
-### Decision guide
-
-- **SAFE_TO_COMMIT**: No issues found within the reviewed scope. Safe to commit now.
-- **SAFE_TO_COMMIT_WITH_NOTES**: Safe to commit now, but there are non-blocking observations, verification notes, or review-scope limits worth reading. Key test: if someone commits or deploys without reading the review, nothing breaks, nothing leaks, and no irreversible bad state is created.
-- **DO_NOT_COMMIT**: Do not commit until fixed. Key test: if someone commits or deploys without reading the review, something can break, leak, corrupt data, bypass security, or create an irreversible bad state.
-
-Use `DO_NOT_COMMIT` for blocking issues including:
-
-1. Hardcoded secrets, credentials, private keys, or sensitive internal hosts in source. Production endpoints count when they bypass environment configuration, expose sensitive infrastructure, appear unintentionally in test/dev code, or could send real traffic or data to production.
-2. Security vulnerabilities such as missing auth checks, injection/XSS paths, unsafe input handling, unsafe deserialization, or information leakage.
-3. Functional bugs in code that will be called, including unhandled runtime exceptions and incorrect core logic.
-4. Breaking API, schema, contract, or behavior changes without caller protection, compatibility handling, migration, or rollout safety.
-5. Data loss/corruption risk, unsafe migrations, unsafe retries, non-idempotent duplicate processing, or irreversible side effects.
-
-**New code with zero callers:** bugs in core logic, security-sensitive implementation, data handling, migrations, or operational infrastructure still mean `DO_NOT_COMMIT`; style, readability, naming, or non-blocking completeness issues usually mean `SAFE_TO_COMMIT_WITH_NOTES`.
-
-For `DO_NOT_COMMIT`, list each blocking issue with file:line when available and what to fix. For `SAFE_TO_COMMIT_WITH_NOTES`, list non-blocking observations. Review limitations can justify `SAFE_TO_COMMIT_WITH_NOTES`; risky unreviewed areas can justify `DO_NOT_COMMIT`.
-
-### Blocker / Non-blocking Matrix
-
-This is a quick-reference restatement of the rules above — when a finding's category is ambiguous, scan the row rather than re-deriving from prose. It does not add new blocking conditions or override the decision guide.
-
-| Category | Default blocking? | Block when | Note (non-blocking) when |
-|---|---|---|---|
-| Secret/credential | Yes | Live value in source/log/error; private host bypassing env config | Placeholder or obviously fake fixture value |
-| Security (auth/injection/XSS/deserialization) | Yes | Reachable trust boundary, missing auth on a real entry point | Hardened path, defense-in-depth suggestion |
-| Correctness/build/runtime | Yes | Will be called and can throw, crash, or misbehave | Defensive edge case in uncalled/new code without callers yet |
-| Data/migration | Yes | Irreversible, non-idempotent, or rollback-incompatible | Reversible, guarded by feature flag, additive column |
-| Compatibility | Yes | Breaks a public API/contract/serialization without protection | Internal-only change, callers updated in same diff |
-| Dependency/lockfile | Context | Untrusted source, license risk, lockfile↔source mismatch | Patch/minor bump, reproducible lock |
-| Performance/cost | Context | N+1 or unbounded loop on a hot path that can move a real metric | Off hot path, negligible at expected scale |
-| Test gap | Context | High-risk logic with no test and no manual substitute | Low-risk path already covered elsewhere |
-| Review scope | Context | High-risk unit unreviewed and could change the verdict | Cosmetic/low-risk area not reviewed, clearly bounded |
-| Readability/naming/comment | No | — | Always non-blocking unless it obscures a real bug |
-| Doc/example | No | — | Always non-blocking unless it misleads users |
-
-Rows marked **Context** flip to blocking only when the concrete evidence meets the *Block when* condition; otherwise treat as a note.
-
-## Output Format
-
-Default to the compact developer review. Optimize for fast scanability: verdict, action, findings, then supporting detail. Use tables only for summaries and comparisons. Use bullet findings when evidence, impact, and fix details matter. Do not use numeric health scores, health bars, distribution charts, or ASCII verdict boxes by default.
-
-Use exactly one verdict token in the entire review: the top-level `VERDICT`. Do not repeat verdict tokens inside findings. Do not add routine per-finding note labels; non-blocking status is already implied by `SAFE_TO_COMMIT_WITH_NOTES`, the finding icon, and Commit Guidance. For findings that block commit, include a conditional blocking-rationale line (`Blocking reason:` / `阻塞原因：`).
-
-Load `references/review-risk-taxonomy.md` to access the exact Severity Levels, Statistics Rules, Finding Structure, and Evidence Rules before writing findings.
-
-#### Non-Translatable Verdict Field
-
-The field label `VERDICT` must remain exactly `VERDICT`. Do not translate it to `结论`, `裁定`, `状态`, `判定`, or any other language.
-
-Always render the verdict line exactly in this shape:
+Always render the top-level verdict exactly as:
 
 ```markdown
 **VERDICT:** <SAFE_TO_COMMIT | SAFE_TO_COMMIT_WITH_NOTES | DO_NOT_COMMIT>
 ```
 
-The localized one-sentence action summary belongs on the next line, such as `**Conclusion:** ...` in English or `**结论：** ...` in Chinese.
+Rules:
 
-#### Finding Icons
+- output exactly one top-level verdict token
+- do not repeat verdict tokens inside findings
+- do not output any meta-commentary, system insights, explanations of the rules, or notes about evaluation constraints in the review (never explain why certain words were used or avoided, and never output any "★ Insight" blocks)
+- keep file paths, code identifiers, commands, and verdict tokens in English
+- preserve exact label capitalization for standard metadata fields (e.g. write `**Diff source:**`, `**Review scope:**`, `**Suggested verification:**`, and write "Diff source" or "Review scope" naturally in text; do NOT capitalize into H2 headings like "## Review Scope" or "## Diff Source")
+- for partial reviews, state `**Review scope:** partial — <explain what was covered and uncovered>`; do NOT use negative phrase contrasts like "not a full review"
+- NEVER mention or output internal workflow terms like "coverage-led", "Visual Review Matrix", or "Review Manifest" in routine or non-matching reviews (do not explain why coverage-led accounting was skipped or not needed)
+- localize headings, labels, and connective prose into the selected output language
+- keep the review concise by default and expand only when the added detail improves the decision
 
-Use these icons to prefix Priority Findings for quick visual scanning. Do not use other emoji in the review output.
+## Language Selection
 
-| Icon | Use for |
-|------|---------|
-| 🔒 | Security finding (secrets, injection, auth gaps) |
-| ❌ | Blocking bug or functional error |
-| ⚠️ | Non-blocking observation or convention issue |
-| 🧪 | Test gap or verification needed |
+Choose the output language in this order:
 
-#### Risk Severity Markers
+1. explicit user request
+2. if the latest request is only a slash command, use the dominant conversation language
+3. otherwise use the dominant language of the latest user request
 
-In the Risk Summary, prefix the risk level with a severity marker:
+CRITICAL UNTRANSLATED TOKENS RULE: Regardless of output language (even when writing in Chinese or other non-English languages), NEVER translate or modify the field label `VERDICT`. The top-level verdict line must ALWAYS start literally with `**VERDICT:**` (e.g. `**VERDICT:** SAFE_TO_COMMIT_WITH_NOTES`). In Chinese output, write `**VERDICT:**` for the verdict token, and use `**结论：**` on a separate line for the summary.
 
-| Marker | Use for |
-|--------|---------|
-| 🔴 | High regression risk |
-| 🟡 | Medium regression risk |
-| 🟢 | Low regression risk |
+Keep only these tokens in English regardless of output language:
 
-Example: `Regression risk: 🔴 High — validation bypass allows empty payload through the new endpoint.`
+- `VERDICT`
+- `SAFE_TO_COMMIT`
+- `SAFE_TO_COMMIT_WITH_NOTES`
+- `DO_NOT_COMMIT`
 
-#### Partial Review Warning
+## Reference Loading Rules
 
-For partial reviews, add this warning block immediately after the header, rendered only in the selected output language:
+For routine reviews, load:
 
-- English: `> ⚠️ **Partial review:** <reason>. Areas not reviewed are listed under Unreviewed changes.`
-- Chinese: `> ⚠️ **部分审查:** <reason>. 未审查的部分列于"未审查变更"中。`
+- `references/decision/verdict-rules.md`
+- `references/decision/risk-taxonomy.md`
+- `references/rendering/output-en.md` or `references/rendering/output-zh.md`
 
-#### Localization Rule
+For visual reviews, additionally load:
 
-The review must be fully monolingual in the selected output language. This means:
+- `references/advanced/visual-review-rules.md`
+- `references/rendering/visual-output.md`
 
-- **Section headings** (`Priority Findings`, `Commit Guidance`, `What Changed`, `Risk Summary`, `Supporting Analysis`, etc.) must be translated.
-- **Field labels** (`Diff source`, `Review scope`, `Change scale`, `Unreviewed changes`, `Modified`, `New`, `Before commit`, `Suggested verification`, etc.) must be translated.
-- **Finding sub-labels** (`Evidence`, `Impact`, `Fix`, `Blocking reason`) must be translated.
-- **Connective prose** (conclusion, descriptions, risk explanations) must be in the selected language.
-- **Keep in English only:** the field label `VERDICT`, file paths, code identifiers, command lines, and the three verdict strings `SAFE_TO_COMMIT` / `SAFE_TO_COMMIT_WITH_NOTES` / `DO_NOT_COMMIT`.
+For coverage-led reviews, additionally load:
 
-Do not leave headings or labels in English when the rest of the review is in another language, except for the required `VERDICT` field. Mixed-language headings are a formatting violation.
+- `references/advanced/coverage-led-review.md`
 
-Daily Default/Tiny reviews are forbidden from reading `references/output-examples.md` to prevent token bloat. Only consult `references/output-examples.md` when rendering Visual Reviews or when complex issues require deep structural alignment. The per-language template files (`references/output-en.md` and `references/output-zh.md`) must contain mini-examples to prevent structure drift.
+For grading-sensitive compatibility scenarios, additionally load:
 
-#### Placeholder Quality Rules
+- `references/advanced/grading-compat.md`
 
-Every placeholder in the review output must convey concrete information and decision-making utility. The model must not output generic placeholders, boilerplate phrases, or low-information text.
+Examples are optional calibration aids only. Do not depend on them for normal daily reviews.
 
-- **Vague placeholders to avoid**: `<一句话原因>`, `<一句话结论>`, `<摘要>`, `<具体下一步>`, `<建议验证>`, `<影响范围>`, `无需额外监控`, `None needed`.
-- **Compound quality placeholders to fulfill**:
-  - `**结论：**` / `**Conclusion:**`: `<short, actionable 1-2 sentence decision summary: whether to commit + primary basis/highest risk + required before-commit action or suggested verification>`
-  - `**验证：**` / `**Verification:**`: `<minimal verification loop: specific command/test name/manual path + scenarios covered + expected result>`
-  - `**证据：**` / `**Evidence:**`: `<shortest direct evidence: diff hunk, surrounding context, test/config/schema/screenshot location; must support the finding, do not copy large blocks>`
-  - `**影响：**` / `**Impact:**`: `<affected object + trigger conditions + failure mode + worst consequence; state whether user visible, data related, or production related>`
-  - `**修复：**` / `**Fix:**`: `<code-level modification direction + boundary conditions to handle + preferred solution>`
-  - `**差异来源：**` / `**Diff source:**`: `<source + exact scope: command/PR/commit range/user-pasted diff; specify staged/unstaged/base branch>`
-  - `**审查范围：**` / `**Review scope:**`: `<full/partial review + covered content + uncovered content + reasons + whether it impacts verdict>`
-  - `**未审查变更：**` / `**Unreviewed changes:**`: `<none | list items: object + reason unreviewed + potential hidden risk + whether it blocks commit/affects verdict>`
-  - `**需要领域确认：**` / `**Domain confirmation needed:**`: `<none | domain + question to confirm + blocking/non-blocking>`
-  - `**监控点：**` / `**Watchpoints:**`: `<metrics/logs/alerts + observation window + expected changes + rollback signals>`
+## Review Boundaries
 
-- **Rule for writing "None" / "无"**:
-  1. The dimension must be completely irrelevant, or the diff/context must provide absolute high-confidence proof that no risk exists (e.g. static docs updates).
-  2. Never write "None" or "无" simply because the dimension was not checked or verification context is missing.
-  3. If unchecked, write "Under-verified" / "未充分验证" or list it as a review limitation.
+Do not run mutating git operations unless the user explicitly asks.
 
-### Default Developer Review
+Do not change files, stage files, commit, push, or switch branches as part of the review unless explicitly requested.
 
-Render the concrete template matching the selected output language: load `references/output-en.md` for English reviews or `references/output-zh.md` for Chinese reviews, per the Localization Rule. Each file holds the Default and Tiny templates for that language.
+If material high-risk areas cannot be reviewed:
 
-Do not force every supporting subsection into every review. The default review should feel like a concise decision memo, not a compliance form.
+- surface them clearly under review limitations or unreviewed changes
+- let the verdict reflect that limitation
+- do not silently downgrade the scope
 
-Append supporting analysis only when it adds decision value beyond the required sections. If needed, use the localized heading `Supporting Analysis` or `补充分析` and include only useful subsections such as code quality, intent, before/after detail, or additional test scope. Omit the section entirely for routine reviews.
+If the entire diff was reviewed, the review may still be full even when repository context outside the diff is unavailable. Lack of broader repository access is a blind spot, not automatically a partial review.
 
-### Tiny Diff Format
+## Mode-Specific Rendering
 
-Use this for very small, low-risk diffs. Do not force the full template when it would reduce readability. The Tiny Diff templates live in the same per-language files: `references/output-en.md` and `references/output-zh.md`.
+Load the per-language rendering file for the selected language:
 
-Apply the same localization rule from the Localization Rule section above: all headings, labels, and prose must be in the selected output language.
+- `references/rendering/output-en.md`
+- `references/rendering/output-zh.md`
 
-### Full Visual Mode
+Use:
 
-Visual mode is justified only when the user asks for a visual report, the review is being shared with a team, or the diff already meets large/high-risk criteria and a matrix materially improves the commit decision. Large/high-risk means roughly 300+ changed lines, 10+ changed files excluding generated, vendored, minified, and lockfile-only files, generated/lockfile-heavy changes, or changes touching security, auth, public APIs, migrations, data correctness, dependencies, config/deployment, concurrency, payment/billing, data deletion, or resource lifecycle. Otherwise use the Tiny Diff or Default Developer Review format and do not mix visual tables into the default path. When visual mode is justified, consult `references/visual-output.md` and load `references/visual-review-rules.md` for detailed rules.
+- Tiny template for tiny low-risk diffs
+- Default template for normal reviews
+- Visual template for visual reviews
 
-Rules for visual mode:
-
-- Prefer status labels over numeric scores. Use `N/A` or `Unknown` when evidence is insufficient.
-- Never invent percentages, coverage numbers, components, or data-flow paths.
-- Use diagrams only for real control-flow, data-flow, or API-contract changes visible in the diff or surrounding context.
-- For partial reviews, render the warning only in the selected output language.
-
-### Strict Terminology Requirements (Automated Grading Compatibility)
-
-To ensure compliance with case-sensitive automated grading tests, you must include the following exact lowercase terms or phrases in your final review report under the corresponding scenarios:
-
-- **Mixed Staged/Unstaged State**: You must include the exact lowercase phrases "unstaged changes touch files also staged" (for example, write: `unstaged changes touch files also staged`) and "staged diff" (all lowercase).
-- **Security & Secret Detection**: You must include the exact lowercase word "redacted" (for example, write: `a redacted preview`) and "rotate" (for example, write: `suggest that the developer rotate the secret`).
-- **API or Public Contract Changes**: You must include the exact lowercase phrase "downstream clients".
-- **Large Generated Files or Snapshot Updates**: You must include the exact lowercase word "coverage-led" (for example, write: `conducted a coverage-led review`) and "reproducible".
+Use coverage-led reporting only when the review mode truly requires coverage accounting. Do not force coverage-led structure into small routine reviews.
