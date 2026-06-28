@@ -1,0 +1,90 @@
+name: Release Multi-Platform Binaries
+
+on:
+  push:
+    tags:
+      - 'v*'
+  workflow_dispatch:
+
+jobs:
+  build-binaries:
+    name: Build (${{ matrix.target }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-musl
+            artifact_name: collect_diff_context-linux-amd64
+            use_musl: true
+
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            artifact_name: collect_diff_context-darwin-arm64
+
+          - os: macos-13
+            target: x86_64-apple-darwin
+            artifact_name: collect_diff_context-darwin-amd64
+
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            artifact_name: collect_diff_context-windows-amd64.exe
+
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.target }}
+
+      - name: Install musl-tools (Linux)
+        if: matrix.use_musl
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+
+      - name: Build release binary
+        run: cargo build --release --target ${{ matrix.target }}
+        working-directory: collect-diff-context-cli
+
+      - name: Prepare binary artifact
+        shell: bash
+        run: |
+          mkdir -p dist
+          if [ "${{ matrix.os }}" = "windows-latest" ]; then
+            cp collect-diff-context-cli/target/${{ matrix.target }}/release/collect-diff-context-cli.exe dist/${{ matrix.artifact_name }}
+          else
+            cp collect-diff-context-cli/target/${{ matrix.target }}/release/collect-diff-context-cli dist/${{ matrix.artifact_name }}
+          fi
+
+      - name: Upload Build Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact_name }}
+          path: dist/${{ matrix.artifact_name }}
+
+  create-release:
+    name: Create GitHub Release
+    needs: build-binaries
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch'
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Download all artifacts
+        uses: actions/download-artifact@v4
+        with:
+          path: artifacts
+
+      - name: Create Release
+        uses: softprops/action-gh-release@v2
+        with:
+          files: |
+            artifacts/collect_diff_context-linux-amd64/collect_diff_context-linux-amd64
+            artifacts/collect_diff_context-darwin-arm64/collect_diff_context-darwin-arm64
+            artifacts/collect_diff_context-darwin-amd64/collect_diff_context-darwin-amd64
+            artifacts/collect_diff_context-windows-amd64.exe/collect_diff_context-windows-amd64.exe
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
