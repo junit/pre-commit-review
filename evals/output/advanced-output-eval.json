@@ -1,0 +1,110 @@
+{
+  "evaluation_method": "Run advanced commit-readiness scenarios through the output eval runner and grade coverage-led behavior, review-scope honesty, advisory fallback boundaries, and grading-compatibility phrases without requiring the final output to dump internal reducer internals verbatim.",
+  "cases": [
+    {
+      "id": "advanced-large-generated-en",
+      "scenario": "large-generated",
+      "locale": "en",
+      "prompt": "Review this large staged snapshot update before commit.",
+      "fixture": "A large diff dominated by generated snapshots with truncation.",
+      "expected": {
+        "verdict": "SAFE_TO_COMMIT_WITH_NOTES",
+        "template": "default",
+        "scope": "partial",
+        "must_include": [
+          "coverage-led",
+          "generated",
+          "reproducible",
+          "Review scope"
+        ],
+        "must_not_include": [
+          "Visual Review Matrix"
+        ]
+      }
+    },
+    {
+      "id": "advanced-full-review-split-reducer-en",
+      "scenario": "full-review-split-reducer",
+      "locale": "en",
+      "prompt": "Review all staged changes before commit, even if the diff is large.",
+      "fixture": "A large staged diff where the helper emits Review Manifest, Review Plan JSON, a split-required generated group, a high-risk migration group, and reducer state. One reviewed migration drops a column without compatibility handling.",
+      "expected": {
+        "verdict": "DO_NOT_COMMIT",
+        "template": "default",
+        "scope": "full",
+        "must_include": [
+          "coverage-led",
+          "split",
+          "drop",
+          "compatibility",
+          "**VERDICT:** DO_NOT_COMMIT"
+        ],
+        "must_not_include": [
+          "SAFE_TO_COMMIT"
+        ]
+      }
+    },
+    {
+      "id": "advanced-generated-reproducibility-en",
+      "scenario": "large-generated",
+      "locale": "en",
+      "prompt": "Review these generated snapshot changes before commit and call out any source-consistency risks.",
+      "fixture": "A generated-heavy diff where the source file is present but the generated snapshots dominate the patch.",
+      "expected": {
+        "verdict": "SAFE_TO_COMMIT_WITH_NOTES",
+        "template": "default",
+        "scope": "partial",
+        "must_include": [
+          "generated",
+          "reproducible",
+          "Suggested verification"
+        ],
+        "must_not_include": [
+          "Review Manifest",
+          "Reducer Finalization"
+        ]
+      }
+    },
+    {
+      "id": "advanced-advisory-fallback-en",
+      "scenario": "no-git-repo",
+      "locale": "en",
+      "prompt": "Do a quick triage of current changes before commit even if you cannot access the repository.",
+      "fixture": "The helper reports that the current directory is not a git repository.",
+      "expected": {
+        "verdict": "NO_VERDICT",
+        "template": "advisory",
+        "scope": "partial",
+        "must_include": [
+          "No diff available",
+          "Diff source",
+          "unavailable"
+        ],
+        "must_not_include": [
+          "**VERDICT:** SAFE_TO_COMMIT",
+          "**VERDICT:** DO_NOT_COMMIT"
+        ]
+      }
+    },
+    {
+      "id": "advanced-mixed-staged-grading-compat-en",
+      "scenario": "mixed-staged-unstaged",
+      "locale": "en",
+      "prompt": "Review staged changes before commit.",
+      "fixture": "Staged changes and unstaged edits touch the same file.",
+      "expected": {
+        "verdict": "SAFE_TO_COMMIT_WITH_NOTES",
+        "template": "default",
+        "scope": "partial",
+        "must_include": [
+          "unstaged changes touch files also staged",
+          "staged diff",
+          "Review scope"
+        ],
+        "must_not_include": [
+          "coverage-led"
+        ]
+      }
+    }
+  ]
+}

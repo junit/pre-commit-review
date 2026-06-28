@@ -1,0 +1,173 @@
+{
+  "evaluation_method": "Run routine commit-readiness scenarios through the output eval runner and grade verdict, template shape, review scope, localization, and routine-field stability against the layered post-refactor skill design.",
+  "cases": [
+    {
+      "id": "routine-tiny-docs-en",
+      "scenario": "tiny-docs",
+      "locale": "en",
+      "prompt": "Review this staged README wording diff before commit.",
+      "fixture": "A one-file documentation diff with +2 / -2 lines and no behavior change.",
+      "expected": {
+        "verdict": "SAFE_TO_COMMIT",
+        "template": "tiny",
+        "scope": "full",
+        "must_include": [
+          "**VERDICT:** SAFE_TO_COMMIT",
+          "No logic change",
+          "🟢 Low"
+        ],
+        "must_not_include": [
+          "Visual Review Matrix",
+          "coverage-led"
+        ]
+      }
+    },
+    {
+      "id": "routine-mixed-staged-unstaged-en",
+      "scenario": "mixed-staged-unstaged",
+      "locale": "en",
+      "prompt": "Review staged changes before commit.",
+      "fixture": "Staged changes and unstaged edits touch the same file.",
+      "expected": {
+        "verdict": "SAFE_TO_COMMIT_WITH_NOTES",
+        "template": "default",
+        "scope": "partial",
+        "must_include": [
+          "unstaged changes touch files also staged",
+          "staged diff",
+          "Review scope",
+          "Unreviewed changes"
+        ],
+        "must_not_include": [
+          "Visual Review Matrix"
+        ]
+      }
+    },
+    {
+      "id": "routine-unstaged-only-en",
+      "scenario": "unstaged-only",
+      "locale": "en",
+      "prompt": "No files are staged yet. Review my current unstaged changes before I commit.",
+      "fixture": "Only unstaged changes exist, and they are limited to a small TypeScript function update.",
+      "expected": {
+        "verdict": "SAFE_TO_COMMIT_WITH_NOTES",
+        "template": "default",
+        "scope": "full",
+        "must_include": [
+          "Diff source",
+          "unstaged",
+          "Review scope",
+          "Suggested verification"
+        ],
+        "must_not_include": [
+          "staged diff"
+        ]
+      }
+    },
+    {
+      "id": "routine-branch-vs-base-en",
+      "scenario": "breaking-api",
+      "locale": "en",
+      "prompt": "Check this branch against main before I open the PR.",
+      "fixture": "A branch-vs-base diff renames a public API response field without compatibility handling.",
+      "expected": {
+        "verdict": "DO_NOT_COMMIT",
+        "template": "default",
+        "scope": "full",
+        "must_include": [
+          "**VERDICT:** DO_NOT_COMMIT",
+          "compatibility",
+          "downstream clients",
+          "Diff source"
+        ],
+        "must_not_include": [
+          "coverage-led"
+        ]
+      }
+    },
+    {
+      "id": "routine-user-provided-diff-en",
+      "scenario": "pasted-diff",
+      "locale": "en",
+      "prompt": "Review this pasted patch for commit readiness.",
+      "fixture": "A user-provided patch with no local repository access.",
+      "expected": {
+        "verdict": "CASE_DEPENDENT",
+        "template": "default",
+        "scope": "partial",
+        "must_include": [
+          "user-provided diff",
+          "Review scope",
+          "Diff source"
+        ],
+        "must_not_include": [
+          "staged diff"
+        ]
+      }
+    },
+    {
+      "id": "routine-hardcoded-secret-en",
+      "scenario": "hardcoded-secret",
+      "locale": "en",
+      "prompt": "Check this staged config diff before I commit.",
+      "fixture": "A staged source diff adds an API key-like credential.",
+      "expected": {
+        "verdict": "DO_NOT_COMMIT",
+        "template": "default",
+        "scope": "full",
+        "must_include": [
+          "redacted",
+          "rotate",
+          "environment variable",
+          "**VERDICT:** DO_NOT_COMMIT"
+        ],
+        "must_not_include": [
+          "sk_live_1234567890example"
+        ]
+      }
+    },
+    {
+      "id": "routine-breaking-api-en",
+      "scenario": "breaking-api",
+      "locale": "en",
+      "prompt": "Pre-commit review this API diff.",
+      "fixture": "A public API response field is renamed without compatibility handling.",
+      "expected": {
+        "verdict": "DO_NOT_COMMIT",
+        "template": "default",
+        "scope": "full",
+        "must_include": [
+          "breaking",
+          "downstream clients",
+          "compatibility"
+        ],
+        "must_not_include": [
+          "SAFE_TO_COMMIT"
+        ]
+      }
+    },
+    {
+      "id": "routine-chinese-request-zh",
+      "scenario": "chinese-request",
+      "locale": "zh-CN",
+      "prompt": "提交前帮我审查 staged diff，用中文输出。",
+      "fixture": "A normal staged code diff with tests updated.",
+      "expected": {
+        "verdict": "SAFE_TO_COMMIT_WITH_NOTES",
+        "template": "default",
+        "scope": "full",
+        "must_include": [
+          "**VERDICT:**",
+          "差异来源",
+          "审查范围",
+          "变更规模",
+          "建议验证"
+        ],
+        "must_not_include": [
+          "**Diff source:**",
+          "**Review scope:**"
+        ]
+      }
+    }
+  ]
+}

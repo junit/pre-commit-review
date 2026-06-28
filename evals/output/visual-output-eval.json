@@ -1,0 +1,112 @@
+{
+  "evaluation_method": "Run UI-oriented commit-readiness scenarios through the output eval runner and grade whether the response switches to the visual template, names reviewed and unreviewed visual scope honestly, and reasons about layout, interaction, accessibility, and regression risk using the post-refactor visual review rules.",
+  "cases": [
+    {
+      "id": "visual-shared-button-refactor-en",
+      "scenario": "breaking-api",
+      "locale": "en",
+      "prompt": "Pre-commit review this shared Button component refactor with a visual focus.",
+      "fixture": "A shared Button component changes variant styling, hover behavior, and focus-visible handling across multiple pages.",
+      "expected": {
+        "verdict": "SAFE_TO_COMMIT_WITH_NOTES",
+        "template": "visual",
+        "scope": "partial",
+        "must_include": [
+          "Visual scope",
+          "Visual Review Matrix",
+          "Accessibility",
+          "Regression risk"
+        ],
+        "must_not_include": [
+          "coverage-led",
+          "Review Manifest"
+        ]
+      }
+    },
+    {
+      "id": "visual-css-layout-overflow-en",
+      "scenario": "large-generated",
+      "locale": "en",
+      "prompt": "Review this staged CSS layout change before commit and focus on responsive risk.",
+      "fixture": "A shared layout wrapper changes grid and flex rules, with likely mobile overflow but no screenshot evidence.",
+      "expected": {
+        "verdict": "SAFE_TO_COMMIT_WITH_NOTES",
+        "template": "visual",
+        "scope": "partial",
+        "must_include": [
+          "Layout & responsive",
+          "Unreviewed changes",
+          "viewport",
+          "Suggested verification"
+        ],
+        "must_not_include": [
+          "**VERDICT:** SAFE_TO_COMMIT"
+        ]
+      }
+    },
+    {
+      "id": "visual-a11y-focus-loss-en",
+      "scenario": "hardcoded-secret",
+      "locale": "en",
+      "prompt": "Review this visual accessibility regression before commit.",
+      "fixture": "A focus-visible treatment is removed from an interactive danger button used across authenticated screens.",
+      "expected": {
+        "verdict": "DO_NOT_COMMIT",
+        "template": "visual",
+        "scope": "full",
+        "must_include": [
+          "**VERDICT:** DO_NOT_COMMIT",
+          "Accessibility",
+          "focus",
+          "Blocking reason"
+        ],
+        "must_not_include": [
+          "coverage-led"
+        ]
+      }
+    },
+    {
+      "id": "visual-theme-under-verified-en",
+      "scenario": "mixed-staged-unstaged",
+      "locale": "en",
+      "prompt": "Review this staged theme-token update before commit with attention to dark mode.",
+      "fixture": "A theme token update affects shared components, but only the light theme was inspected and dark mode remains unverified.",
+      "expected": {
+        "verdict": "SAFE_TO_COMMIT_WITH_NOTES",
+        "template": "visual",
+        "scope": "partial",
+        "must_include": [
+          "Visual scope",
+          "theme",
+          "Unreviewed changes",
+          "dark"
+        ],
+        "must_not_include": [
+          "full review"
+        ]
+      }
+    },
+    {
+      "id": "visual-i18n-wrap-risk-zh",
+      "scenario": "chinese-request",
+      "locale": "zh-CN",
+      "prompt": "提交前帮我做一次视觉审查，重点看国际化文本换行风险，用中文输出。",
+      "fixture": "一个共享表单组件调整了 label 宽度与按钮布局，长中文文本和英文长字符串都可能溢出。",
+      "expected": {
+        "verdict": "SAFE_TO_COMMIT_WITH_NOTES",
+        "template": "visual",
+        "scope": "partial",
+        "must_include": [
+          "视觉范围",
+          "视觉审查矩阵",
+          "文案与本地化",
+          "建议验证"
+        ],
+        "must_not_include": [
+          "**Visual scope:**",
+          "**Suggested verification:**"
+        ]
+      }
+    }
+  ]
+}

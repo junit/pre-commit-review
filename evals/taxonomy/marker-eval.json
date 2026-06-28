@@ -1,0 +1,157 @@
+{
+  "evaluation_method": "Evaluate finding taxonomy independently from template selection by grading whether the response chooses the correct primary marker, blocking classification, and tally behavior for each representative risk category.",
+  "cases": [
+    {
+      "id": "marker-security-secret",
+      "scenario": "hardcoded-secret",
+      "locale": "en",
+      "prompt": "Review this staged config diff before I commit.",
+      "fixture": "A staged source diff adds an API key-like credential.",
+      "expected": {
+        "verdict": "DO_NOT_COMMIT",
+        "expected_primary_marker": "🔒",
+        "expected_blocking": true,
+        "expected_tally": {
+          "blockers": 1,
+          "warnings": 0,
+          "test_gaps": 0,
+          "review_limits": 0
+        },
+        "must_include": [
+          "redacted",
+          "rotate"
+        ]
+      }
+    },
+    {
+      "id": "marker-runtime-bug",
+      "scenario": "breaking-api",
+      "locale": "en",
+      "prompt": "Review this staged runtime behavior change before commit.",
+      "fixture": "A public API response field rename breaks existing consumers and runtime expectations.",
+      "expected": {
+        "verdict": "DO_NOT_COMMIT",
+        "expected_primary_marker": "❌",
+        "expected_blocking": true,
+        "expected_tally": {
+          "blockers": 1,
+          "warnings": 0,
+          "test_gaps": 0,
+          "review_limits": 0
+        },
+        "must_include": [
+          "compatibility",
+          "downstream clients"
+        ]
+      }
+    },
+    {
+      "id": "marker-maintainability-note",
+      "scenario": "tiny-docs",
+      "locale": "en",
+      "prompt": "Review this staged README wording diff before commit.",
+      "fixture": "A one-file documentation diff with +2 / -2 lines and no behavior change.",
+      "expected": {
+        "verdict": "SAFE_TO_COMMIT",
+        "expected_primary_marker": "⚠️",
+        "expected_blocking": false,
+        "expected_tally": {
+          "blockers": 0,
+          "warnings": 1,
+          "test_gaps": 0,
+          "review_limits": 0
+        },
+        "must_include": [
+          "No logic change"
+        ]
+      }
+    },
+    {
+      "id": "marker-test-gap",
+      "scenario": "chinese-request",
+      "locale": "zh-CN",
+      "prompt": "提交前帮我审查 staged diff，用中文输出。",
+      "fixture": "A normal staged code diff with tests updated, but one changed behavior path still lacks explicit regression coverage.",
+      "expected": {
+        "verdict": "SAFE_TO_COMMIT_WITH_NOTES",
+        "expected_primary_marker": "🧪",
+        "expected_blocking": false,
+        "expected_tally": {
+          "blockers": 0,
+          "warnings": 0,
+          "test_gaps": 1,
+          "review_limits": 0
+        },
+        "must_include": [
+          "建议验证"
+        ]
+      }
+    },
+    {
+      "id": "marker-review-limit",
+      "scenario": "large-generated",
+      "locale": "en",
+      "prompt": "Review this large staged snapshot update before commit.",
+      "fixture": "A large diff dominated by generated snapshots with truncation.",
+      "expected": {
+        "verdict": "SAFE_TO_COMMIT_WITH_NOTES",
+        "expected_primary_marker": "👁️",
+        "expected_blocking": false,
+        "expected_tally": {
+          "blockers": 0,
+          "warnings": 1,
+          "test_gaps": 0,
+          "review_limits": 1
+        },
+        "must_include": [
+          "Review scope",
+          "Unreviewed changes"
+        ]
+      }
+    },
+    {
+      "id": "marker-performance-regression",
+      "scenario": "breaking-api",
+      "locale": "en",
+      "prompt": "Review this staged performance-sensitive change before commit.",
+      "fixture": "A hot-path API refactor adds repeated downstream calls and risks an N+1 query pattern.",
+      "expected": {
+        "verdict": "SAFE_TO_COMMIT_WITH_NOTES",
+        "expected_primary_marker": "📈",
+        "expected_blocking": false,
+        "expected_tally": {
+          "blockers": 0,
+          "warnings": 1,
+          "test_gaps": 0,
+          "review_limits": 0
+        },
+        "must_include": [
+          "performance",
+          "Suggested verification"
+        ]
+      }
+    },
+    {
+      "id": "marker-release-migration",
+      "scenario": "full-review-split-reducer",
+      "locale": "en",
+      "prompt": "Review all staged changes before commit, even if the diff is large.",
+      "fixture": "A large staged diff contains a migration that drops a legacy column without compatibility handling.",
+      "expected": {
+        "verdict": "DO_NOT_COMMIT",
+        "expected_primary_marker": "🧭",
+        "expected_blocking": true,
+        "expected_tally": {
+          "blockers": 1,
+          "warnings": 0,
+          "test_gaps": 0,
+          "review_limits": 0
+        },
+        "must_include": [
+          "drop",
+          "compatibility"
+        ]
+      }
+    }
+  ]
+}

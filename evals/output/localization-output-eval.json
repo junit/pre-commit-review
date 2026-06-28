@@ -1,0 +1,140 @@
+{
+  "evaluation_method": "Run bilingual commit-readiness scenarios through the output eval runner and grade whether the response keeps verdict tokens in English while localizing the surrounding structure, labels, and field units appropriately for the requested language.",
+  "cases": [
+    {
+      "id": "localization-english-default",
+      "scenario": "breaking-api",
+      "locale": "en",
+      "prompt": "Pre-commit review this API diff in English.",
+      "fixture": "A public API response field is renamed without compatibility handling.",
+      "expected": {
+        "verdict": "DO_NOT_COMMIT",
+        "template": "default",
+        "scope": "full",
+        "must_include": [
+          "**VERDICT:** DO_NOT_COMMIT",
+          "Diff source",
+          "Review scope",
+          "Change scale",
+          "Suggested verification"
+        ],
+        "must_not_include": [
+          "差异来源",
+          "审查范围",
+          "变更规模"
+        ]
+      }
+    },
+    {
+      "id": "localization-chinese-default",
+      "scenario": "chinese-request",
+      "locale": "zh-CN",
+      "prompt": "提交前帮我审查 staged diff，用中文输出。",
+      "fixture": "A normal staged code diff with tests updated.",
+      "expected": {
+        "verdict": "SAFE_TO_COMMIT_WITH_NOTES",
+        "template": "default",
+        "scope": "full",
+        "must_include": [
+          "**VERDICT:**",
+          "差异来源",
+          "审查范围",
+          "变更规模",
+          "建议验证"
+        ],
+        "must_not_include": [
+          "**Diff source:**",
+          "**Review scope:**",
+          "**Change scale:**"
+        ]
+      }
+    },
+    {
+      "id": "localization-english-visual",
+      "scenario": "mixed-staged-unstaged",
+      "locale": "en",
+      "prompt": "Do a visual pre-commit review of this staged component diff in English.",
+      "fixture": "A staged UI component diff changes layout and interaction states, with mobile viewport not yet inspected.",
+      "expected": {
+        "verdict": "SAFE_TO_COMMIT_WITH_NOTES",
+        "template": "visual",
+        "scope": "partial",
+        "must_include": [
+          "**VERDICT:**",
+          "Visual scope",
+          "Visual Review Matrix",
+          "Unreviewed changes"
+        ],
+        "must_not_include": [
+          "视觉范围",
+          "视觉审查矩阵"
+        ]
+      }
+    },
+    {
+      "id": "localization-chinese-visual",
+      "scenario": "chinese-request",
+      "locale": "zh-CN",
+      "prompt": "提交前帮我做视觉审查，用中文输出。",
+      "fixture": "一个视觉/UI 变更影响共享组件，且仅审查了桌面浅色主题。",
+      "expected": {
+        "verdict": "SAFE_TO_COMMIT_WITH_NOTES",
+        "template": "visual",
+        "scope": "partial",
+        "must_include": [
+          "**VERDICT:**",
+          "视觉范围",
+          "视觉审查矩阵",
+          "未审查变更"
+        ],
+        "must_not_include": [
+          "**Visual scope:**",
+          "Visual Review Matrix"
+        ]
+      }
+    },
+    {
+      "id": "localization-english-secret",
+      "scenario": "hardcoded-secret",
+      "locale": "en",
+      "prompt": "Check this staged config diff before I commit.",
+      "fixture": "A staged source diff adds an API key-like credential.",
+      "expected": {
+        "verdict": "DO_NOT_COMMIT",
+        "template": "default",
+        "scope": "full",
+        "must_include": [
+          "**VERDICT:** DO_NOT_COMMIT",
+          "redacted",
+          "rotate"
+        ],
+        "must_not_include": [
+          "已打码",
+          "轮换凭据"
+        ]
+      }
+    },
+    {
+      "id": "localization-chinese-secret",
+      "scenario": "hardcoded-secret",
+      "locale": "zh-CN",
+      "prompt": "提交前帮我检查这个配置 diff，用中文输出。",
+      "fixture": "一个 staged 源码 diff 引入了类似 API key 的凭据。",
+      "expected": {
+        "verdict": "DO_NOT_COMMIT",
+        "template": "default",
+        "scope": "full",
+        "must_include": [
+          "**VERDICT:** DO_NOT_COMMIT",
+          "redacted",
+          "rotate",
+          "建议验证"
+        ],
+        "must_not_include": [
+          "**SAFE_TO_COMMIT:**",
+          "**DO_NOT_COMMIT:**"
+        ]
+      }
+    }
+  ]
+}

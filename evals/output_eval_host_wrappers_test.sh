@@ -7,13 +7,43 @@ codex_runner="$repo_root/evals/output_eval_codex_runner.sh"
 claude_runner="$repo_root/evals/output_eval_claude_runner.sh"
 tmp_dir="$(mktemp -d)"
 trap 'rm -rf "$tmp_dir"' EXIT
+codex_bin=''
+claude_bin=''
+protocol_mode='no'
 
 fail() {
   printf 'output eval host wrapper test failed: %s\n' "$*" >&2
   exit 1
 }
 
-cat >"$tmp_dir/mock-codex" <<'EOF'
+host_protocol_fail() {
+  printf 'host eval failure [protocol-mismatch]: %s\n' "$*" >&2
+  exit 1
+}
+
+while [ "$#" -gt 0 ]; do
+  case "$1" in
+    --codex-bin)
+      shift
+      [ "$#" -gt 0 ] || fail '--codex-bin requires a value'
+      codex_bin="$1"
+      ;;
+    --claude-bin)
+      shift
+      [ "$#" -gt 0 ] || fail '--claude-bin requires a value'
+      claude_bin="$1"
+      protocol_mode='yes'
+      ;;
+    *)
+      fail "unknown argument: $1"
+      ;;
+  esac
+  shift
+done
+
+if [ -z "$codex_bin" ]; then
+  codex_bin="$tmp_dir/mock-codex"
+  cat >"$codex_bin" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 
@@ -65,9 +95,10 @@ Diff source: unavailable
 No diff available
 OUT
 EOF
-chmod +x "$tmp_dir/mock-codex"
+  chmod +x "$codex_bin"
+fi
 
-cat >"$tmp_dir/mock-claude" <<'EOF'
+cat >"$tmp_dir/mock-claude-good" <<'EOF'
 #!/usr/bin/env bash
 set -euo pipefail
 
@@ -117,11 +148,24 @@ cat <<'OUT'
 建议验证
 OUT
 EOF
-chmod +x "$tmp_dir/mock-claude"
+chmod +x "$tmp_dir/mock-claude-good"
+
+cat >"$tmp_dir/mock-claude-bad-output" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+cat <<'OUT'
+plain text without required review framing
+OUT
+EOF
+chmod +x "$tmp_dir/mock-claude-bad-output"
+
+if [ -z "$claude_bin" ]; then
+  claude_bin="$tmp_dir/mock-claude-good"
+fi
 
 MOCK_CLI_LOG_FILE="$tmp_dir/mock.log" \
   bash "$codex_runner" \
-    --codex-bin "$tmp_dir/mock-codex" \
+    --codex-bin "$codex_bin" \
     --model gpt-5.5 \
     --case no-git-repo \
     --fixtures-dir "$tmp_dir/codex-fixtures" \
@@ -134,19 +178,45 @@ grep -Fq 'codex|scenario=no-git-repo|model=gpt-5.5|skip=yes|ephemeral=yes|sandbo
 grep -Fq 'prompt=Prompt:' "$tmp_dir/mock.log" \
   || fail 'codex wrapper did not stream the prompt file to stdin'
 
-MOCK_CLI_LOG_FILE="$tmp_dir/mock.log" \
+if [ "$claude_bin" = "$tmp_dir/mock-claude-good" ]; then
+  MOCK_CLI_LOG_FILE="$tmp_dir/mock.log" \
+    bash "$claude_runner" \
+      --claude-bin "$claude_bin" \
+      --model sonnet \
+      --case chinese-request \
+      --fixtures-dir "$tmp_dir/claude-fixtures" \
+      --responses-dir "$tmp_dir/claude-responses" >"$tmp_dir/claude.out"
+
+  grep -Fq 'PASS chinese-request' "$tmp_dir/claude.out" \
+    || fail 'claude wrapper did not grade the chinese-request scenario'
+  grep -Fq 'claude|scenario=chinese-request|model=sonnet|print=yes|format=text|permission=dontAsk|bare=yes|persist=no|' "$tmp_dir/mock.log" \
+    || fail 'claude wrapper did not invoke claude -p with the expected flags'
+  grep -Fq 'prompt=/pre-commit-review' "$tmp_dir/mock.log" \
+    || fail 'claude wrapper did not pass the rendered prompt text'
+
+  claude_bin="$tmp_dir/mock-claude-bad-output"
+fi
+
+if MOCK_CLI_LOG_FILE="$tmp_dir/mock.log" \
   bash "$claude_runner" \
-    --claude-bin "$tmp_dir/mock-claude" \
+    --claude-bin "$claude_bin" \
     --model sonnet \
     --case chinese-request \
-    --fixtures-dir "$tmp_dir/claude-fixtures" \
-    --responses-dir "$tmp_dir/claude-responses" >"$tmp_dir/claude.out"
+    --fixtures-dir "$tmp_dir/claude-bad-fixtures" \
+    --responses-dir "$tmp_dir/claude-bad-responses" >"$tmp_dir/claude-bad.out" 2>"$tmp_dir/claude-bad.err"; then
+  host_protocol_fail 'claude wrapper accepted shape-incompatible output'
+fi
 
-grep -Fq 'PASS chinese-request' "$tmp_dir/claude.out" \
-  || fail 'claude wrapper did not grade the chinese-request scenario'
-grep -Fq 'claude|scenario=chinese-request|model=sonnet|print=yes|format=text|permission=dontAsk|bare=yes|persist=no|' "$tmp_dir/mock.log" \
-  || fail 'claude wrapper did not invoke claude -p with the expected flags'
-grep -Fq 'prompt=/pre-commit-review' "$tmp_dir/mock.log" \
-  || fail 'claude wrapper did not pass the rendered prompt text'
+grep -Eq 'missing expected verdict token|expected verdict .* but got <none>|failed must_include checks|failed must_not_include check' "$tmp_dir/claude-bad.err" \
+  || {
+    if [ -f "$tmp_dir/claude-bad.err" ]; then
+      cat "$tmp_dir/claude-bad.err" >&2
+    fi
+    host_protocol_fail 'claude wrapper rejected output for an unexpected reason'
+  }
+
+if [ "$protocol_mode" = 'yes' ]; then
+  host_protocol_fail "claude wrapper rejected shape-incompatible output from $claude_bin"
+fi
 
 printf 'output eval host wrapper tests passed\n'

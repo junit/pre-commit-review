@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+script_dir="$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd -P)"
+. "$script_dir/host_failure_taxonomy.sh"
+
 claude_bin='claude'
 model=''
 
@@ -13,10 +16,6 @@ EOF
 fail() {
   printf 'output eval claude case failed: %s\n' "$*" >&2
   exit 1
-}
-
-require_command() {
-  command -v "$1" >/dev/null 2>&1 || fail "missing required command: $1"
 }
 
 while [ "$#" -gt 0 ]; do
@@ -46,7 +45,9 @@ done
 [ -n "${PRE_COMMIT_REVIEW_EVAL_PROMPT_FILE:-}" ] || fail 'PRE_COMMIT_REVIEW_EVAL_PROMPT_FILE is required'
 [ -n "${PRE_COMMIT_REVIEW_EVAL_RESPONSE_FILE:-}" ] || fail 'PRE_COMMIT_REVIEW_EVAL_RESPONSE_FILE is required'
 
-require_command "$claude_bin"
+if [ ! -x "$claude_bin" ] && ! command -v "$claude_bin" >/dev/null 2>&1; then
+  host_eval_taxonomy_fail 'missing-binary' "claude binary not found: $claude_bin"
+fi
 
 if git rev-parse --show-toplevel >/dev/null 2>&1; then
   mkdir -p .git/info
@@ -60,7 +61,7 @@ mkdir -p .claude/skills
 ln -sfn "$PRE_COMMIT_REVIEW_EVAL_SKILL_DIR" .claude/skills/pre-commit-review
 
 prompt_text="$(
-  printf '/pre-commit-review\n\nFollow the skill instructions exactly. Use the required output template and keep labels such as `VERDICT`, `差异来源`, `审查范围`, `变更规模`, and `建议验证` verbatim when they apply.\n\n%s' \
+  printf '/pre-commit-review\n\nFollow the skill instructions exactly. Start your output IMMEDIATELY with `# Pre-Commit Review` or `**VERDICT:**`. Do NOT output any preamble, rule explanations, or `★ Insight` blocks. Use the required output template and keep labels such as `VERDICT`, `差异来源`, `审查范围`, `变更规模`, and `建议验证` verbatim when they apply.\n\n%s' \
     "$(cat "$PRE_COMMIT_REVIEW_EVAL_PROMPT_FILE")"
 )"
 
@@ -69,7 +70,6 @@ cmd=(
   -p
   --output-format text
   --permission-mode dontAsk
-  --bare
   --no-session-persistence
 )
 

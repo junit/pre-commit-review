@@ -5,6 +5,7 @@ script_dir="$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd -P)"
 repo_root="$(CDPATH='' cd -- "$script_dir/.." && pwd -P)"
 runner="$repo_root/evals/output_eval_runner.sh"
 cases_file="$repo_root/evals/output-eval.json"
+routine_cases_file="$repo_root/evals/output/routine-output-eval.json"
 tmp_dir="$(mktemp -d)"
 trap 'rm -rf "$tmp_dir"' EXIT
 
@@ -16,6 +17,13 @@ fail() {
 fixtures_dir="$tmp_dir/fixtures"
 responses_dir="$tmp_dir/responses"
 manifest_file="$tmp_dir/manifest.json"
+
+bash "$runner" --help >"$tmp_dir/help.out"
+
+grep -Fq -- '--eval-file FILE' "$tmp_dir/help.out" \
+  || fail 'runner help must advertise --eval-file'
+grep -Fq 'layered eval file such as evals/output/visual-output-eval.json' "$tmp_dir/help.out" \
+  || fail 'runner help must explain layered eval-file usage'
 
 bash "$runner" --fixtures-dir "$fixtures_dir" --responses-dir "$responses_dir" --manifest "$manifest_file" >"$tmp_dir/prepare.out"
 
@@ -96,5 +104,22 @@ if bash "$runner" --case hardcoded-secret --fixtures-dir "$fixtures_dir" --respo
 fi
 grep -Fq 'forbidden term present for hardcoded-secret' "$tmp_dir/leak.out" \
   || fail 'runner did not report the forbidden-term secret leak'
+
+layered_fixtures_dir="$tmp_dir/layered-fixtures"
+layered_responses_dir="$tmp_dir/layered-responses"
+layered_manifest_file="$tmp_dir/layered-manifest.json"
+
+bash "$runner" \
+  --eval-file "$routine_cases_file" \
+  --fixtures-dir "$layered_fixtures_dir" \
+  --responses-dir "$layered_responses_dir" \
+  --manifest "$layered_manifest_file" >"$tmp_dir/layered.out"
+
+[ -d "$layered_fixtures_dir/routine-tiny-docs-en/workdir" ] \
+  || fail 'runner did not prepare layered routine tiny-docs fixture'
+[ -f "$layered_manifest_file" ] \
+  || fail 'runner did not write manifest for layered eval file'
+grep -Fq 'PREPARED tiny-docs' "$tmp_dir/layered.out" \
+  || fail 'runner did not prepare tiny-docs from the layered eval file'
 
 printf 'output eval runner tests passed\n'

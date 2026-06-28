@@ -1,0 +1,42 @@
+name: Real Host Smoke
+
+on:
+  workflow_dispatch:
+    inputs:
+      host:
+        description: Host to run
+        required: false
+        default: all
+        type: choice
+        options:
+          - all
+          - claude
+          - codex
+
+permissions:
+  contents: read
+
+jobs:
+  smoke:
+    if: ${{ github.event.inputs.host == 'all' || github.event.inputs.host == '' || github.event.inputs.host == matrix.host }}
+    runs-on: self-hosted
+    strategy:
+      fail-fast: false
+      matrix:
+        host: [claude, codex]
+    steps:
+      - uses: actions/checkout@v4
+      - name: Check jq
+        run: jq --version
+      - name: Run real host smoke
+        run: |
+          bash evals/run_real_host_smoke.sh \
+            --host "${{ matrix.host }}" \
+            --artifact-dir ".tmp/real-host-smoke"
+      - name: Upload real host report
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: real-host-smoke-${{ matrix.host }}
+          path: .tmp/real-host-smoke/${{ matrix.host }}-host-readiness-report.json
+          if-no-files-found: error

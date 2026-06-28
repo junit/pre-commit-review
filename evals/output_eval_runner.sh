@@ -2,6 +2,7 @@
 set -euo pipefail
 
 script_dir="$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd -P)"
+. "$script_dir/host_failure_taxonomy.sh"
 repo_root="$(CDPATH='' cd -- "$script_dir/.." && pwd -P)"
 output_eval_file="$repo_root/evals/output-eval.json"
 
@@ -17,7 +18,7 @@ usage() {
 Usage: output_eval_runner.sh [options]
 
 Prepare pre-commit-review output-eval fixtures, optionally run an external model runner,
-and grade saved responses against evals/output-eval.json.
+and grade saved responses against an eval JSON file.
 
 Options:
   --runner CMD         Shell command used to produce one response per case.
@@ -32,6 +33,9 @@ Options:
                        Case-specific helper env vars are also exported when configured.
   --responses-dir DIR  Directory containing or receiving response files named <case-id>.md
   --fixtures-dir DIR   Directory where case fixtures will be prepared
+  --eval-file FILE     Eval JSON file to prepare and grade. Defaults to evals/output-eval.json
+                       Use a layered eval file such as evals/output/visual-output-eval.json
+                       to run one output matrix directly.
   --case SCENARIO      Run one scenario only
   --manifest FILE      Write a JSON manifest describing the prepared fixtures
   --keep-fixtures      Do not remove the auto-created temporary fixtures directory
@@ -125,6 +129,18 @@ build_case_mixed_staged_unstaged() {
   git -C "$workdir" add src/user.ts
   printf '\nexport function debugUser(input) {\n  return input;\n}\n' >>"$workdir/src/user.ts"
 }
+
+build_case_unstaged_only() {
+  local workdir="$1"
+
+  mkdir -p "$workdir/src"
+  init_repo "$workdir"
+  printf 'export function parseUser(input) {\n  return input.trim();\n}\n' >"$workdir/src/user.ts"
+  git -C "$workdir" add src/user.ts
+  git -C "$workdir" commit -q -m code-baseline
+  printf 'export function parseUser(input) {\n  return input.trim().toLowerCase();\n}\n' >"$workdir/src/user.ts"
+}
+
 
 build_case_hardcoded_secret() {
   local workdir="$1"
@@ -223,6 +239,7 @@ prepare_case_fixture() {
   case "$scenario" in
     tiny-docs) build_case_tiny_docs "$workdir" ;;
     mixed-staged-unstaged) build_case_mixed_staged_unstaged "$workdir" ;;
+    unstaged-only) build_case_unstaged_only "$workdir" ;;
     hardcoded-secret) build_case_hardcoded_secret "$workdir" ;;
     breaking-api) build_case_breaking_api "$workdir" ;;
     large-generated)
@@ -306,7 +323,12 @@ grade_case() {
 
   while IFS= read -r term; do
     [ -n "$term" ] || continue
-    if grep -Fq "$term" "$response_file"; then
+    if [ "$term" = "**VERDICT:** SAFE_TO_COMMIT" ]; then
+      if grep -Eq '^\*\*VERDICT:\*\* SAFE_TO_COMMIT$' "$response_file"; then
+        printf 'forbidden term present for %s: %s\n' "$scenario" "$term" >&2
+        forbidden_present=1
+      fi
+    elif grep -Fq "$term" "$response_file"; then
       printf 'forbidden term present for %s: %s\n' "$scenario" "$term" >&2
       forbidden_present=1
     fi
@@ -321,7 +343,7 @@ run_case() {
   local case_json="$1"
   local case_dir="$2"
   local metadata_file response_file workdir case_id scenario locale prompt_file
-  local env_exports_tmp
+  local env_exports_tmp runner_status=0
 
   metadata_file="$case_dir/metadata.json"
   response_file="$responses_dir/$(jq -r '.id' <<<"$case_json").md"
@@ -352,9 +374,12 @@ run_case() {
       eval "export $assignment"
     done <"$env_exports_tmp"
     sh -c "$runner_command"
-  )
+  ) || runner_status=$?
 
   rm -f "$env_exports_tmp"
+
+  [ "$runner_status" -eq 0 ] \
+    || host_eval_taxonomy_fail 'runner-exit-nonzero' "runner exited non-zero for scenario $scenario: $runner_status"
 }
 
 while [ "$#" -gt 0 ]; do
@@ -373,6 +398,11 @@ while [ "$#" -gt 0 ]; do
       shift
       [ "$#" -gt 0 ] || fail '--fixtures-dir requires a value'
       fixtures_dir="$1"
+      ;;
+    --eval-file)
+      shift
+      [ "$#" -gt 0 ] || fail '--eval-file requires a value'
+      output_eval_file="$1"
       ;;
     --case)
       shift
@@ -434,6 +464,11 @@ while IFS= read -r case_json; do
 
   if [ -n "$runner_command" ]; then
     run_case "$case_json" "$case_dir"
+    response_file="$responses_dir/$case_id.md"
+    [ -f "$response_file" ] \
+      || host_eval_taxonomy_fail 'response-missing' "missing response file for $case_id: $response_file"
+    [ -s "$response_file" ] \
+      || host_eval_taxonomy_fail 'response-empty' "response file is empty: $response_file"
   fi
 
   if [ -f "$responses_dir/$case_id.md" ]; then

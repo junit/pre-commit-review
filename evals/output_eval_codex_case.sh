@@ -1,6 +1,9 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
+script_dir="$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd -P)"
+. "$script_dir/host_failure_taxonomy.sh"
+
 codex_bin='codex'
 model=''
 
@@ -13,10 +16,6 @@ EOF
 fail() {
   printf 'output eval codex case failed: %s\n' "$*" >&2
   exit 1
-}
-
-require_command() {
-  command -v "$1" >/dev/null 2>&1 || fail "missing required command: $1"
 }
 
 while [ "$#" -gt 0 ]; do
@@ -46,7 +45,9 @@ done
 [ -n "${PRE_COMMIT_REVIEW_EVAL_PROMPT_FILE:-}" ] || fail 'PRE_COMMIT_REVIEW_EVAL_PROMPT_FILE is required'
 [ -n "${PRE_COMMIT_REVIEW_EVAL_RESPONSE_FILE:-}" ] || fail 'PRE_COMMIT_REVIEW_EVAL_RESPONSE_FILE is required'
 
-require_command "$codex_bin"
+if [ ! -x "$codex_bin" ] && ! command -v "$codex_bin" >/dev/null 2>&1; then
+  host_eval_taxonomy_fail 'missing-binary' "codex binary not found: $codex_bin"
+fi
 
 if git rev-parse --show-toplevel >/dev/null 2>&1; then
   mkdir -p .git/info
