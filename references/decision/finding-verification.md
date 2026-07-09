@@ -123,9 +123,11 @@ A prior agreement or earlier pass is not a substitute for rechecking the evidenc
 After this gate:
 
 - keep verified strong claims as priority findings
+- report every independently verified priority-threshold risk as its own priority finding; do not drop it because the executive summary, commit guidance, or another finding mentions the topic
+- merge verified claims only when they share the same affected object, trigger condition, failure mode, root cause, and corrective action
 - narrow overbroad wording before reporting
-- move plausible but unverified concerns to review limitations, suggested verification, or domain confirmation needed
-- omit low-confidence speculation that would not help the commit decision
+- move plausible but unverified concerns to review limitations, suggested verification, follow-up, or domain confirmation needed
+- when a material candidate concern is downgraded or omitted, keep the disposition visible unless it is low-confidence speculation that would not help the commit decision
 - do not expose this internal gate in routine output unless the user asks for process detail
 
 ## Final Checklist

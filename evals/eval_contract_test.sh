@@ -213,6 +213,10 @@ assert_jq "$advanced_output_eval_file" \
   'advanced-output-eval.json must cover finding verification discipline scenarios'
 
 assert_jq "$advanced_output_eval_file" \
+  '(.cases | map(.scenario)) as $seen | $seen | index("independent-findings-enumeration") != null' \
+  'advanced-output-eval.json must cover independent finding enumeration'
+
+assert_jq "$advanced_output_eval_file" \
   'any(.cases[]; .id == "advanced-advisory-fallback-en" and .expected.template == "advisory" and (.expected.must_not_include | index("**VERDICT:** SAFE_TO_COMMIT") != null))' \
   'advanced-output-eval.json must ensure advisory fallback does not masquerade as a normal verdict-bearing review'
 
@@ -227,6 +231,10 @@ assert_jq "$advanced_output_eval_file" \
 assert_jq "$advanced_output_eval_file" \
   'any(.cases[]; .id == "advanced-framework-behavior-source-en" and (.expected.must_include | index("optimistic") != null) and (.expected.must_not_include | index("**VERDICT:** DO_NOT_COMMIT") != null))' \
   'advanced framework behavior case must require framework behavior evidence without blocking on call-site shape alone'
+
+assert_jq "$advanced_output_eval_file" \
+  'any(.cases[]; .id == "advanced-independent-findings-enumeration-en" and (.expected.must_include | index("serviceToken") != null) and (.expected.must_include | index("grantAdmin") != null) and (.expected.must_include | index("drop column email") != null) and (.expected.must_include | index("getUserProfile") != null))' \
+  'advanced independent finding enumeration case must require all independent risk objects'
 
 assert_jq "$visual_output_eval_file" \
   '.cases | type == "array" and length >= 5' \

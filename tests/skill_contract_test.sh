@@ -92,6 +92,12 @@ grep -Fq 'This is a mandatory gateway. Attempt the helper before any direct `git
   || fail 'SKILL.md must require the helper before direct Git inspection'
 grep -Fq 'Only fall back to direct Git inspection when the helper is unavailable at that resolved path, exits non-zero, cannot be executed in the current host, or the user already provided the review material explicitly.' "$skill_file" \
   || fail 'SKILL.md must bound direct Git fallback to explicit helper-unavailable scenarios'
+grep -Fq 'Treat candidate risks as independent by default when they differ in affected object, trigger condition, failure mode, or required fix.' "$skill_file" \
+  || fail 'SKILL.md must define independent candidate risk enumeration'
+grep -Fq 'Execution summaries, commit guidance, and risk summaries cannot replace a priority finding entry.' "$skill_file" \
+  || fail 'SKILL.md must forbid summary-only priority finding coverage'
+grep -Fq 'Every material candidate concern must have a visible disposition in the final report' "$skill_file" \
+  || fail 'SKILL.md must require visible disposition for material candidate concerns'
 if grep -Fq 'prefer `scripts/collect_diff_context.sh`' "$skill_file"; then
   fail 'SKILL.md must not describe helper-first collection as a soft preference'
 fi
@@ -122,8 +128,16 @@ grep -Fq 'Security, auth, authorization, privacy, and injection findings must be
   || fail 'finding-verification.md must require auth/security execution-point tracing'
 grep -Fq 'Do not infer framework or library internals from call-site shape alone.' "$decision_finding_verification_file" \
   || fail 'finding-verification.md must require framework/library behavior verification'
+grep -Fq 'report every independently verified priority-threshold risk as its own priority finding' "$decision_finding_verification_file" \
+  || fail 'finding-verification.md must require each independently verified priority risk to be reported'
+grep -Fq 'when a material candidate concern is downgraded or omitted, keep the disposition visible' "$decision_finding_verification_file" \
+  || fail 'finding-verification.md must require visible disposition for downgraded material concerns'
 grep -Fq 'apply `references/decision/finding-verification.md` before finalizing the finding.' "$decision_risk_file" \
   || fail 'risk-taxonomy.md must route strong claims through finding verification'
+grep -Fq 'independent candidate risk points were dispositioned as a priority finding, suggested verification, follow-up/domain confirmation, review limitation, or omitted low-confidence speculation' "$decision_risk_file" \
+  || fail 'risk-taxonomy.md must require final disposition for independent candidate risks'
+grep -Fq 'no independent priority-threshold risk was replaced by executive summary, commit guidance, or risk summary prose' "$decision_risk_file" \
+  || fail 'risk-taxonomy.md must forbid summary prose replacing priority findings'
 grep -Fq 'redacted' "$advanced_grading_file" \
   || fail 'grading-compat.md must retain secret-handling compatibility wording'
 grep -Fq 'downstream clients' "$advanced_grading_file" \

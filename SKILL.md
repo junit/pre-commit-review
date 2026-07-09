@@ -251,6 +251,9 @@ Rules:
 - NEVER mention or output internal workflow terms like "coverage-led", "Visual Review Matrix", or "Review Manifest" in routine or non-matching reviews (do not explain why coverage-led accounting was skipped or not needed)
 - localize headings, labels, and connective prose into the selected output language (do not mix English headings like "Risk Summary" or "Priority Findings" with Chinese content; if Chinese is selected, all headings and metadata labels must match output-zh.md exactly)
 - keep the review concise by default and expand only when the added detail improves the decision; however, do not arbitrarily cap the findings count to a fixed number (like 3). List EVERY verified priority finding that meets the threshold (especially correctness, security, authorization, PII, and migration risks). If findings are numerous, prioritize higher-severity issues (correctness/security) over lower-severity maintainability comments (such as style or Spring dependency smells) to prevent high-risk findings from being squeezed out.
+- Treat candidate risks as independent by default when they differ in affected object, trigger condition, failure mode, or required fix. Merge findings only when the risks share the same root cause and the same corrective action.
+- Execution summaries, commit guidance, and risk summaries cannot replace a priority finding entry. If a verified priority-threshold issue is mentioned outside the findings list, it must still appear as its own finding.
+- Every material candidate concern must have a visible disposition in the final report: priority finding, suggested verification, follow-up/domain confirmation, review limitation, or omission because it is low-confidence speculation that would not help the commit decision.
 
 ## Language Selection
 

@@ -162,6 +162,31 @@
           "**VERDICT:** DO_NOT_COMMIT"
         ]
       }
+    },
+    {
+      "id": "advanced-independent-findings-enumeration-en",
+      "scenario": "independent-findings-enumeration",
+      "locale": "en",
+      "prompt": "Review this staged diff before commit. It intentionally contains multiple independent high-risk candidate issues; do not cap the findings count or hide any priority finding in the executive summary.",
+      "fixture": "Four independent priority-risk candidates: a hardcoded production token, missing authorization before granting admin, a destructive user email migration, and a breaking public profile API response.",
+      "expected": {
+        "verdict": "DO_NOT_COMMIT",
+        "template": "default",
+        "scope": "full",
+        "must_include": [
+          "serviceToken",
+          "redacted",
+          "rotate",
+          "grantAdmin",
+          "drop column email",
+          "getUserProfile",
+          "breaking",
+          "downstream clients"
+        ],
+        "must_not_include": [
+          "only three"
+        ]
+      }
     }
   ]
 }

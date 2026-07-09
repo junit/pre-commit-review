@@ -227,6 +227,25 @@ build_case_framework_behavior_source() {
   git -C "$workdir" add src/userRepo.ts
 }
 
+build_case_independent_findings_enumeration() {
+  local workdir="$1"
+
+  mkdir -p "$workdir/src" "$workdir/db/migrations"
+  init_repo "$workdir"
+  printf 'export function getUserProfile(user) {\n  return { id: user.id, email: user.email, displayName: user.displayName };\n}\n' >"$workdir/src/profile.ts"
+  printf 'export function grantAdmin(actor, targetUserId: string) {\n  return { userId: targetUserId, role: "admin" };\n}\n' >"$workdir/src/admin.ts"
+  printf 'export const serviceToken = process.env.SERVICE_TOKEN;\n' >"$workdir/src/config.ts"
+  printf 'create table users (id text primary key, email text not null);\n' >"$workdir/db/migrations/20260518_users.sql"
+  git -C "$workdir" add src/profile.ts src/admin.ts src/config.ts db/migrations/20260518_users.sql
+  git -C "$workdir" commit -q -m baseline-independent-risks
+
+  printf 'export function getUserProfile(user) {\n  return { id: user.id, displayName: user.displayName };\n}\n' >"$workdir/src/profile.ts"
+  printf 'export function grantAdmin(actor, targetUserId: string) {\n  // SECURITY BUG: missing owner/admin authorization check before assigning admin.\n  return { userId: targetUserId, role: "admin" };\n}\n' >"$workdir/src/admin.ts"
+  printf 'export const serviceToken = "sk_live_prod_1234567890abcdef";\n' >"$workdir/src/config.ts"
+  printf 'alter table users drop column email;\n' >"$workdir/db/migrations/20260519_drop_user_email.sql"
+  git -C "$workdir" add src/profile.ts src/admin.ts src/config.ts db/migrations/20260519_drop_user_email.sql
+}
+
 build_case_no_git_repo() {
   local workdir="$1"
 
@@ -290,6 +309,7 @@ prepare_case_fixture() {
     auth-execution-point) build_case_auth_execution_point "$workdir" ;;
     negative-search-cross-module) build_case_negative_search_cross_module "$workdir" ;;
     framework-behavior-source) build_case_framework_behavior_source "$workdir" ;;
+    independent-findings-enumeration) build_case_independent_findings_enumeration "$workdir" ;;
     no-git-repo) build_case_no_git_repo "$workdir" ;;
     chinese-request) build_case_chinese_request "$workdir" ;;
     pasted-diff)

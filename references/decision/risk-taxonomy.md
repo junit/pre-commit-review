@@ -344,5 +344,8 @@ Before finalizing the findings list, verify:
 - each finding has exactly one primary marker
 - each finding is backed by concrete evidence
 - each blocking finding includes a blocking reason
+- independent candidate risk points were dispositioned as a priority finding, suggested verification, follow-up/domain confirmation, review limitation, or omitted low-confidence speculation
+- no independent priority-threshold risk was replaced by executive summary, commit guidance, or risk summary prose
+- findings were merged only when the underlying risks share the same affected object, trigger condition, failure mode, root cause, and corrective action
 - tally counts match the final set of findings
 - speculative concerns have not been overstated as priority findings
