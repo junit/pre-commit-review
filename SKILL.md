@@ -66,8 +66,25 @@ This is a mandatory gateway. Attempt the helper before any direct `git status`, 
 - changed file counts
 - staged vs. unstaged notes
 - untracked file warnings
+- review manifest units, when emitted
+- review plan and group ordering, when emitted
+- coverage ledger requirements, when emitted
 
 Only fall back to direct Git inspection when the helper is unavailable at that resolved path, exits non-zero, cannot be executed in the current host, or the user already provided the review material explicitly. When falling back, keep the source selection order above.
+
+The helper is plan-first. Its default output may omit the global raw diff when the diff is too large to inline safely. This is intentional. In that case:
+
+- use the helper-emitted `Review Plan JSON`, `Review Manifest JSONL`, `Coverage Ledger Template`, and `context_command` values as the review control plane
+- use helper-mediated `--group` and `--path` commands to load bounded diff content
+- do not rebuild the review scope with direct `git status`, `git diff --name-only`, `git diff --stat`, or ad hoc path selection
+- use helper-emitted `review_command` values only as a compatibility fallback when a helper-mediated `context_command` cannot be run
+
+If the host persists helper output because it is too large and only returns a preview:
+
+- recover the structured control plane before reviewing code
+- either read/extract the saved output sections containing `Review Plan JSON`, `Review Manifest JSONL`, and `Coverage Ledger Template`, or rerun the helper with `--plan-only` / `--include-diff never`
+- do not proceed from the preview alone
+- do not run direct Git commands to reconstruct the file list or priority plan before the structured control plane has been recovered
 
 If only code is provided with no before/after diff:
 
@@ -147,6 +164,15 @@ Use Coverage-led mode when the review requires explicit coverage accounting, suc
 - manifest-based review planning
 - reducer-state handling across multi-step review
 
+If the helper emits `Review Plan JSON`, `Review Manifest JSONL`, review groups, or a coverage ledger, the review is manifest-based. In manifest-based reviews:
+
+- load `references/advanced/coverage-led-review.md`
+- treat manifest units as the coverage authority
+- maintain a working coverage ledger over every manifest unit or split replacement unit
+- reconcile reviewed units against manifest units before final synthesis
+- do not claim a complete/full review until coverage validation is empty
+- surface any unreviewed material unit as a review limitation with verdict impact
+
 ### Advisory Fallback
 
 Use Advisory Fallback only when:
@@ -223,7 +249,7 @@ Rules:
 - preserve exact label capitalization for standard metadata fields (e.g. write `**Diff source:**`, `**Review scope:**`, `**Suggested verification:**`, and write "Diff source" or "Review scope" naturally in text; do NOT capitalize into H2 headings like "## Review Scope" or "## Diff Source")
 - for partial reviews, state `**Review scope:** partial — <explain what was covered and uncovered>`; do NOT use negative phrase contrasts like "not a full review"
 - NEVER mention or output internal workflow terms like "coverage-led", "Visual Review Matrix", or "Review Manifest" in routine or non-matching reviews (do not explain why coverage-led accounting was skipped or not needed)
-- localize headings, labels, and connective prose into the selected output language
+- localize headings, labels, and connective prose into the selected output language (do not mix English headings like "Risk Summary" or "Priority Findings" with Chinese content; if Chinese is selected, all headings and metadata labels must match output-zh.md exactly)
 - keep the review concise by default and expand only when the added detail improves the decision
 
 ## Language Selection
@@ -245,11 +271,13 @@ Keep only these tokens in English regardless of output language:
 
 ## Reference Loading Rules
 
-For routine reviews, load:
+For routine reviews, resolve the target language first, then load:
 
 - `references/decision/verdict-rules.md`
 - `references/decision/risk-taxonomy.md`
-- `references/rendering/output-en.md` or `references/rendering/output-zh.md`
+- Load exactly one rendering template matching the selected language:
+  - If Chinese: `references/rendering/output-zh.md` (Do NOT load output-en.md)
+  - If English: `references/rendering/output-en.md` (Do NOT load output-zh.md)
 
 For reviews with priority findings, blocking review limits, delegated/reducer findings, security/auth/privacy/data claims, negative or absolute claims, or framework/library behavior claims, additionally load:
 
@@ -286,10 +314,10 @@ If the entire diff was reviewed, the review may still be full even when reposito
 
 ## Mode-Specific Rendering
 
-Load the per-language rendering file for the selected language:
+Load the per-language rendering template matching the selected language. Do not mix languages or read templates for the unselected language:
 
-- `references/rendering/output-en.md`
-- `references/rendering/output-zh.md`
+- If Chinese: load `references/rendering/output-zh.md` only (and output Chinese headers such as `执行摘要`, `重点发现`, `提交建议`, `变更概览`, `风险摘要`, `影响范围`, `回归风险`)
+- If English: load `references/rendering/output-en.md` only (and output English headers such as `Executive Summary`, `Priority Findings`, `Commit Guidance`, `What Changed`, `Risk Summary`, `Impact Scope`, `Regression Risk`)
 
 Use:
 

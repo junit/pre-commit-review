@@ -137,11 +137,19 @@
 - 输出 best-effort Dependency Summary，用于跨文件综合
 - 根据项目提供的只读 grep 模式输出有界 Semantic Context Queries
 - 为大体积或被截断的 diff 输出建议审查队列
-- 在 diff 过大时安全截断输出
+- 当全局 raw diff 超过 inline 预算时，在默认输出中省略 diff，确保结构化计划始终可见
+- 在显式请求或被内联的 diff 过大时安全截断输出
 
 它不会执行 fetch、stage、reset、install，也不会修改任何文件。
 
-默认 diff 输出预算是 200KB。可通过 `PRE_COMMIT_REVIEW_MAX_DIFF_BYTES` 覆盖；当当前对话上下文已经很大时应调低，只有在确认输出完整 diff 安全时才设为 `0`。
+默认 gateway 是 plan-first：始终先输出结构化控制面，再根据预算决定是否输出 raw diff；为了避免宿主将大输出持久化并只返回 preview，默认可能省略全局 raw diff。`PRE_COMMIT_REVIEW_INLINE_DIFF_BYTES`（默认 `60000`）控制默认 gateway 何时内联全局 diff。`PRE_COMMIT_REVIEW_MAX_DIFF_BYTES`（默认 `200000`）只控制已经被选择输出的 diff 如何截断；只有在确认完整 diff 输出安全时才设为 `0`。
+
+即使所选模型标称支持 200K 以上上下文，默认预算仍然有意保持保守。CLI 宿主可能在内容进入模型之前就把大型工具 stdout 持久化或只返回 preview；大段 raw diff 还会增加延迟和多轮 token 成本，并削弱审查焦点。请把默认值视为跨宿主稳定基线，而不是模型上下文上限。
+
+高级 gateway 预算调参：
+- `PRE_COMMIT_REVIEW_INLINE_DIFF_BYTES`: 默认 `60000`。私有化部署使用更大上下文模型时可以调高，例如 `150000`；小上下文模型可以调低，例如 `30000`。
+- `PRE_COMMIT_REVIEW_MAX_DIFF_BYTES`: 默认 `200000`。限制所有通过 gateway 或后续 context command 显式输出的 diff 大小。
+- Prompt caching 与自适应 inline 预算属于部署相关优化。只有在确认宿主不会把大 stdout 隐藏成 preview，且延迟/成本可接受后，才应提高 inline 预算。
 
 Review group 预算默认目标值为 120KB，硬上限为 160KB。可通过 `PRE_COMMIT_REVIEW_GROUP_TARGET_BYTES` 与 `PRE_COMMIT_REVIEW_GROUP_HARD_BYTES` 覆盖；超过硬上限的 group 会标记为 `split-required`。
 
@@ -154,7 +162,9 @@ Review group 预算默认目标值为 120KB，硬上限为 160KB。可通过 `PR
 - `PRE_COMMIT_REVIEW_SHADOW_MODE`: 设为 `1` 时会强制开启上述 `shadow` 双路比对模式，即使 `PRE_COMMIT_REVIEW_HELPER_IMPL` 被显式设为 `legacy` 或 `shell` 也一样。
 - `PRE_COMMIT_REVIEW_DISABLE_FALLBACK`: 设为 `1` 时禁用 Rust 失败降级机制，直接透传 Rust 程序的异常和退出码（用于测试与 CI）。
 
-当全局 diff 被截断时，可用 `scripts/collect_diff_context.sh --source <staged|unstaged|branch> --group <group_id>` 只输出一个未超硬预算 review group 的 diff。需要更窄上下文或 group 已拆分时，用 `--path <path>` 做文件级补取。helper 输出的 `context_command` 会包含 `--source`，确保后续取上下文时仍固定在原始 diff source；`split-required` group 必须通过 split suggestions 审查，不能作为一个整体 group 审查。
+当宿主把 helper 输出持久化、只返回 preview 时，可用 `scripts/collect_diff_context.sh --plan-only` 或 `--include-diff never` 重新获取结构化控制面。只有明确需要全局 raw diff 时才使用 `--include-diff always`；它仍受 `PRE_COMMIT_REVIEW_MAX_DIFF_BYTES` 限制。
+
+当全局 diff 被省略或截断时，可用 `scripts/collect_diff_context.sh --source <staged|unstaged|branch> --group <group_id>` 只输出一个未超硬预算 review group 的 diff。需要更窄上下文或 group 已拆分时，用 `--path <path>` 做文件级补取。helper 输出的 `context_command` 会包含 `--source`，确保后续取上下文时仍固定在原始 diff source；`split-required` group 必须通过 split suggestions 审查，不能作为一个整体 group 审查。
 
 项目级风险提示可以放在 `.pre-commit-review/risk-paths` 和 `.pre-commit-review/risk-content`。每个非空、非注释行都是一个扩展正则表达式；匹配项只会提升到 high-risk 审查顺序，不会改变覆盖要求。
 
@@ -162,7 +172,7 @@ Review group 预算默认目标值为 120KB，硬上限为 160KB。可通过 `PR
 
 Review-planning 表和 `Dependency Summary` 使用 TSV，因为路径、命令和依赖详情中可能包含逗号。
 
-Reducer 和 subagent 自动化应优先使用 `Review Plan JSON`、`Reducer State Snapshot Template` 和 JSONL section；TSV 表主要用于人工快速浏览。
+Reducer 和 subagent 自动化应优先使用 `Review Plan JSON`、`Review Manifest JSONL`、`Coverage Ledger Template`、`Reducer State Snapshot Template` 和 JSONL section；TSV 表主要用于人工快速浏览。helper 已输出 manifest 后，自动化不得再通过直接 `git status` 或 `git diff --name-only` 重建审查范围。
 
 ### `tests/`
 
@@ -188,6 +198,7 @@ Reducer 和 subagent 自动化应优先使用 `Review Plan JSON`、`Reducer Stat
 - `output_eval_runner_test.sh` 是 fixture 准备与评分逻辑的确定性自测
 - `output_eval_host_wrappers_test.sh` 用 mock Codex/Claude 二进制验证这些 wrapper，确保宿主命令模板回归时不消耗真实模型调用
 - `run_helper_gateway_probe.sh` 是一个 real-host stage，会对 bundled helper 与选定的直接 Git 命令做日志探针；如果 host 在尝试 `scripts/collect_diff_context.sh` 之前就检查 Git diff 来源，则判定失败
+- `check_persisted_output_contract.sh` 会扫描宿主 transcript；如果 helper 大输出被持久化后，模型在声称完整审查前没有恢复保存的 plan/manifest，则判定失败
 - `readme_surface_test.sh` 守护 README 面向外部暴露的 public surface，确保文档里的 contract gate 与入口清单保持一致
 - `readme_host_entrypoints_test.sh` 固化分层 `Host Entrypoints` 文档，确保 README 持续以 `Primary`、`Analysis`、`Stage` 和 `Internal / Repo-wide` 暴露 host lane surface
 - `eval_contract_test.sh` 是 repo 级门禁，统一守护 trigger eval、layered output eval、marker taxonomy 资产以及 host lane contract surface
@@ -204,7 +215,7 @@ Reducer 和 subagent 自动化应优先使用 `Review Plan JSON`、`Reducer Stat
 - 用于执行分层 output eval surface 与 marker taxonomy 检查，无需手工逐个挑选 eval 资产
 - `Analysis`: `evals/analyze_host_readiness_diff.sh`
 - 用于对比 cross-host readiness 输出，而不必重新跑每个阶段
-- `Stage`: `evals/check_host_availability.sh`、`evals/run_helper_gateway_probe.sh`、`evals/run_layered_host_evals.sh`、`evals/host_contract_subset.sh`
+- `Stage`: `evals/check_host_availability.sh`、`evals/run_helper_gateway_probe.sh`、`evals/check_persisted_output_contract.sh`、`evals/run_layered_host_evals.sh`、`evals/host_contract_subset.sh`
 - 当你只想调试或单独运行某一层 host 边界时使用
 - `Internal / Repo-wide`: `evals/eval_contract_test.sh`、host `*_test.sh`、`evals/host_failure_taxonomy.sh`
 - 这些是重要的内部或仓库级 surface，不是普通用户入口
@@ -387,7 +398,7 @@ your-skills/
 
 Shell 脚本（`scripts/*.sh`、`install.sh`、`tests/*.sh`、`evals/*.sh`）在 CI（`.github/workflows/lint.yml`）中由 [shellcheck](https://www.shellcheck.net/) 检查。提交前请在本地安装（macOS 可用 `brew install shellcheck`）并运行 `shellcheck -s bash scripts/*.sh install.sh tests/*.sh evals/*.sh`。
 
-要在本地编译 Rust CLI 二进制，运行 `cargo build --release --manifest-path collect-diff-context-cli/Cargo.toml` 或执行 `scripts/build_all_binaries.sh`。
+要为当前宿主本地编译 Rust CLI 二进制，运行 `cargo build --release --manifest-path collect-diff-context-cli/Cargo.toml`。要刷新随 skill 分发的 release 二进制，运行 `scripts/build_with_docker.sh`；它会委托 `scripts/build_all_binaries.sh`，在需要时使用 macOS 原生 target 与 Docker/cross 编译 Linux、Windows target。
 
 确定性单元测试套件为 `bash tests/*_test.sh`。eval harness 也附带不调用模型的确定性自测：`bash evals/eval_contract_test.sh`、`bash evals/output_eval_runner_test.sh` 和 `bash evals/output_eval_host_wrappers_test.sh`（也可通过 `for f in evals/*_test.sh; do bash "$f"; done` 执行所有 eval 自测）。基于模型的 runner（`evals/output_eval_codex_runner.sh`、`evals/output_eval_claude_runner.sh`）需要真实的 Codex 或 Claude CLI，不属于 CI。
 

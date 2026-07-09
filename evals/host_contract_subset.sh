@@ -81,6 +81,8 @@ require_runtime_file "$repo_root/evals/run_layered_host_evals.sh" 'evals/run_lay
 require_runtime_file "$repo_root/evals/run_layered_host_evals_test.sh" 'evals/run_layered_host_evals_test.sh'
 require_runtime_file "$repo_root/evals/run_helper_gateway_probe.sh" 'evals/run_helper_gateway_probe.sh'
 require_runtime_file "$repo_root/evals/run_helper_gateway_probe_test.sh" 'evals/run_helper_gateway_probe_test.sh'
+require_runtime_file "$repo_root/evals/check_persisted_output_contract.sh" 'evals/check_persisted_output_contract.sh'
+require_runtime_file "$repo_root/evals/check_persisted_output_contract_test.sh" 'evals/check_persisted_output_contract_test.sh'
 require_runtime_file "$repo_root/evals/run_host_readiness_pipeline.sh" 'evals/run_host_readiness_pipeline.sh'
 require_runtime_file "$repo_root/evals/run_host_readiness_pipeline_test.sh" 'evals/run_host_readiness_pipeline_test.sh'
 

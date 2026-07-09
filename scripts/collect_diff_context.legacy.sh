@@ -5,6 +5,7 @@ set -euo pipefail
 # This script is read-only. It does not fetch, stage, reset, install, or mutate files.
 # Optional environment variable:
 #   PRE_COMMIT_REVIEW_MAX_DIFF_BYTES  default 200000; set 0 for no truncation
+#   PRE_COMMIT_REVIEW_INLINE_DIFF_BYTES  default 60000; default output omits global diff above this size
 #   PRE_COMMIT_REVIEW_CONTEXT_QUERY_LIMIT  default 20; max matches per context query
 #   PRE_COMMIT_REVIEW_GROUP_TARGET_BYTES  default 120000; soft group size target
 #   PRE_COMMIT_REVIEW_GROUP_HARD_BYTES   default 160000; hard group size limit
@@ -29,6 +30,10 @@ MAX_DIFF_BYTES="${PRE_COMMIT_REVIEW_MAX_DIFF_BYTES:-200000}"
 case "$MAX_DIFF_BYTES" in
   ''|*[!0-9]*) MAX_DIFF_BYTES=200000 ;;
 esac
+INLINE_DIFF_BYTES="${PRE_COMMIT_REVIEW_INLINE_DIFF_BYTES:-60000}"
+case "$INLINE_DIFF_BYTES" in
+  ''|*[!0-9]*) INLINE_DIFF_BYTES=60000 ;;
+esac
 CONTEXT_QUERY_LIMIT="${PRE_COMMIT_REVIEW_CONTEXT_QUERY_LIMIT:-20}"
 case "$CONTEXT_QUERY_LIMIT" in
   ''|*[!0-9]*) CONTEXT_QUERY_LIMIT=20 ;;
@@ -44,6 +49,24 @@ esac
 if [ "$GROUP_TARGET_BYTES" -gt "$GROUP_HARD_BYTES" ]; then
   GROUP_TARGET_BYTES="$GROUP_HARD_BYTES"
 fi
+
+TEMP_FILES=''
+register_temp_file() {
+  [ -n "${1:-}" ] || return 0
+  TEMP_FILES="${TEMP_FILES}${TEMP_FILES:+
+}$1"
+}
+
+cleanup_temp_files() {
+  [ -n "${TEMP_FILES:-}" ] || return 0
+  local temp_file
+  while IFS= read -r temp_file; do
+    [ -n "$temp_file" ] && rm -f "$temp_file"
+  done <<EOF_CLEANUP
+$TEMP_FILES
+EOF_CLEANUP
+}
+trap cleanup_temp_files EXIT
 
 TAB="$(printf '\t')"
 
@@ -63,10 +86,11 @@ SCRIPT_PATH="${PRE_COMMIT_REVIEW_HELPER_PATH:-$(CDPATH='' cd -- "$(dirname -- "$
 REQUEST_PATH=''
 REQUEST_SOURCE=''
 REQUEST_GROUP=''
+INCLUDE_DIFF_MODE="${PRE_COMMIT_REVIEW_INCLUDE_DIFF:-auto}"
 
 usage() {
   cat <<'USAGE'
-Usage: collect_diff_context.sh [--source staged|unstaged|branch] [--path PATH | --group GROUP_ID]
+Usage: collect_diff_context.sh [--source staged|unstaged|branch] [--path PATH | --group GROUP_ID] [--plan-only | --include-diff auto|never|always]
 
 Collect read-only Git diff context for pre-commit review.
 
@@ -74,6 +98,9 @@ Options:
   --source SOURCE  Read from one diff source: staged, unstaged, or branch.
   --path PATH      Emit file-specific context for one changed path only.
   --group GROUP_ID Emit group-specific context for one review group only.
+  --plan-only      Emit only planning metadata for the selected diff source; omit the global raw diff.
+  --include-diff MODE
+                   Control global diff inclusion for default output: auto, never, or always.
   -h, --help    Show this help.
 USAGE
 }
@@ -106,6 +133,24 @@ while [ "$#" -gt 0 ]; do
         staged|unstaged|branch) REQUEST_SOURCE="$1" ;;
         *)
           printf 'collect_diff_context.sh: invalid --source value: %s\n' "$1" >&2
+          usage >&2
+          exit 2
+          ;;
+      esac
+      ;;
+    --plan-only)
+      INCLUDE_DIFF_MODE='never'
+      ;;
+    --include-diff)
+      shift
+      if [ "$#" -eq 0 ]; then
+        echo 'collect_diff_context.sh: --include-diff requires a value' >&2
+        exit 2
+      fi
+      case "$1" in
+        auto|never|always) INCLUDE_DIFF_MODE="$1" ;;
+        *)
+          printf 'collect_diff_context.sh: invalid --include-diff value: %s\n' "$1" >&2
           usage >&2
           exit 2
           ;;
@@ -896,23 +941,23 @@ emit_reducer_state_snapshot_template() {
         }
       }
       for (group in groups) group_count += 1
-      printf "{\n"
-      printf "  \"schema_version\":1,\n"
-      printf "  \"state_kind\":\"reducer_state_snapshot\",\n"
-      printf "  \"source\":%s,\n", json_string(source)
-      printf "  \"status\":\"pending_group_reviews\",\n"
-      printf "  \"manifest_units\":%d,\n", row_count
-      printf "  \"review_groups\":%d,\n", group_count
-      printf "  \"reviewed_units\":[],\n"
-      printf "  \"pending_units\":[%s],\n", pending_units
-      printf "  \"needs_split_units\":[%s],\n", needs_split_units
-      printf "  \"group_results\":[],\n"
-      printf "  \"coverage_gaps\":[%s],\n", coverage_gaps
-      printf "  \"finding_merge\":{\"deduplicated_findings\":[],\"blockers\":[],\"notes\":[]},\n"
-      printf "  \"dependency_checks\":[],\n"
-      printf "  \"test_recommendations\":[],\n"
-      printf "  \"final_verdict\":\"blocked_until_coverage_validation_passes\",\n"
-      printf "  \"persistence_rule\":\"carry this compact state forward after each group result; update reviewed_units, pending_units, group_results, coverage_gaps, and finding_merge before reducer finalization\"\n"
+      printf "{"
+      printf "\"schema_version\":1,"
+      printf "\"state_kind\":\"reducer_state_snapshot\","
+      printf "\"source\":%s,", json_string(source)
+      printf "\"status\":\"pending_group_reviews\","
+      printf "\"manifest_units\":%d,", row_count
+      printf "\"review_groups\":%d,", group_count
+      printf "\"reviewed_units\":[],"
+      printf "\"pending_units\":[%s],", pending_units
+      printf "\"needs_split_units\":[%s],", needs_split_units
+      printf "\"group_results\":[],"
+      printf "\"coverage_gaps\":[%s],", coverage_gaps
+      printf "\"finding_merge\":{\"deduplicated_findings\":[],\"blockers\":[],\"notes\":[]},"
+      printf "\"dependency_checks\":[],"
+      printf "\"test_recommendations\":[],"
+      printf "\"final_verdict\":\"blocked_until_coverage_validation_passes\","
+      printf "\"persistence_rule\":\"carry this compact state forward after each group result; update reviewed_units, pending_units, group_results, coverage_gaps, and finding_merge before reducer finalization\""
       printf "}\n"
     }
   ' "$manifest_tmp"
@@ -926,7 +971,193 @@ emit_review_manifest_and_groups() {
 
   manifest_tmp="$(mktemp)"
   split_tmp="$(mktemp)"
+  register_temp_file "$manifest_tmp"
+  register_temp_file "$split_tmp"
   build_review_manifest_tmp "$manifest_tmp"
+
+  if [ "${compact_plan:-no}" = 'yes' ]; then
+    echo '## Review Manifest JSONL'
+    awk -F "$TAB" '
+      function json_escape(value) {
+        gsub(/\\/, "\\\\", value)
+        gsub(/"/, "\\\"", value)
+        gsub(/\r/, "\\r", value)
+        gsub(/\t/, "\\t", value)
+        return value
+      }
+      function json_string(value) {
+        return "\"" json_escape(value) "\""
+      }
+      function json_string_array(value, parts, count, i, result) {
+        count=split(value, parts, ";")
+        result=""
+        for (i=1; i<=count; i++) {
+          if (parts[i] == "") continue
+          if (result != "") result=result ","
+          result=result json_string(parts[i])
+        }
+        return result
+      }
+      NR == 1 { next }
+      {
+        printf "{"
+        printf "\"unit_id\":%s,", json_string($1)
+        printf "\"path\":%s,", json_string($2)
+        printf "\"status\":%s,", json_string($3)
+        printf "\"additions\":%d,", $4
+        printf "\"deletions\":%d,", $5
+        printf "\"diff_bytes\":%d,", $6
+        printf "\"risk_tags\":[%s],", json_string_array($7)
+        printf "\"group_id\":%s,", json_string($8)
+        printf "\"review_command\":%s,", json_string($9)
+        printf "\"context_command\":%s", json_string($10)
+        print "}"
+      }
+    ' "$manifest_tmp"
+
+    echo
+    echo '## Review Groups JSONL'
+    awk -F "$TAB" -v target="$GROUP_TARGET_BYTES" -v hard="$GROUP_HARD_BYTES" '
+      function json_escape(value) {
+        gsub(/\\/, "\\\\", value)
+        gsub(/"/, "\\\"", value)
+        gsub(/\r/, "\\r", value)
+        gsub(/\t/, "\\t", value)
+        return value
+      }
+      function json_string(value) {
+        return "\"" json_escape(value) "\""
+      }
+      NR == 1 { next }
+      {
+        group=$8
+        bytes[group] += $6
+        if (files_json[group] == "") files_json[group]=json_string($2)
+        else files_json[group]=files_json[group] "," json_string($2)
+        if ($7 == "high-risk") {
+          risk[group]="high"
+          reason[group]="path-or-content-risk"
+        } else if ($7 == "generated-like") {
+          risk[group]="consistency"
+          reason[group]="generated-like"
+        } else if ($7 == "lockfile") {
+          risk[group]="consistency"
+          reason[group]="lockfile"
+        } else {
+          risk[group]="medium"
+          reason[group]="module"
+        }
+      }
+      END {
+        for (group in files_json) {
+          budget_status="ok"
+          if (bytes[group] > hard) budget_status="split-required"
+          else if (bytes[group] > target) budget_status="over-target"
+          printf "%s\t", group
+          printf "{"
+          printf "\"group_id\":%s,", json_string(group)
+          printf "\"risk\":%s,", json_string(risk[group])
+          printf "\"reason\":%s,", json_string(reason[group])
+          printf "\"diff_bytes\":%d,", bytes[group]
+          printf "\"files\":[%s],", files_json[group]
+          printf "\"budget_status\":%s", json_string(budget_status)
+          print "}"
+        }
+      }
+    ' "$manifest_tmp" | sort -k1,1 | cut -f2-
+
+    echo
+    emit_review_plan_json "$manifest_tmp"
+
+    awk -F "$TAB" -v hard="$GROUP_HARD_BYTES" -v tab="$TAB" '
+      NR == 1 { next }
+      {
+        group=$8
+        bytes[group] += $6
+        rows[++row_count]=$0
+      }
+      END {
+        for (i=1; i<=row_count; i++) {
+          split(rows[i], fields, tab)
+          group=fields[8]
+          if (bytes[group] > hard) {
+            printf "%s\t%s\t%s\n", group, fields[2], fields[9]
+          }
+        }
+      }
+    ' "$manifest_tmp" > "$split_tmp"
+
+    echo
+    echo '## Split Suggestions'
+    echo 'parent_group_id	unit_id	path	split_kind	diff_bytes	hunk_header	review_command'
+    if [ -s "$split_tmp" ]; then
+      while IFS="$(printf '\t')" read -r parent_group path review_command; do
+        emit_hunk_split_suggestions_for_path "$parent_group" "$path" "$review_command"
+      done < "$split_tmp"
+    else
+      echo 'none	none	none	none	0	none	none'
+    fi
+
+    echo
+    echo '## Coverage Ledger Template'
+    echo 'unit_id	group_id	path	coverage_status	coverage_mode	notes'
+    awk -F "$TAB" -v hard="$GROUP_HARD_BYTES" -v tab="$TAB" '
+      NR == 1 { next }
+      {
+        rows[++row_count]=$0
+        group=$8
+        bytes[group] += $6
+      }
+      END {
+        for (i=1; i<=row_count; i++) {
+          split(rows[i], fields, tab)
+          unit_id=fields[1]
+          path=fields[2]
+          group=fields[8]
+          if (bytes[group] > hard) {
+            printf "%s\t%s\t%s\tneeds-split\treplace-with-split-suggestions\tsplit-required group\n", unit_id, group, path
+          } else {
+            printf "%s\t%s\t%s\tpending\tfile-review\trecord group result before final verdict\n", unit_id, group, path
+          }
+        }
+      }
+    ' "$manifest_tmp"
+
+    echo
+    emit_reducer_state_snapshot_template "$manifest_tmp"
+
+    echo
+    echo '## Coverage Validation Checklist'
+    awk -F "$TAB" -v hard="$GROUP_HARD_BYTES" -v tab="$TAB" '
+      NR == 1 { next }
+      {
+        rows[++row_count]=$0
+        group=$8
+        bytes[group] += $6
+        groups[group]=1
+        if ($7 == "high-risk") high_risk_units += 1
+      }
+      END {
+        for (group in groups) {
+          review_groups += 1
+          if (bytes[group] > hard) split_required_groups += 1
+        }
+        for (i=1; i<=row_count; i++) {
+          split(rows[i], fields, tab)
+          if (bytes[fields[8]] > hard) needs_split_units += 1
+        }
+        printf "manifest_units: %d\n", row_count
+        printf "review_groups: %d\n", review_groups
+        printf "split_required_groups: %d\n", split_required_groups
+        printf "needs_split_units: %d\n", needs_split_units
+        printf "high_risk_units: %d\n", high_risk_units
+        print "validation_rule: manifest_units - reviewed_units must be empty before claiming full review"
+        print "blocking_rule: high-risk or needs-split coverage gaps force DO_NOT_COMMIT"
+      }
+    ' "$manifest_tmp"
+
+    return 0
+  fi
 
   echo '## Review Manifest'
   cat "$manifest_tmp"
@@ -1143,16 +1374,16 @@ emit_review_manifest_and_groups() {
       for (group in units) {
         coverage="pending"
         if (bytes[group] > hard) coverage="needs-split"
-        print "{"
-        printf "  \"group_id\": \"%s\",\n", json_escape(group)
-        printf "  \"required_units\": [%s],\n", units[group]
-        print "  \"reviewed_units\": [],"
-        printf "  \"coverage\": \"%s\",\n", coverage
-        print "  \"findings\": [],"
-        print "  \"contract_changes\": [],"
-        print "  \"dependencies_to_check\": [],"
-        print "  \"tests_recommended\": []"
-        print "}"
+        printf "{"
+        printf "\"group_id\":\"%s\",", json_escape(group)
+        printf "\"required_units\":[%s],", units[group]
+        printf "\"reviewed_units\":[],"
+        printf "\"coverage\":\"%s\",", coverage
+        printf "\"findings\":[],"
+        printf "\"contract_changes\":[],"
+        printf "\"dependencies_to_check\":[],"
+        printf "\"tests_recommended\":[]"
+        printf "}\n"
       }
     }
   ' "$manifest_tmp"
@@ -1317,23 +1548,19 @@ emit_review_manifest_and_groups() {
     }
     END {
       for (group in groups) review_groups += 1
-      print "{"
-      print "  \"coverage_validation\": \"required\","
-      printf "  \"manifest_units\": %d,\n", manifest_units
-      printf "  \"review_groups\": %d,\n", review_groups
-      printf "  \"high_risk_units\": %d,\n", high_risk_units
-      print "  \"coverage_gaps\": [],"
-      print "  \"finding_merge\": {"
-      print "    \"deduplicated_findings\": [],"
-      print "    \"blockers\": [],"
-      print "    \"notes\": []"
-      print "  },"
-      print "  \"cross_file_reduction\": \"required_after_coverage_validation\","
-      print "  \"dependency_checks\": [],"
-      print "  \"test_recommendations\": [],"
-      print "  \"residual_risks\": [],"
-      print "  \"final_verdict\": \"blocked_until_coverage_validation_passes\""
-      print "}"
+      printf "{"
+      printf "\"coverage_validation\":\"required\","
+      printf "\"manifest_units\":%d,", manifest_units
+      printf "\"review_groups\":%d,", review_groups
+      printf "\"high_risk_units\":%d,", high_risk_units
+      printf "\"coverage_gaps\":[],"
+      printf "\"finding_merge\":{\"deduplicated_findings\":[],\"blockers\":[],\"notes\":[]},"
+      printf "\"cross_file_reduction\":\"required_after_coverage_validation\","
+      printf "\"dependency_checks\":[],"
+      printf "\"test_recommendations\":[],"
+      printf "\"residual_risks\":[],"
+      printf "\"final_verdict\":\"blocked_until_coverage_validation_passes\""
+      printf "}\n"
     }
   ' "$manifest_tmp"
   rm -f "$manifest_tmp" "$split_tmp"
@@ -1355,6 +1582,8 @@ emit_requested_group_context() {
 
   manifest_tmp="$(mktemp)"
   group_diff_tmp="$(mktemp)"
+  register_temp_file "$manifest_tmp"
+  register_temp_file "$group_diff_tmp"
   build_review_manifest_tmp "$manifest_tmp"
 
   summary="$(
@@ -1550,6 +1779,8 @@ emit_semantic_context_queries() {
     safe_query="$(sanitize_tsv "$query")"
     output_tmp="$(mktemp)"
     error_tmp="$(mktemp)"
+    register_temp_file "$output_tmp"
+    register_temp_file "$error_tmp"
     set +e
     case "$mode" in
       staged) git grep --cached -n -I -E -e "$query" -- . >"$output_tmp" 2>"$error_tmp" ;;
@@ -1604,6 +1835,8 @@ emit_diff_limited() {
 
   print_kv 'diff_bytes' "$size"
   print_kv 'max_diff_bytes' "$MAX_DIFF_BYTES"
+  print_kv 'inline_diff_bytes' "$INLINE_DIFF_BYTES"
+  print_kv 'diff_output' 'inline'
 
   echo
   echo '## Diff'
@@ -1613,9 +1846,24 @@ emit_diff_limited() {
   else
     head -c "$MAX_DIFF_BYTES" "$tmp_file"
     echo
-    printf '[diff truncated after %s bytes; inspect high-risk files with file-specific git diff commands before making safety claims]\n' "$MAX_DIFF_BYTES"
+    printf '[diff truncated after %s bytes; inspect high-risk files with helper-emitted context commands before making safety claims]\n' "$MAX_DIFF_BYTES"
   fi
   echo '```'
+}
+
+emit_diff_omitted() {
+  local size="$1"
+  local reason="$2"
+
+  print_kv 'diff_bytes' "$size"
+  print_kv 'max_diff_bytes' "$MAX_DIFF_BYTES"
+  print_kv 'inline_diff_bytes' "$INLINE_DIFF_BYTES"
+  print_kv 'diff_output' 'omitted'
+  print_kv 'diff_omitted_reason' "$reason"
+  echo
+  echo '## Diff Loading Instructions'
+  echo 'Global raw diff omitted from the gateway output so Review Plan JSON, Review Manifest JSONL, and Coverage Ledger Template remain visible to the model.'
+  echo 'Use helper-emitted context_command values for group/path loading; do not rebuild review scope with direct git commands.'
 }
 
 branch="$(git branch --show-current 2>/dev/null || true)"
@@ -1636,10 +1884,14 @@ selected_ref=''
 diff_truncated='no'
 
 diff_tmp="$(mktemp)"
+register_temp_file "$diff_tmp"
 staged_files=''
 unstaged_files=''
 same_files=''
-trap 'rm -f "$diff_tmp" ${staged_files:+"$staged_files"} ${unstaged_files:+"$unstaged_files"} ${same_files:+"$same_files"}' EXIT
+diff_size='0'
+diff_output_decision='omitted'
+diff_omitted_reason='no diff available'
+compact_plan='no'
 
 run_diff() {
   case "$mode" in
@@ -1731,6 +1983,9 @@ if [ "$mode" = 'staged' ]; then
     staged_files="$(mktemp)"
     unstaged_files="$(mktemp)"
     same_files="$(mktemp)"
+    register_temp_file "$staged_files"
+    register_temp_file "$unstaged_files"
+    register_temp_file "$same_files"
     git diff --cached --name-only -- . | sort -u > "$staged_files"
     git diff --name-only -- . | sort -u > "$unstaged_files"
     comm -12 "$staged_files" "$unstaged_files" > "$same_files" || true
@@ -1786,6 +2041,32 @@ if [ -s "$diff_tmp" ]; then
     diff_truncated='yes'
     review_limit_note='partial diff output; inspect file list and prioritize risky files before making safety claims'
   fi
+  case "$INCLUDE_DIFF_MODE" in
+    always)
+      diff_output_decision='inline'
+      diff_omitted_reason='none'
+      ;;
+    never)
+      diff_output_decision='omitted'
+      diff_omitted_reason='plan-only mode'
+      compact_plan='yes'
+      ;;
+    auto)
+      if [ "$INLINE_DIFF_BYTES" = '0' ] || [ "$diff_size" -le "$INLINE_DIFF_BYTES" ]; then
+        diff_output_decision='inline'
+        diff_omitted_reason='none'
+      else
+        diff_output_decision='omitted'
+        diff_omitted_reason="global diff exceeds inline budget (${diff_size} > ${INLINE_DIFF_BYTES})"
+        compact_plan='yes'
+      fi
+      ;;
+    *)
+      diff_output_decision='omitted'
+      diff_omitted_reason="invalid include-diff mode coerced to plan-only: ${INCLUDE_DIFF_MODE}"
+      compact_plan='yes'
+      ;;
+  esac
 fi
 
 files_changed='0 files, 0 insertions(+), 0 deletions(-)'
@@ -1844,6 +2125,12 @@ if [ -n "$REQUEST_SOURCE" ]; then
 fi
 print_kv 'review_limits' "$review_limit_note"
 print_kv 'diff_truncated' "$diff_truncated"
+print_kv 'inline_diff_bytes' "$INLINE_DIFF_BYTES"
+print_kv 'diff_output' "$diff_output_decision"
+if [ "$diff_output_decision" = 'omitted' ]; then
+  print_kv 'diff_omitted_reason' "$diff_omitted_reason"
+fi
+print_kv 'diff_loading' 'use helper-emitted context_command values; do not rebuild review scope with direct git commands'
 print_kv 'group_target_bytes' "$GROUP_TARGET_BYTES"
 print_kv 'group_hard_bytes' "$GROUP_HARD_BYTES"
 print_kv 'files_changed' "$files_changed"
@@ -1950,4 +2237,8 @@ if [ -n "$same_files" ] && [ -s "$same_files" ]; then
   cat "$same_files"
 fi
 
-emit_diff_limited "$diff_tmp"
+if [ "$diff_output_decision" = 'inline' ]; then
+  emit_diff_limited "$diff_tmp"
+else
+  emit_diff_omitted "$diff_size" "$diff_omitted_reason"
+fi

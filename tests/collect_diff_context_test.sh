@@ -246,7 +246,7 @@ truncated_output="$tmp_dir/truncated.out"
   PRE_COMMIT_REVIEW_MAX_DIFF_BYTES=20 "$helper"
 ) >"$truncated_output" 2>&1
 assert_contains "$truncated_output" 'review_limits: partial diff output'
-assert_contains "$truncated_output" '[diff truncated after 20 bytes; inspect high-risk files with file-specific git diff commands before making safety claims]'
+assert_contains "$truncated_output" '[diff truncated after 20 bytes; inspect high-risk files with helper-emitted context commands before making safety claims]'
 
 risk_queue_repo="$tmp_dir/risk-queue"
 mkdir -p "$risk_queue_repo"
@@ -269,6 +269,56 @@ assert_contains "$risk_queue_output" 'generated_like_files: snapshots/large.snap
 assert_contains "$risk_queue_output" '## Suggested Review Queue'
 assert_contains "$risk_queue_output" 'high-risk: db/migrations/20260518_add_admin.sql'
 assert_contains "$risk_queue_output" 'high-risk: zzz_auth/session.py'
+
+plan_first_repo="$tmp_dir/plan-first"
+mkdir -p "$plan_first_repo/src/auth"
+init_repo "$plan_first_repo"
+{
+  printf 'def validate_token(token):\n'
+  for i in $(seq 1 600); do
+    printf '    # authorization path %s with enough text to exceed inline diff budget safely\n' "$i"
+  done
+  printf '    return token == "ok"\n'
+} >"$plan_first_repo/src/auth/security_review.py"
+git -C "$plan_first_repo" add src/auth/security_review.py
+plan_first_output="$tmp_dir/plan-first.out"
+(
+  cd "$plan_first_repo"
+  PRE_COMMIT_REVIEW_INLINE_DIFF_BYTES=1200 "$helper"
+) >"$plan_first_output" 2>&1
+assert_contains "$plan_first_output" 'diff_output: omitted'
+assert_contains "$plan_first_output" 'inline_diff_bytes: 1200'
+assert_contains "$plan_first_output" 'diff_loading: use helper-emitted context_command values; do not rebuild review scope with direct git commands'
+assert_contains "$plan_first_output" '## Review Manifest JSONL'
+assert_contains "$plan_first_output" '## Review Plan JSON'
+assert_contains "$plan_first_output" '## Coverage Ledger Template'
+assert_contains "$plan_first_output" '## Diff Loading Instructions'
+assert_contains "$plan_first_output" '--source staged --group high-risk-src'
+assert_jsonl_section_valid "$plan_first_output" 'Review Manifest JSONL'
+assert_json_section_valid "$plan_first_output" 'Review Plan JSON'
+assert_not_contains "$plan_first_output" '```diff'
+assert_not_contains "$plan_first_output" 'diff --git'
+assert_not_contains "$plan_first_output" '+    # authorization path 600'
+
+plan_only_output="$tmp_dir/plan-only.out"
+(
+  cd "$plan_first_repo"
+  "$helper" --plan-only
+) >"$plan_only_output" 2>&1
+assert_contains "$plan_only_output" 'diff_output: omitted'
+assert_contains "$plan_only_output" '## Review Plan JSON'
+assert_contains "$plan_only_output" '## Coverage Ledger Template'
+assert_not_contains "$plan_only_output" '```diff'
+assert_not_contains "$plan_only_output" 'diff --git'
+
+include_diff_always_output="$tmp_dir/include-diff-always.out"
+(
+  cd "$plan_first_repo"
+  PRE_COMMIT_REVIEW_MAX_DIFF_BYTES=80 PRE_COMMIT_REVIEW_INLINE_DIFF_BYTES=1200 "$helper" --include-diff always
+) >"$include_diff_always_output" 2>&1
+assert_contains "$include_diff_always_output" 'diff_output: inline'
+assert_contains "$include_diff_always_output" '## Diff'
+assert_contains "$include_diff_always_output" '[diff truncated after 80 bytes; inspect high-risk files with helper-emitted context commands before making safety claims]'
 
 content_risk_repo="$tmp_dir/content-risk"
 mkdir -p "$content_risk_repo/src"

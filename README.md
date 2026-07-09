@@ -137,11 +137,19 @@ A read-only helper script that gathers local repository context for the review w
 - emits a best-effort Dependency Summary for cross-file reduction
 - emits bounded Semantic Context Queries from project-provided read-only grep patterns
 - emits a suggested review queue for large or truncated diffs
-- truncates oversized diffs safely when needed
+- omits the global raw diff from default output when it exceeds the inline budget, while keeping the structured plan visible
+- truncates explicitly requested or inlined diffs safely when needed
 
 It does not fetch, stage, reset, install, or modify files.
 
-The default diff output budget is 200KB. Override it with `PRE_COMMIT_REVIEW_MAX_DIFF_BYTES`; use a lower value when the surrounding conversation is already large, and use `0` only when printing the full diff is safe.
+The default gateway is plan-first. It always emits the structured control plane before any raw diff, and it may omit the global raw diff to avoid host-side persisted-output truncation. `PRE_COMMIT_REVIEW_INLINE_DIFF_BYTES` (default `60000`) controls when the default gateway inlines the global diff. `PRE_COMMIT_REVIEW_MAX_DIFF_BYTES` (default `200000`) controls truncation for a diff that is actually emitted; use `0` only when printing the full diff is safe.
+
+The default budgets are intentionally conservative even when the selected model advertises a 200K+ context window. CLI hosts can persist or preview large tool stdout before it ever reaches the model, long raw diffs increase latency and multi-turn token cost, and broad diffs can reduce review focus. Treat the defaults as a stable cross-host baseline rather than a model-context maximum.
+
+Advanced gateway budget tuning:
+- `PRE_COMMIT_REVIEW_INLINE_DIFF_BYTES`: Default `60000`. Raise it for private deployments with larger model context windows, for example `150000`; lower it for smaller models, for example `30000`.
+- `PRE_COMMIT_REVIEW_MAX_DIFF_BYTES`: Default `200000`. Caps any diff that is explicitly emitted through the gateway or follow-up context commands.
+- Prompt caching and adaptive inline budgets are deployment-specific optimizations. Enable higher inline budgets only after confirming the host does not hide large stdout behind a preview and that latency/cost remain acceptable.
 
 Review group budgets default to 120KB target and 160KB hard limit. Override them with `PRE_COMMIT_REVIEW_GROUP_TARGET_BYTES` and `PRE_COMMIT_REVIEW_GROUP_HARD_BYTES`; groups over the hard limit are marked `split-required`.
 
@@ -154,7 +162,9 @@ The entrypoint wrapper `scripts/collect_diff_context.sh` supports multiple execu
 - `PRE_COMMIT_REVIEW_SHADOW_MODE`: If set to `1`, forces Shadow Mode comparison even when `PRE_COMMIT_REVIEW_HELPER_IMPL` is explicitly set to `legacy` or `shell`.
 - `PRE_COMMIT_REVIEW_DISABLE_FALLBACK`: If set to `1`, disables the legacy script fallback, strictly propagating Rust CLI process failures.
 
-Use `scripts/collect_diff_context.sh --source <staged|unstaged|branch> --group <group_id>` to retrieve one in-budget review group's diff after a global diff is truncated. Use `--path <path>` for file-level follow-up when a group needs narrower context or has been split. Helper-emitted `context_command` values include `--source` so follow-up retrieval stays pinned to the original diff source; `split-required` groups must be reviewed through split suggestions instead of as one group.
+Use `scripts/collect_diff_context.sh --plan-only` or `--include-diff never` to recover only the structured control plane when a host persisted the original helper output. Use `--include-diff always` only when you explicitly want the global raw diff, still bounded by `PRE_COMMIT_REVIEW_MAX_DIFF_BYTES`.
+
+Use `scripts/collect_diff_context.sh --source <staged|unstaged|branch> --group <group_id>` to retrieve one in-budget review group's diff after a global diff is omitted or truncated. Use `--path <path>` for file-level follow-up when a group needs narrower context or has been split. Helper-emitted `context_command` values include `--source` so follow-up retrieval stays pinned to the original diff source; `split-required` groups must be reviewed through split suggestions instead of as one group.
 
 Project-specific risk hints can live in `.pre-commit-review/risk-paths` and `.pre-commit-review/risk-content`. Each non-empty, non-comment line is an extended regular expression; matches promote files into high-risk ordering but do not change coverage requirements.
 
@@ -162,7 +172,7 @@ Project-specific semantic context hints can live in `.pre-commit-review/context-
 
 Review-planning tables and `Dependency Summary` use TSV because paths, commands, and dependency details may contain commas.
 
-Reducer and subagent automation should prefer `Review Plan JSON`, `Reducer State Snapshot Template`, and JSONL sections when present; TSV tables are primarily for human scanning.
+Reducer and subagent automation should prefer `Review Plan JSON`, `Review Manifest JSONL`, `Coverage Ledger Template`, `Reducer State Snapshot Template`, and JSONL sections when present; TSV tables are primarily for human scanning. Automation must not reconstruct scope from direct `git status` or `git diff --name-only` after the helper has emitted a manifest.
 
 ### `tests/`
 
@@ -188,6 +198,7 @@ Execution entrypoints are layered too:
 - `output_eval_runner_test.sh` is the deterministic self-test for fixture preparation and grading logic
 - `output_eval_host_wrappers_test.sh` verifies the wrappers with mock Codex and Claude binaries so host command templates regress without spending model calls
 - `run_helper_gateway_probe.sh` runs a real-host stage that instruments the bundled helper and selected direct Git commands, then fails if a host inspects Git diff source before attempting `scripts/collect_diff_context.sh`
+- `check_persisted_output_contract.sh` scans host transcripts for persisted helper output and fails if the saved plan/manifest was never recovered before a full-review claim
 - `readme_surface_test.sh` keeps the README-facing public surface aligned with the documented contract gates and entrypoint inventory
 - `readme_host_entrypoints_test.sh` pins the tiered `Host Entrypoints` section so the README keeps exposing the host-lane surface by `Primary`, `Analysis`, `Stage`, and `Internal / Repo-wide`
 - `eval_contract_test.sh` is the repo-wide gate for trigger evals, layered output evals, marker taxonomy assets, and host-lane contract surfaces
@@ -204,7 +215,7 @@ For the host-lane workflow, use these scripts by tier:
 - Use these to run the layered output-eval surface and marker-taxonomy checks without hand-selecting individual eval assets
 - `Analysis`: `evals/analyze_host_readiness_diff.sh`
 - Use this to compare cross-host readiness outputs without rerunning each stage
-- `Stage`: `evals/check_host_availability.sh`, `evals/run_helper_gateway_probe.sh`, `evals/run_layered_host_evals.sh`, `evals/host_contract_subset.sh`
+- `Stage`: `evals/check_host_availability.sh`, `evals/run_helper_gateway_probe.sh`, `evals/check_persisted_output_contract.sh`, `evals/run_layered_host_evals.sh`, `evals/host_contract_subset.sh`
 - Use these when debugging or running one host-lane boundary directly
 - `Internal / Repo-wide`: `evals/eval_contract_test.sh`, host `*_test.sh`, `evals/host_failure_taxonomy.sh`
 - Important support surfaces, but not normal user-facing entrypoints
@@ -387,7 +398,7 @@ If you update user-facing documentation, keep localized README files synchronize
 
 Shell scripts (`scripts/*.sh`, `install.sh`, `tests/*.sh`, `evals/*.sh`) are linted by [shellcheck](https://www.shellcheck.net/) in CI (`.github/workflows/lint.yml`). Install it locally (`brew install shellcheck` on macOS) and run `shellcheck -s bash scripts/*.sh install.sh tests/*.sh evals/*.sh` before submitting changes.
 
-To build the Rust CLI binary locally, run `cargo build --release --manifest-path collect-diff-context-cli/Cargo.toml` or execute `scripts/build_all_binaries.sh`.
+To build the Rust CLI binary locally for the current host, run `cargo build --release --manifest-path collect-diff-context-cli/Cargo.toml`. To refresh bundled release binaries, run `scripts/build_with_docker.sh`, which delegates to `scripts/build_all_binaries.sh` and uses native macOS targets plus Docker/cross compilation for Linux and Windows targets when needed.
 
 The deterministic unit test suite is `bash tests/*_test.sh`. The eval harness also ships deterministic self-tests that do not call a model: `bash evals/eval_contract_test.sh`, `bash evals/output_eval_runner_test.sh`, and `bash evals/output_eval_host_wrappers_test.sh` (or run all eval self-tests via `for f in evals/*_test.sh; do bash "$f"; done`). The model-backed runners (`evals/output_eval_codex_runner.sh`, `evals/output_eval_claude_runner.sh`) require a real Codex or Claude CLI and are not part of CI.
 

@@ -10,6 +10,7 @@ use std::sync::OnceLock;
 
 // Core Constants and Defaults
 const DEFAULT_MAX_DIFF_BYTES: usize = 200000;
+const DEFAULT_INLINE_DIFF_BYTES: usize = 60000;
 const DEFAULT_CONTEXT_QUERY_LIMIT: usize = 20;
 const DEFAULT_GROUP_TARGET_BYTES: usize = 120000;
 const DEFAULT_GROUP_HARD_BYTES: usize = 160000;
@@ -50,6 +51,7 @@ struct CliArgs {
     source: Option<String>,
     path: Option<String>,
     group: Option<String>,
+    include_diff: String,
 }
 
 impl CliArgs {
@@ -58,6 +60,8 @@ impl CliArgs {
         let mut source = None;
         let mut path = None;
         let mut group = None;
+        let mut include_diff =
+            env::var("PRE_COMMIT_REVIEW_INCLUDE_DIFF").unwrap_or_else(|_| "auto".to_string());
 
         let mut i = 1;
         while i < args.len() {
@@ -77,6 +81,28 @@ impl CliArgs {
                     } else {
                         return Err(AppError::InvalidArgument(
                             "missing value for --source".to_string(),
+                        ));
+                    }
+                }
+                "--plan-only" => {
+                    include_diff = "never".to_string();
+                    i += 1;
+                }
+                "--include-diff" => {
+                    if i + 1 < args.len() {
+                        let val = &args[i + 1];
+                        if val == "auto" || val == "never" || val == "always" {
+                            include_diff = val.clone();
+                        } else {
+                            return Err(AppError::InvalidArgument(format!(
+                                "invalid --include-diff value: {}",
+                                val
+                            )));
+                        }
+                        i += 2;
+                    } else {
+                        return Err(AppError::InvalidArgument(
+                            "missing value for --include-diff".to_string(),
                         ));
                     }
                 }
@@ -101,7 +127,7 @@ impl CliArgs {
                     }
                 }
                 "-h" | "--help" => {
-                    println!("Usage: collect_diff_context [--source staged|unstaged|branch] [--path PATH | --group GROUP_ID]");
+                    println!("Usage: collect_diff_context [--source staged|unstaged|branch] [--path PATH | --group GROUP_ID] [--plan-only | --include-diff auto|never|always]");
                     println!();
                     println!("Collect read-only Git diff context for pre-commit review.");
                     println!();
@@ -113,6 +139,9 @@ impl CliArgs {
                     println!(
                         "  --group GROUP_ID Emit group-specific context for one review group only."
                     );
+                    println!("  --plan-only      Emit only planning metadata for the selected diff source; omit the global raw diff.");
+                    println!("  --include-diff MODE");
+                    println!("                   Control global diff inclusion for default output: auto, never, or always.");
                     println!("  -h, --help    Show this help.");
                     std::process::exit(0);
                 }
@@ -131,10 +160,15 @@ impl CliArgs {
             ));
         }
 
+        if include_diff != "auto" && include_diff != "never" && include_diff != "always" {
+            include_diff = "auto".to_string();
+        }
+
         Ok(CliArgs {
             source,
             path,
             group,
+            include_diff,
         })
     }
 }
@@ -1028,10 +1062,12 @@ fn fail_no_repo() {
     std::process::exit(0);
 }
 
-fn emit_diff_limited(diff: &str, max_bytes: usize) {
+fn emit_diff_limited(diff: &str, max_bytes: usize, inline_diff_bytes: usize) {
     let size = diff.len();
     println!("diff_bytes: {}", size);
     println!("max_diff_bytes: {}", max_bytes);
+    println!("inline_diff_bytes: {}", inline_diff_bytes);
+    println!("diff_output: inline");
     println!();
     println!("## Diff");
     println!("```diff");
@@ -1047,9 +1083,130 @@ fn emit_diff_limited(diff: &str, max_bytes: usize) {
             print!("{}", c);
             byte_count += char_len;
         }
-        println!("\n[diff truncated after {} bytes; inspect high-risk files with file-specific git diff commands before making safety claims]", max_bytes);
+        println!("\n[diff truncated after {} bytes; inspect high-risk files with helper-emitted context commands before making safety claims]", max_bytes);
     }
     println!("```");
+}
+
+fn emit_diff_omitted(diff_size: usize, max_bytes: usize, inline_diff_bytes: usize, reason: &str) {
+    println!("diff_bytes: {}", diff_size);
+    println!("max_diff_bytes: {}", max_bytes);
+    println!("inline_diff_bytes: {}", inline_diff_bytes);
+    println!("diff_output: omitted");
+    println!("diff_omitted_reason: {}", reason);
+    println!();
+    println!("## Diff Loading Instructions");
+    println!("Global raw diff omitted from the gateway output so Review Plan JSON, Review Manifest JSONL, and Coverage Ledger Template remain visible to the model.");
+    println!("Use helper-emitted context_command values for group/path loading; do not rebuild review scope with direct git commands.");
+}
+
+fn build_review_plan(
+    manifest_units: &[ManifestUnit],
+    groups: &[ReviewGroup],
+    group_commands_map: &HashMap<String, Vec<String>>,
+    mode: &str,
+    self_exe: &str,
+    group_target_bytes: usize,
+    group_hard_bytes: usize,
+) -> (ReviewPlan, usize, usize) {
+    let mut plan_groups = Vec::new();
+    let mut high_risk_units = 0;
+    let mut split_required_groups = 0;
+
+    for g in groups {
+        let req_units: Vec<String> = manifest_units
+            .iter()
+            .filter(|u| u.group_id == g.group_id)
+            .map(|u| u.unit_id.clone())
+            .collect();
+
+        let r_cmds_escaped = group_commands_map
+            .get(&g.group_id)
+            .cloned()
+            .unwrap_or_default();
+        let context_command = format!(
+            "{} --source {} --group {}",
+            shell_quote(self_exe),
+            mode,
+            shell_quote(&g.group_id)
+        );
+
+        let mut priority = 4;
+        let mut action = "review".to_string();
+        let mut split_source = "none".to_string();
+        let mut notes = "review-complete-group-before-coverage-validation".to_string();
+
+        if g.budget_status == "split-required" {
+            action = "split".to_string();
+            split_source = "Split Suggestions and Split Unit Diff Preview".to_string();
+            notes = "replace-with-split-suggestions-before-review".to_string();
+            priority = 1;
+            split_required_groups += 1;
+        } else if g.budget_status == "over-target" {
+            if g.risk == "high" {
+                priority = 2;
+            } else if g.risk == "consistency" {
+                priority = 3;
+            }
+        } else if g.risk == "high" {
+            priority = 2;
+        } else if g.risk == "consistency" {
+            priority = 3;
+        }
+
+        if g.risk == "high" {
+            high_risk_units += g.files.len();
+        }
+
+        plan_groups.push(PlanGroupEntry {
+            group_id: g.group_id.clone(),
+            risk: g.risk.clone(),
+            reason: g.reason.clone(),
+            priority,
+            action,
+            budget_status: g.budget_status.clone(),
+            diff_bytes: g.diff_bytes,
+            required_units: req_units,
+            files: g.files.clone(),
+            review_commands: r_cmds_escaped,
+            context_mode: "group".to_string(),
+            context_command,
+            split_source,
+            notes,
+        });
+    }
+
+    plan_groups.sort_by(|a, b| {
+        let p_cmp = a.priority.cmp(&b.priority);
+        if p_cmp == std::cmp::Ordering::Equal {
+            a.group_id.cmp(&b.group_id)
+        } else {
+            p_cmp
+        }
+    });
+
+    (
+        ReviewPlan {
+            schema_version: 1,
+            source: mode.to_string(),
+            group_target_bytes,
+            group_hard_bytes,
+            manifest_units: manifest_units.len(),
+            review_groups: groups.len(),
+            split_required_groups,
+            high_risk_units,
+            context_mode: "group".to_string(),
+            state_snapshot_section: "Reducer State Snapshot Template".to_string(),
+            semantic_context_section: "Semantic Context Queries".to_string(),
+            groups: plan_groups,
+            coverage_validation: CoverageValidation {
+                rule: "manifest_units - reviewed_units must be empty before claiming full review",
+                blocking_rule: "high-risk or needs-split coverage gaps force DO_NOT_COMMIT",
+            },
+        },
+        high_risk_units,
+        split_required_groups,
+    )
 }
 
 fn run_app() -> Result<(), AppError> {
@@ -1069,6 +1226,11 @@ fn run_app() -> Result<(), AppError> {
         .ok()
         .and_then(|val| val.parse::<usize>().ok())
         .unwrap_or(DEFAULT_MAX_DIFF_BYTES);
+
+    let inline_diff_bytes = env::var("PRE_COMMIT_REVIEW_INLINE_DIFF_BYTES")
+        .ok()
+        .and_then(|val| val.parse::<usize>().ok())
+        .unwrap_or(DEFAULT_INLINE_DIFF_BYTES);
 
     let context_query_limit = env::var("PRE_COMMIT_REVIEW_CONTEXT_QUERY_LIMIT")
         .ok()
@@ -1488,6 +1650,31 @@ fn run_app() -> Result<(), AppError> {
     } else {
         "no"
     };
+    let (diff_output_decision, diff_omitted_reason) = if diff_size == 0 {
+        ("omitted".to_string(), "no diff available".to_string())
+    } else {
+        match args.include_diff.as_str() {
+            "always" => ("inline".to_string(), "none".to_string()),
+            "never" => ("omitted".to_string(), "plan-only mode".to_string()),
+            "auto" => {
+                if inline_diff_bytes == 0 || diff_size <= inline_diff_bytes {
+                    ("inline".to_string(), "none".to_string())
+                } else {
+                    (
+                        "omitted".to_string(),
+                        format!(
+                            "global diff exceeds inline budget ({} > {})",
+                            diff_size, inline_diff_bytes
+                        ),
+                    )
+                }
+            }
+            other => (
+                "omitted".to_string(),
+                format!("invalid include-diff mode coerced to plan-only: {}", other),
+            ),
+        }
+    };
 
     // Print Context Metadata Header
     println!("# Pre-Commit Review Diff Context\n");
@@ -1514,6 +1701,12 @@ fn run_app() -> Result<(), AppError> {
     }
     println!("review_limits: {}", review_limit_note);
     println!("diff_truncated: {}", diff_truncated);
+    println!("inline_diff_bytes: {}", inline_diff_bytes);
+    println!("diff_output: {}", diff_output_decision);
+    if diff_output_decision == "omitted" {
+        println!("diff_omitted_reason: {}", diff_omitted_reason);
+    }
+    println!("diff_loading: use helper-emitted context_command values; do not rebuild review scope with direct git commands");
     println!("group_target_bytes: {}", group_target_bytes);
     println!("group_hard_bytes: {}", group_hard_bytes);
     println!("files_changed: {}", files_changed_str);
@@ -1700,6 +1893,7 @@ fn run_app() -> Result<(), AppError> {
             mode,
             &selected_ref,
             max_diff_bytes,
+            inline_diff_bytes,
             &repo_root,
         )?;
         return Ok(());
@@ -1769,327 +1963,511 @@ fn run_app() -> Result<(), AppError> {
             return Ok(());
         }
 
-        emit_diff_limited(&String::from_utf8_lossy(&file_diff_bytes), max_diff_bytes);
+        emit_diff_limited(
+            &String::from_utf8_lossy(&file_diff_bytes),
+            max_diff_bytes,
+            inline_diff_bytes,
+        );
         return Ok(());
     }
 
-    // Print Review Manifest (TSV) - protected with TSV sanitization
-    println!("## Review Manifest");
-    println!("unit_id\tpath\tstatus\tadditions\tdeletions\tdiff_bytes\trisk_tags\tgroup_id\treview_command\tcontext_command");
-    for unit in &manifest_units {
-        println!(
-            "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
-            sanitize_tsv_field(&unit.unit_id),
-            sanitize_tsv_field(&unit.file_path),
-            sanitize_tsv_field(&unit.status),
-            unit.additions,
-            unit.deletions,
-            unit.diff_bytes,
-            sanitize_tsv_field(&unit.risk_tags.join(";")),
-            sanitize_tsv_field(&unit.group_id),
-            sanitize_tsv_field(&unit.review_command),
-            sanitize_tsv_field(&unit.context_command)
-        );
-    }
-    println!();
+    let (plan, high_risk_units, split_required_groups) = build_review_plan(
+        &manifest_units,
+        &groups,
+        &group_commands_map,
+        mode,
+        &self_exe,
+        group_target_bytes,
+        group_hard_bytes,
+    );
 
-    // Print Review Manifest JSONL
-    println!("## Review Manifest JSONL");
-    for unit in &manifest_units {
-        if let Ok(json) = serde_json::to_string(unit) {
-            println!("{}", json);
+    let compact_plan = diff_size > 0 && diff_output_decision == "omitted";
+
+    if compact_plan {
+        println!("## Review Manifest JSONL");
+        for unit in &manifest_units {
+            if let Ok(json) = serde_json::to_string(unit) {
+                println!("{}", json);
+            }
         }
-    }
-    println!();
+        println!();
 
-    // Print Review Groups (TSV)
-    println!("## Review Groups");
-    println!("group_id\trisk\treason\tdiff_bytes\tfiles\tbudget_status");
-    for g in &groups {
-        println!(
-            "{}\t{}\t{}\t{}\t{}\t{}",
-            sanitize_tsv_field(&g.group_id),
-            sanitize_tsv_field(&g.risk),
-            sanitize_tsv_field(&g.reason),
-            g.diff_bytes,
-            sanitize_tsv_field(&g.files.join(";")),
-            sanitize_tsv_field(&g.budget_status)
-        );
-    }
-    println!();
-
-    // Print Review Groups JSONL
-    println!("## Review Groups JSONL");
-    for g in &groups {
-        if let Ok(json) = serde_json::to_string(g) {
-            println!("{}", json);
+        println!("## Review Groups JSONL");
+        for g in &groups {
+            if let Ok(json) = serde_json::to_string(g) {
+                println!("{}", json);
+            }
         }
-    }
-    println!();
+        println!();
 
-    // Build and emit Review Plan JSON
-    let mut plan_groups = Vec::new();
-    let mut high_risk_units = 0;
-    let mut split_required_groups = 0;
+        println!("## Review Plan JSON");
+        println!("{}", serde_json::to_string(&plan).unwrap_or_default());
+        println!();
 
-    for g in &groups {
-        let req_units: Vec<String> = manifest_units
+        println!("## Split Suggestions");
+        println!(
+            "parent_group_id\tunit_id\tpath\tsplit_kind\tdiff_bytes\thunk_header\treview_command"
+        );
+        let mut emitted_split = false;
+        for g in &groups {
+            if g.budget_status == "split-required" {
+                for f in &g.files {
+                    let unit = match manifest_units.iter().find(|u| u.file_path == *f) {
+                        Some(u) => u,
+                        None => continue,
+                    };
+                    let raw_f = unquote_git_path(f);
+                    let f_diff_bytes =
+                        git_run_diff_bytes(mode, &selected_ref, &[], Some(&raw_f), &repo_root)?;
+                    let f_diff = String::from_utf8_lossy(&f_diff_bytes);
+                    let hunks = split_diff_into_hunks(&f_diff);
+                    if hunks.is_empty() {
+                        println!(
+                            "{}\tfile:{}\t{}\tfile\t0\tnone\t{}",
+                            sanitize_tsv_field(&g.group_id),
+                            sanitize_tsv_field(f),
+                            sanitize_tsv_field(f),
+                            sanitize_tsv_field(&unit.review_command)
+                        );
+                    } else {
+                        for (h_idx, hunk) in hunks.iter().enumerate() {
+                            let clean_header = hunk.header.replace('\t', " ");
+                            println!(
+                                "{}\thunk:{}:{}\t{}\thunk\t{}\t{}\t{}",
+                                sanitize_tsv_field(&g.group_id),
+                                sanitize_tsv_field(f),
+                                h_idx + 1,
+                                sanitize_tsv_field(f),
+                                hunk.bytes,
+                                sanitize_tsv_field(&clean_header),
+                                sanitize_tsv_field(&unit.review_command)
+                            );
+                        }
+                    }
+                    emitted_split = true;
+                }
+            }
+        }
+        if !emitted_split {
+            println!("none\tnone\tnone\tnone\t0\tnone\tnone");
+        }
+        println!();
+
+        println!("## Coverage Ledger Template");
+        println!("unit_id\tgroup_id\tpath\tcoverage_status\tcoverage_mode\tnotes");
+        for unit in &manifest_units {
+            let is_split = groups
+                .iter()
+                .find(|g| g.group_id == unit.group_id)
+                .map(|g| g.budget_status == "split-required")
+                .unwrap_or(false);
+            if is_split {
+                println!(
+                    "{}\t{}\t{}\tneeds-split\treplace-with-split-suggestions\tsplit-required group",
+                    sanitize_tsv_field(&unit.unit_id),
+                    sanitize_tsv_field(&unit.group_id),
+                    sanitize_tsv_field(&unit.file_path)
+                );
+            } else {
+                println!(
+                    "{}\t{}\t{}\tpending\tfile-review\trecord group result before final verdict",
+                    sanitize_tsv_field(&unit.unit_id),
+                    sanitize_tsv_field(&unit.group_id),
+                    sanitize_tsv_field(&unit.file_path)
+                );
+            }
+        }
+        println!();
+
+        let mut coverage_gaps = Vec::new();
+        let mut needs_split_units = Vec::new();
+        let mut pending_units = Vec::new();
+        for unit in &manifest_units {
+            let is_split = groups
+                .iter()
+                .find(|g| g.group_id == unit.group_id)
+                .map(|g| g.budget_status == "split-required")
+                .unwrap_or(false);
+            let status = if is_split {
+                needs_split_units.push(unit.unit_id.clone());
+                "needs-split"
+            } else {
+                "pending"
+            };
+            pending_units.push(unit.unit_id.clone());
+            coverage_gaps.push(CoverageGap {
+                unit_id: unit.unit_id.clone(),
+                group_id: unit.group_id.clone(),
+                risk_tags: unit.risk_tags.join(";"),
+                coverage_status: status.to_string(),
+            });
+        }
+        let reducer_state = ReducerState {
+            schema_version: 1,
+            state_kind: "reducer_state_snapshot",
+            source: mode.to_string(),
+            status: "pending_group_reviews",
+            manifest_units: manifest_units.len(),
+            review_groups: groups.len(),
+            reviewed_units: vec![],
+            pending_units,
+            needs_split_units,
+            group_results: vec![],
+            coverage_gaps,
+            finding_merge: FindingMerge {
+                deduplicated_findings: vec![],
+                blockers: vec![],
+                notes: vec![],
+            },
+            dependency_checks: vec![],
+            test_recommendations: vec![],
+            final_verdict: "blocked_until_coverage_validation_passes",
+            persistence_rule: "carry this compact state forward after each group result; update reviewed_units, pending_units, group_results, coverage_gaps, and finding_merge before reducer finalization",
+        };
+        println!("## Reducer State Snapshot Template");
+        println!(
+            "{}",
+            serde_json::to_string(&reducer_state).unwrap_or_default()
+        );
+        println!();
+
+        let needs_split_units_cnt = manifest_units
             .iter()
-            .filter(|u| u.group_id == g.group_id)
-            .map(|u| u.unit_id.clone())
-            .collect();
+            .filter(|u| {
+                groups
+                    .iter()
+                    .any(|g| g.group_id == u.group_id && g.budget_status == "split-required")
+            })
+            .count();
+        println!("## Coverage Validation Checklist");
+        println!("manifest_units: {}", manifest_units.len());
+        println!("review_groups: {}", groups.len());
+        println!("split_required_groups: {}", split_required_groups);
+        println!("needs_split_units: {}", needs_split_units_cnt);
+        println!("high_risk_units: {}", high_risk_units);
+        println!("validation_rule: manifest_units - reviewed_units must be empty before claiming full review");
+        println!("blocking_rule: high-risk or needs-split coverage gaps force DO_NOT_COMMIT");
+        println!();
+    } else {
+        // Print Review Manifest (TSV) - protected with TSV sanitization
+        println!("## Review Manifest");
+        println!("unit_id\tpath\tstatus\tadditions\tdeletions\tdiff_bytes\trisk_tags\tgroup_id\treview_command\tcontext_command");
+        for unit in &manifest_units {
+            println!(
+                "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
+                sanitize_tsv_field(&unit.unit_id),
+                sanitize_tsv_field(&unit.file_path),
+                sanitize_tsv_field(&unit.status),
+                unit.additions,
+                unit.deletions,
+                unit.diff_bytes,
+                sanitize_tsv_field(&unit.risk_tags.join(";")),
+                sanitize_tsv_field(&unit.group_id),
+                sanitize_tsv_field(&unit.review_command),
+                sanitize_tsv_field(&unit.context_command)
+            );
+        }
+        println!();
 
-        let files_escaped: Vec<String> = g.files.clone();
-        let r_cmds_escaped = group_commands_map
-            .get(&g.group_id)
-            .cloned()
-            .unwrap_or_default();
-        let context_command = format!(
-            "{} --source {} --group {}",
-            shell_quote(&self_exe),
-            mode,
-            shell_quote(&g.group_id)
-        );
+        // Print Review Manifest JSONL
+        println!("## Review Manifest JSONL");
+        for unit in &manifest_units {
+            if let Ok(json) = serde_json::to_string(unit) {
+                println!("{}", json);
+            }
+        }
+        println!();
 
-        let mut priority = 4;
-        let mut action = "review".to_string();
-        let mut split_source = "none".to_string();
-        let mut notes = "review-complete-group-before-coverage-validation".to_string();
+        // Print Review Groups (TSV)
+        println!("## Review Groups");
+        println!("group_id\trisk\treason\tdiff_bytes\tfiles\tbudget_status");
+        for g in &groups {
+            println!(
+                "{}\t{}\t{}\t{}\t{}\t{}",
+                sanitize_tsv_field(&g.group_id),
+                sanitize_tsv_field(&g.risk),
+                sanitize_tsv_field(&g.reason),
+                g.diff_bytes,
+                sanitize_tsv_field(&g.files.join(";")),
+                sanitize_tsv_field(&g.budget_status)
+            );
+        }
+        println!();
 
-        if g.budget_status == "split-required" {
-            action = "split".to_string();
-            split_source = "Split Suggestions and Split Unit Diff Preview".to_string();
-            notes = "replace-with-split-suggestions-before-review".to_string();
-            priority = 1;
-            split_required_groups += 1;
-        } else if g.budget_status == "over-target" {
-            if g.risk == "high" {
+        // Print Review Groups JSONL
+        println!("## Review Groups JSONL");
+        for g in &groups {
+            if let Ok(json) = serde_json::to_string(g) {
+                println!("{}", json);
+            }
+        }
+        println!();
+
+        // Build and emit Review Plan JSON
+        let mut plan_groups = Vec::new();
+        let mut high_risk_units = 0;
+        let mut split_required_groups = 0;
+
+        for g in &groups {
+            let req_units: Vec<String> = manifest_units
+                .iter()
+                .filter(|u| u.group_id == g.group_id)
+                .map(|u| u.unit_id.clone())
+                .collect();
+
+            let files_escaped: Vec<String> = g.files.clone();
+            let r_cmds_escaped = group_commands_map
+                .get(&g.group_id)
+                .cloned()
+                .unwrap_or_default();
+            let context_command = format!(
+                "{} --source {} --group {}",
+                shell_quote(&self_exe),
+                mode,
+                shell_quote(&g.group_id)
+            );
+
+            let mut priority = 4;
+            let mut action = "review".to_string();
+            let mut split_source = "none".to_string();
+            let mut notes = "review-complete-group-before-coverage-validation".to_string();
+
+            if g.budget_status == "split-required" {
+                action = "split".to_string();
+                split_source = "Split Suggestions and Split Unit Diff Preview".to_string();
+                notes = "replace-with-split-suggestions-before-review".to_string();
+                priority = 1;
+                split_required_groups += 1;
+            } else if g.budget_status == "over-target" {
+                if g.risk == "high" {
+                    priority = 2;
+                } else if g.risk == "consistency" {
+                    priority = 3;
+                }
+            } else if g.risk == "high" {
                 priority = 2;
             } else if g.risk == "consistency" {
                 priority = 3;
             }
-        } else if g.risk == "high" {
-            priority = 2;
-        } else if g.risk == "consistency" {
-            priority = 3;
-        }
 
-        if g.risk == "high" {
-            high_risk_units += g.files.len();
-        }
-
-        plan_groups.push(PlanGroupEntry {
-            group_id: g.group_id.clone(),
-            risk: g.risk.clone(),
-            reason: g.reason.clone(),
-            priority,
-            action,
-            budget_status: g.budget_status.clone(),
-            diff_bytes: g.diff_bytes,
-            required_units: req_units,
-            files: files_escaped,
-            review_commands: r_cmds_escaped,
-            context_mode: "group".to_string(),
-            context_command,
-            split_source,
-            notes,
-        });
-    }
-
-    // Sort plan groups by priority ascending, then group_id
-    plan_groups.sort_by(|a, b| {
-        let p_cmp = a.priority.cmp(&b.priority);
-        if p_cmp == std::cmp::Ordering::Equal {
-            a.group_id.cmp(&b.group_id)
-        } else {
-            p_cmp
-        }
-    });
-
-    let plan = ReviewPlan {
-        schema_version: 1,
-        source: mode.to_string(),
-        group_target_bytes,
-        group_hard_bytes,
-        manifest_units: manifest_units.len(),
-        review_groups: groups.len(),
-        split_required_groups,
-        high_risk_units,
-        context_mode: "group".to_string(),
-        state_snapshot_section: "Reducer State Snapshot Template".to_string(),
-        semantic_context_section: "Semantic Context Queries".to_string(),
-        groups: plan_groups,
-        coverage_validation: CoverageValidation {
-            rule: "manifest_units - reviewed_units must be empty before claiming full review",
-            blocking_rule: "high-risk or needs-split coverage gaps force DO_NOT_COMMIT",
-        },
-    };
-
-    println!("## Review Plan JSON");
-    println!("{}", serde_json::to_string(&plan).unwrap_or_default());
-    println!();
-
-    // 8. Generate and emit Split Suggestions
-    let mut split_files = Vec::new();
-    for g in &groups {
-        if g.budget_status == "split-required" {
-            for f in &g.files {
-                let r_cmd = manifest_units
-                    .iter()
-                    .find(|u| u.file_path == *f)
-                    .map(|u| u.review_command.clone())
-                    .unwrap_or_default();
-                split_files.push((g.group_id.clone(), f.clone(), r_cmd));
+            if g.risk == "high" {
+                high_risk_units += g.files.len();
             }
-        }
-    }
 
-    println!("## Split Suggestions");
-    println!("parent_group_id\tunit_id\tpath\tsplit_kind\tdiff_bytes\thunk_header\treview_command");
-    if !split_files.is_empty() {
-        for (parent_group, path, r_cmd) in &split_files {
-            let raw_path = unquote_git_path(path);
-            let f_diff_bytes =
-                git_run_diff_bytes(mode, &selected_ref, &[], Some(&raw_path), &repo_root)?;
-            let f_diff = String::from_utf8_lossy(&f_diff_bytes);
-            let hunks = split_diff_into_hunks(&f_diff);
-            if hunks.is_empty() {
-                println!(
-                    "{}\tfile:{}\t{}\tfile\t0\tnone\t{}",
-                    sanitize_tsv_field(parent_group),
-                    sanitize_tsv_field(path),
-                    sanitize_tsv_field(path),
-                    sanitize_tsv_field(r_cmd)
-                );
+            plan_groups.push(PlanGroupEntry {
+                group_id: g.group_id.clone(),
+                risk: g.risk.clone(),
+                reason: g.reason.clone(),
+                priority,
+                action,
+                budget_status: g.budget_status.clone(),
+                diff_bytes: g.diff_bytes,
+                required_units: req_units,
+                files: files_escaped,
+                review_commands: r_cmds_escaped,
+                context_mode: "group".to_string(),
+                context_command,
+                split_source,
+                notes,
+            });
+        }
+
+        // Sort plan groups by priority ascending, then group_id
+        plan_groups.sort_by(|a, b| {
+            let p_cmp = a.priority.cmp(&b.priority);
+            if p_cmp == std::cmp::Ordering::Equal {
+                a.group_id.cmp(&b.group_id)
             } else {
-                for (h_idx, hunk) in hunks.iter().enumerate() {
-                    let clean_header = hunk.header.replace('\t', " ");
-                    println!(
-                        "{}\thunk:{}:{}\t{}\thunk\t{}\t{}\t{}",
-                        sanitize_tsv_field(parent_group),
-                        sanitize_tsv_field(path),
-                        h_idx + 1,
-                        sanitize_tsv_field(path),
-                        hunk.bytes,
-                        sanitize_tsv_field(&clean_header),
-                        sanitize_tsv_field(r_cmd)
-                    );
+                p_cmp
+            }
+        });
+
+        let plan = ReviewPlan {
+            schema_version: 1,
+            source: mode.to_string(),
+            group_target_bytes,
+            group_hard_bytes,
+            manifest_units: manifest_units.len(),
+            review_groups: groups.len(),
+            split_required_groups,
+            high_risk_units,
+            context_mode: "group".to_string(),
+            state_snapshot_section: "Reducer State Snapshot Template".to_string(),
+            semantic_context_section: "Semantic Context Queries".to_string(),
+            groups: plan_groups,
+            coverage_validation: CoverageValidation {
+                rule: "manifest_units - reviewed_units must be empty before claiming full review",
+                blocking_rule: "high-risk or needs-split coverage gaps force DO_NOT_COMMIT",
+            },
+        };
+
+        println!("## Review Plan JSON");
+        println!("{}", serde_json::to_string(&plan).unwrap_or_default());
+        println!();
+
+        // 8. Generate and emit Split Suggestions
+        let mut split_files = Vec::new();
+        for g in &groups {
+            if g.budget_status == "split-required" {
+                for f in &g.files {
+                    let r_cmd = manifest_units
+                        .iter()
+                        .find(|u| u.file_path == *f)
+                        .map(|u| u.review_command.clone())
+                        .unwrap_or_default();
+                    split_files.push((g.group_id.clone(), f.clone(), r_cmd));
                 }
             }
         }
-    } else {
-        println!("none\tnone\tnone\tnone\t0\tnone\tnone");
-    }
-    println!();
 
-    // Emit Split Unit Diff Previews
-    println!("## Split Unit Diff Preview");
-    if !split_files.is_empty() {
-        for (parent_group, path, _) in &split_files {
-            let raw_path = unquote_git_path(path);
-            let f_diff_bytes =
-                git_run_diff_bytes(mode, &selected_ref, &[], Some(&raw_path), &repo_root)?;
-            let f_diff = String::from_utf8_lossy(&f_diff_bytes);
-            let hunks = split_diff_into_hunks(&f_diff);
-            for (h_idx, hunk) in hunks.iter().enumerate() {
-                println!("unit_id: hunk:{}:{}", path, h_idx + 1);
-                println!("parent_group_id: {}", parent_group);
-                println!("```diff");
-                print!("{}", hunk.content);
-                println!("```");
+        println!("## Split Suggestions");
+        println!(
+            "parent_group_id\tunit_id\tpath\tsplit_kind\tdiff_bytes\thunk_header\treview_command"
+        );
+        if !split_files.is_empty() {
+            for (parent_group, path, r_cmd) in &split_files {
+                let raw_path = unquote_git_path(path);
+                let f_diff_bytes =
+                    git_run_diff_bytes(mode, &selected_ref, &[], Some(&raw_path), &repo_root)?;
+                let f_diff = String::from_utf8_lossy(&f_diff_bytes);
+                let hunks = split_diff_into_hunks(&f_diff);
+                if hunks.is_empty() {
+                    println!(
+                        "{}\tfile:{}\t{}\tfile\t0\tnone\t{}",
+                        sanitize_tsv_field(parent_group),
+                        sanitize_tsv_field(path),
+                        sanitize_tsv_field(path),
+                        sanitize_tsv_field(r_cmd)
+                    );
+                } else {
+                    for (h_idx, hunk) in hunks.iter().enumerate() {
+                        let clean_header = hunk.header.replace('\t', " ");
+                        println!(
+                            "{}\thunk:{}:{}\t{}\thunk\t{}\t{}\t{}",
+                            sanitize_tsv_field(parent_group),
+                            sanitize_tsv_field(path),
+                            h_idx + 1,
+                            sanitize_tsv_field(path),
+                            hunk.bytes,
+                            sanitize_tsv_field(&clean_header),
+                            sanitize_tsv_field(r_cmd)
+                        );
+                    }
+                }
+            }
+        } else {
+            println!("none\tnone\tnone\tnone\t0\tnone\tnone");
+        }
+        println!();
+
+        // Emit Split Unit Diff Previews
+        println!("## Split Unit Diff Preview");
+        if !split_files.is_empty() {
+            for (parent_group, path, _) in &split_files {
+                let raw_path = unquote_git_path(path);
+                let f_diff_bytes =
+                    git_run_diff_bytes(mode, &selected_ref, &[], Some(&raw_path), &repo_root)?;
+                let f_diff = String::from_utf8_lossy(&f_diff_bytes);
+                let hunks = split_diff_into_hunks(&f_diff);
+                for (h_idx, hunk) in hunks.iter().enumerate() {
+                    println!("unit_id: hunk:{}:{}", path, h_idx + 1);
+                    println!("parent_group_id: {}", parent_group);
+                    println!("```diff");
+                    print!("{}", hunk.content);
+                    println!("```");
+                }
+            }
+        } else {
+            println!("none");
+        }
+        println!();
+
+        // Coverage Ledger Template
+        println!("## Coverage Ledger Template");
+        println!("unit_id\tgroup_id\tpath\tcoverage_status\tcoverage_mode\tnotes");
+        for unit in &manifest_units {
+            let is_split = groups
+                .iter()
+                .find(|g| g.group_id == unit.group_id)
+                .map(|g| g.budget_status == "split-required")
+                .unwrap_or(false);
+            if is_split {
+                println!(
+                    "{}\t{}\t{}\tneeds-split\treplace-with-split-suggestions\tsplit-required group",
+                    sanitize_tsv_field(&unit.unit_id),
+                    sanitize_tsv_field(&unit.group_id),
+                    sanitize_tsv_field(&unit.file_path)
+                );
+            } else {
+                println!(
+                    "{}\t{}\t{}\tpending\tfile-review\trecord group result before final verdict",
+                    sanitize_tsv_field(&unit.unit_id),
+                    sanitize_tsv_field(&unit.group_id),
+                    sanitize_tsv_field(&unit.file_path)
+                );
             }
         }
-    } else {
-        println!("none");
-    }
-    println!();
+        println!();
 
-    // Coverage Ledger Template
-    println!("## Coverage Ledger Template");
-    println!("unit_id\tgroup_id\tpath\tcoverage_status\tcoverage_mode\tnotes");
-    for unit in &manifest_units {
-        let is_split = groups
-            .iter()
-            .find(|g| g.group_id == unit.group_id)
-            .map(|g| g.budget_status == "split-required")
-            .unwrap_or(false);
-        if is_split {
-            println!(
-                "{}\t{}\t{}\tneeds-split\treplace-with-split-suggestions\tsplit-required group",
-                sanitize_tsv_field(&unit.unit_id),
-                sanitize_tsv_field(&unit.group_id),
-                sanitize_tsv_field(&unit.file_path)
-            );
-        } else {
-            println!(
-                "{}\t{}\t{}\tpending\tfile-review\trecord group result before final verdict",
-                sanitize_tsv_field(&unit.unit_id),
-                sanitize_tsv_field(&unit.group_id),
-                sanitize_tsv_field(&unit.file_path)
-            );
+        // Group Review Result Template
+        println!("## Group Review Result Template");
+        for g in &groups {
+            let req_units: Vec<String> = manifest_units
+                .iter()
+                .filter(|u| u.group_id == g.group_id)
+                .map(|u| u.unit_id.clone())
+                .collect();
+            let coverage = if g.budget_status == "split-required" {
+                "needs-split"
+            } else {
+                "pending"
+            };
+            let gr_json = serde_json::json!({
+                "group_id": g.group_id,
+                "required_units": req_units,
+                "reviewed_units": Vec::<serde_json::Value>::new(),
+                "coverage": coverage,
+                "findings": Vec::<serde_json::Value>::new(),
+                "contract_changes": Vec::<serde_json::Value>::new(),
+                "dependencies_to_check": Vec::<serde_json::Value>::new(),
+                "tests_recommended": Vec::<serde_json::Value>::new(),
+            });
+            if let Ok(json_str) = serde_json::to_string(&gr_json) {
+                println!("{}", json_str);
+            }
         }
-    }
-    println!();
+        println!();
 
-    // Group Review Result Template
-    println!("## Group Review Result Template");
-    for g in &groups {
-        let req_units: Vec<String> = manifest_units
-            .iter()
-            .filter(|u| u.group_id == g.group_id)
-            .map(|u| u.unit_id.clone())
-            .collect();
-        let coverage = if g.budget_status == "split-required" {
-            "needs-split"
-        } else {
-            "pending"
-        };
-        let gr_json = serde_json::json!({
-            "group_id": g.group_id,
-            "required_units": req_units,
-            "reviewed_units": Vec::<serde_json::Value>::new(),
-            "coverage": coverage,
-            "findings": Vec::<serde_json::Value>::new(),
-            "contract_changes": Vec::<serde_json::Value>::new(),
-            "dependencies_to_check": Vec::<serde_json::Value>::new(),
-            "tests_recommended": Vec::<serde_json::Value>::new(),
-        });
-        if let Ok(json_str) = serde_json::to_string(&gr_json) {
-            println!("{}", json_str);
+        // Reducer State Snapshot Template
+        let mut coverage_gaps = Vec::new();
+        let mut needs_split_units = Vec::new();
+        let mut pending_units = Vec::new();
+
+        for unit in &manifest_units {
+            let is_split = groups
+                .iter()
+                .find(|g| g.group_id == unit.group_id)
+                .map(|g| g.budget_status == "split-required")
+                .unwrap_or(false);
+
+            let status = if is_split {
+                needs_split_units.push(unit.unit_id.clone());
+                "needs-split"
+            } else {
+                "pending"
+            };
+            pending_units.push(unit.unit_id.clone());
+
+            let risk_tag_str = unit.risk_tags.join(";");
+            coverage_gaps.push(CoverageGap {
+                unit_id: unit.unit_id.clone(),
+                group_id: unit.group_id.clone(),
+                risk_tags: risk_tag_str,
+                coverage_status: status.to_string(),
+            });
         }
-    }
-    println!();
 
-    // Reducer State Snapshot Template
-    let mut coverage_gaps = Vec::new();
-    let mut needs_split_units = Vec::new();
-    let mut pending_units = Vec::new();
-
-    for unit in &manifest_units {
-        let is_split = groups
-            .iter()
-            .find(|g| g.group_id == unit.group_id)
-            .map(|g| g.budget_status == "split-required")
-            .unwrap_or(false);
-
-        let status = if is_split {
-            needs_split_units.push(unit.unit_id.clone());
-            "needs-split"
-        } else {
-            "pending"
-        };
-        pending_units.push(unit.unit_id.clone());
-
-        let risk_tag_str = unit.risk_tags.join(";");
-        coverage_gaps.push(CoverageGap {
-            unit_id: unit.unit_id.clone(),
-            group_id: unit.group_id.clone(),
-            risk_tags: risk_tag_str,
-            coverage_status: status.to_string(),
-        });
-    }
-
-    let reducer_state = ReducerState {
+        let reducer_state = ReducerState {
         schema_version: 1,
         state_kind: "reducer_state_snapshot",
         source: mode.to_string(),
@@ -2112,118 +2490,119 @@ fn run_app() -> Result<(), AppError> {
         persistence_rule: "carry this compact state forward after each group result; update reviewed_units, pending_units, group_results, coverage_gaps, and finding_merge before reducer finalization",
     };
 
-    println!("## Reducer State Snapshot Template");
-    println!(
-        "{}",
-        serde_json::to_string(&reducer_state).unwrap_or_default()
-    );
-    println!();
-
-    // Coverage Validation Checklist
-    println!("## Coverage Validation Checklist");
-    let needs_split_units_cnt = manifest_units
-        .iter()
-        .filter(|u| {
-            groups
-                .iter()
-                .any(|g| g.group_id == u.group_id && g.budget_status == "split-required")
-        })
-        .count();
-
-    println!("manifest_units: {}", manifest_units.len());
-    println!("review_groups: {}", groups.len());
-    println!("split_required_groups: {}", split_required_groups);
-    println!("needs_split_units: {}", needs_split_units_cnt);
-    println!("high_risk_units: {}", high_risk_units);
-    println!("validation_rule: manifest_units - reviewed_units must be empty before claiming full review");
-    println!("blocking_rule: high-risk or needs-split coverage gaps force DO_NOT_COMMIT");
-    println!();
-
-    // Full Review Execution Plan
-    println!("## Full Review Execution Plan");
-    println!("step\taction\tgroup_id\trisk\tbudget_status\tunits\tnotes");
-    for (step_idx, entry) in plan.groups.iter().enumerate() {
-        let req_units_raw: Vec<String> = manifest_units
-            .iter()
-            .filter(|u| u.group_id == entry.group_id)
-            .map(|u| u.unit_id.clone())
-            .collect();
-
+        println!("## Reducer State Snapshot Template");
         println!(
-            "{}\t{}\t{}\t{}\t{}\t{}\t{}",
-            step_idx + 1,
-            sanitize_tsv_field(&entry.action),
-            sanitize_tsv_field(&entry.group_id),
-            sanitize_tsv_field(&entry.risk),
-            sanitize_tsv_field(&entry.budget_status),
-            sanitize_tsv_field(&req_units_raw.join(";")),
-            sanitize_tsv_field(&entry.notes)
+            "{}",
+            serde_json::to_string(&reducer_state).unwrap_or_default()
         );
-    }
-    println!();
+        println!();
 
-    // Group Review Work Packets
-    println!("## Group Review Work Packets");
-    for entry in &plan.groups {
-        let req_units_raw: Vec<String> = manifest_units
+        // Coverage Validation Checklist
+        println!("## Coverage Validation Checklist");
+        let needs_split_units_cnt = manifest_units
             .iter()
-            .filter(|u| u.group_id == entry.group_id)
-            .map(|u| u.unit_id.clone())
-            .collect();
+            .filter(|u| {
+                groups
+                    .iter()
+                    .any(|g| g.group_id == u.group_id && g.budget_status == "split-required")
+            })
+            .count();
 
-        let file_review_cmds: Vec<String> = manifest_units
-            .iter()
-            .filter(|u| u.group_id == entry.group_id)
-            .map(|u| u.review_command.clone())
-            .collect();
+        println!("manifest_units: {}", manifest_units.len());
+        println!("review_groups: {}", groups.len());
+        println!("split_required_groups: {}", split_required_groups);
+        println!("needs_split_units: {}", needs_split_units_cnt);
+        println!("high_risk_units: {}", high_risk_units);
+        println!("validation_rule: manifest_units - reviewed_units must be empty before claiming full review");
+        println!("blocking_rule: high-risk or needs-split coverage gaps force DO_NOT_COMMIT");
+        println!();
 
-        println!("---");
-        println!("group_id: {}", entry.group_id);
-        println!("risk: {}", entry.risk);
-        println!("budget_status: {}", entry.budget_status);
-        println!("required_units: {}", req_units_raw.join(";"));
-        println!("review_commands: {}", file_review_cmds.join(" ; "));
+        // Full Review Execution Plan
+        println!("## Full Review Execution Plan");
+        println!("step\taction\tgroup_id\trisk\tbudget_status\tunits\tnotes");
+        for (step_idx, entry) in plan.groups.iter().enumerate() {
+            let req_units_raw: Vec<String> = manifest_units
+                .iter()
+                .filter(|u| u.group_id == entry.group_id)
+                .map(|u| u.unit_id.clone())
+                .collect();
 
-        let context_command = format!(
-            "{} --source {} --group {}",
-            shell_quote(&self_exe),
-            mode,
-            shell_quote(&entry.group_id)
-        );
-        println!("context_command: {}", context_command);
+            println!(
+                "{}\t{}\t{}\t{}\t{}\t{}\t{}",
+                step_idx + 1,
+                sanitize_tsv_field(&entry.action),
+                sanitize_tsv_field(&entry.group_id),
+                sanitize_tsv_field(&entry.risk),
+                sanitize_tsv_field(&entry.budget_status),
+                sanitize_tsv_field(&req_units_raw.join(";")),
+                sanitize_tsv_field(&entry.notes)
+            );
+        }
+        println!();
 
-        let split_source_val = if entry.budget_status == "split-required" {
-            "Split Suggestions and Split Unit Diff Preview"
-        } else {
-            "none"
-        };
-        println!("split_source: {}", split_source_val);
+        // Group Review Work Packets
+        println!("## Group Review Work Packets");
+        for entry in &plan.groups {
+            let req_units_raw: Vec<String> = manifest_units
+                .iter()
+                .filter(|u| u.group_id == entry.group_id)
+                .map(|u| u.unit_id.clone())
+                .collect();
+
+            let file_review_cmds: Vec<String> = manifest_units
+                .iter()
+                .filter(|u| u.group_id == entry.group_id)
+                .map(|u| u.review_command.clone())
+                .collect();
+
+            println!("---");
+            println!("group_id: {}", entry.group_id);
+            println!("risk: {}", entry.risk);
+            println!("budget_status: {}", entry.budget_status);
+            println!("required_units: {}", req_units_raw.join(";"));
+            println!("review_commands: {}", file_review_cmds.join(" ; "));
+
+            let context_command = format!(
+                "{} --source {} --group {}",
+                shell_quote(&self_exe),
+                mode,
+                shell_quote(&entry.group_id)
+            );
+            println!("context_command: {}", context_command);
+
+            let split_source_val = if entry.budget_status == "split-required" {
+                "Split Suggestions and Split Unit Diff Preview"
+            } else {
+                "none"
+            };
+            println!("split_source: {}", split_source_val);
+        }
+        println!();
+
+        // Reducer Finalization Template
+        println!("## Reducer Finalization Template");
+        let rf_json = serde_json::json!({
+            "coverage_validation": "required",
+            "manifest_units": manifest_units.len(),
+            "review_groups": groups.len(),
+            "high_risk_units": high_risk_units,
+            "coverage_gaps": Vec::<serde_json::Value>::new(),
+            "finding_merge": {
+                "deduplicated_findings": Vec::<serde_json::Value>::new(),
+                "blockers": Vec::<serde_json::Value>::new(),
+                "notes": Vec::<serde_json::Value>::new(),
+            },
+            "cross_file_reduction": "required_after_coverage_validation",
+            "dependency_checks": Vec::<serde_json::Value>::new(),
+            "test_recommendations": Vec::<serde_json::Value>::new(),
+            "residual_risks": Vec::<serde_json::Value>::new(),
+            "final_verdict": "blocked_until_coverage_validation_passes",
+        });
+        if let Ok(json_str) = serde_json::to_string(&rf_json) {
+            println!("{}", json_str);
+        }
+        println!();
     }
-    println!();
-
-    // Reducer Finalization Template
-    println!("## Reducer Finalization Template");
-    let rf_json = serde_json::json!({
-        "coverage_validation": "required",
-        "manifest_units": manifest_units.len(),
-        "review_groups": groups.len(),
-        "high_risk_units": high_risk_units,
-        "coverage_gaps": Vec::<serde_json::Value>::new(),
-        "finding_merge": {
-            "deduplicated_findings": Vec::<serde_json::Value>::new(),
-            "blockers": Vec::<serde_json::Value>::new(),
-            "notes": Vec::<serde_json::Value>::new(),
-        },
-        "cross_file_reduction": "required_after_coverage_validation",
-        "dependency_checks": Vec::<serde_json::Value>::new(),
-        "test_recommendations": Vec::<serde_json::Value>::new(),
-        "residual_risks": Vec::<serde_json::Value>::new(),
-        "final_verdict": "blocked_until_coverage_validation_passes",
-    });
-    if let Ok(json_str) = serde_json::to_string(&rf_json) {
-        println!("{}", json_str);
-    }
-    println!();
 
     // Dependency Summary
     println!("## Dependency Summary");
@@ -2418,8 +2797,17 @@ fn run_app() -> Result<(), AppError> {
         }
     }
 
-    // Limit/emit the actual global diff
-    emit_diff_limited(&global_diff, max_diff_bytes);
+    // Limit/emit the actual global diff only when the gateway budget allows it.
+    if diff_output_decision == "inline" {
+        emit_diff_limited(&global_diff, max_diff_bytes, inline_diff_bytes);
+    } else {
+        emit_diff_omitted(
+            diff_size,
+            max_diff_bytes,
+            inline_diff_bytes,
+            &diff_omitted_reason,
+        );
+    }
 
     Ok(())
 }
@@ -2431,6 +2819,7 @@ fn emit_requested_group(
     mode: &str,
     selected_ref: &str,
     max_diff_bytes: usize,
+    inline_diff_bytes: usize,
     repo_root: &str,
 ) -> Result<(), AppError> {
     let group = match groups.iter().find(|g| g.group_id == req_grp) {
@@ -2555,7 +2944,7 @@ fn emit_requested_group(
         return Ok(());
     }
 
-    emit_diff_limited(&group_diff, max_diff_bytes);
+    emit_diff_limited(&group_diff, max_diff_bytes, inline_diff_bytes);
     Ok(())
 }
 

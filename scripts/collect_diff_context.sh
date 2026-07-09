@@ -36,6 +36,24 @@ BINARY_PATH="${SCRIPT_DIR}/bin/${BINARY_NAME}"
 # Fallback binary if precompiled not found
 CARGO_RELEASE_BIN="${SCRIPT_DIR}/../collect-diff-context-cli/target/release/collect-diff-context-cli"
 
+TEMP_FILES=''
+register_temp_file() {
+  [ -n "${1:-}" ] || return 0
+  TEMP_FILES="${TEMP_FILES}${TEMP_FILES:+
+}$1"
+}
+
+cleanup_temp_files() {
+  [ -n "${TEMP_FILES:-}" ] || return 0
+  local temp_file
+  while IFS= read -r temp_file; do
+    [ -n "$temp_file" ] && rm -f "$temp_file"
+  done <<EOF_CLEANUP
+$TEMP_FILES
+EOF_CLEANUP
+}
+trap cleanup_temp_files EXIT
+
 get_rust_binary() {
   if [ -f "$BINARY_PATH" ]; then
     echo "$BINARY_PATH"
@@ -96,6 +114,7 @@ run_rust_with_fallback() {
   # Note: we use a temp file to avoid pipe issues or memory limits for stdout
   local rust_out
   rust_out=$(mktemp)
+  register_temp_file "$rust_out"
   
   # Disable set -e temporarily to handle exit status
   set +e
@@ -138,6 +157,8 @@ run_shadow() {
   local rust_out
   legacy_out=$(mktemp)
   rust_out=$(mktemp)
+  register_temp_file "$legacy_out"
+  register_temp_file "$rust_out"
 
   set +e
   export PRE_COMMIT_REVIEW_HELPER_PATH="$WRAPPER_SCRIPT"
