@@ -18,7 +18,7 @@ Loaded when the review is rendered in English. This file defines only the concre
 
 ## Executive Summary
 
-<2-4 sentences. Describe the change intent, major affected areas, whether blocking risks were found, and the most critical validation action before committing. Do not repeat all details below.>
+<2-4 sentences. Describe the change intent, major affected areas, whether blocking risks were found, and the most critical validation action before committing. If the summary covers multiple independent areas, use a sub-bullet list or bold labels (e.g. **- Area 1:** details) for structural layout; do not write a single dense text block with run-together (1)(2)(3) categories. Do not repeat all details below.>
 
 ## Priority Findings
 
