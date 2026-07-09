@@ -2812,6 +2812,7 @@ fn run_app() -> Result<(), AppError> {
     Ok(())
 }
 
+#[allow(clippy::too_many_arguments)]
 fn emit_requested_group(
     req_grp: &str,
     manifest_units: &[ManifestUnit],
