@@ -250,7 +250,7 @@ Rules:
 - for partial reviews, state `**Review scope:** partial — <explain what was covered and uncovered>`; do NOT use negative phrase contrasts like "not a full review"
 - NEVER mention or output internal workflow terms like "coverage-led", "Visual Review Matrix", or "Review Manifest" in routine or non-matching reviews (do not explain why coverage-led accounting was skipped or not needed)
 - localize headings, labels, and connective prose into the selected output language (do not mix English headings like "Risk Summary" or "Priority Findings" with Chinese content; if Chinese is selected, all headings and metadata labels must match output-zh.md exactly)
-- keep the review concise by default and expand only when the added detail improves the decision
+- keep the review concise by default and expand only when the added detail improves the decision; however, do not arbitrarily cap the findings count to a fixed number (like 3). List EVERY verified priority finding that meets the threshold (especially correctness, security, authorization, PII, and migration risks). If findings are numerous, prioritize higher-severity issues (correctness/security) over lower-severity maintainability comments (such as style or Spring dependency smells) to prevent high-risk findings from being squeezed out.
 
 ## Language Selection
 
