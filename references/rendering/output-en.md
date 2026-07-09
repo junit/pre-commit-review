@@ -18,7 +18,7 @@ Loaded when the review is rendered in English. This file defines only the concre
 
 ## Executive Summary
 
-<2-4 sentences. Describe the change intent, major affected areas, whether blocking risks were found, and the most critical validation action before committing. If the summary covers multiple independent areas, use a sub-bullet list or bold labels (e.g. **- Area 1:** details) for structural layout; do not write a single dense text block with run-together (1)(2)(3) categories. Do not repeat all details below. (Note: The brevity constraint here applies strictly to the Executive Summary; it must never be used to simplify the depth, completeness, or technical details of the "Priority Findings" and "What Changed" sections).>
+<Adapt length to change scope: a one-liner is enough for trivial fixes; multi-domain large changes may use a sub-bullet list per area (e.g. **- Area 1:** details). Required content: change intent, major affected areas, whether blocking risks were found, and the most critical validation action before committing. When multiple independent areas are covered, do not run (1)(2)(3) together in a single paragraph; use Markdown list items or bold area labels instead. Do not repeat technical details already present in "Priority Findings" and "What Changed" (Note: this brevity constraint applies only to the Executive Summary and must never be used to reduce the depth or completeness of "Priority Findings" and "What Changed").>
 
 ## Priority Findings
 
