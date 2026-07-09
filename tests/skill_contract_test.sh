@@ -8,6 +8,7 @@ skill_file="$repo_root/SKILL.md"
 
 decision_verdict_file="$repo_root/references/decision/verdict-rules.md"
 decision_risk_file="$repo_root/references/decision/risk-taxonomy.md"
+decision_finding_verification_file="$repo_root/references/decision/finding-verification.md"
 
 render_output_en_file="$repo_root/references/rendering/output-en.md"
 render_output_zh_file="$repo_root/references/rendering/output-zh.md"
@@ -34,6 +35,7 @@ for required_file in \
   "$skill_file" \
   "$decision_verdict_file" \
   "$decision_risk_file" \
+  "$decision_finding_verification_file" \
   "$render_output_en_file" \
   "$render_output_zh_file" \
   "$render_visual_file" \
@@ -66,6 +68,8 @@ grep -Fq 'references/decision/verdict-rules.md' "$skill_file" \
   || fail 'SKILL.md must route verdict logic to references/decision/verdict-rules.md'
 grep -Fq 'references/decision/risk-taxonomy.md' "$skill_file" \
   || fail 'SKILL.md must route finding taxonomy to references/decision/risk-taxonomy.md'
+grep -Fq 'references/decision/finding-verification.md' "$skill_file" \
+  || fail 'SKILL.md must route strong finding verification to references/decision/finding-verification.md'
 grep -Fq 'references/rendering/output-en.md' "$skill_file" \
   || fail 'SKILL.md must route English output through references/rendering/output-en.md'
 grep -Fq 'references/rendering/output-zh.md' "$skill_file" \
@@ -110,6 +114,16 @@ grep -Fq 'Use exactly one top-level verdict token:' "$decision_verdict_file" \
   || fail 'verdict-rules.md must define the verdict token contract'
 grep -Fq 'Each priority finding must use exactly one primary marker.' "$decision_risk_file" \
   || fail 'risk-taxonomy.md must define primary finding markers'
+grep -Fq 'Finding verification exists to prevent false confidence in the final report.' "$decision_finding_verification_file" \
+  || fail 'finding-verification.md must define the purpose of finding verification'
+grep -Fq 'Negative or exhaustive claims require broader evidence than positive claims.' "$decision_finding_verification_file" \
+  || fail 'finding-verification.md must guard negative and exhaustive claims'
+grep -Fq 'Security, auth, authorization, privacy, and injection findings must be traced to the execution point.' "$decision_finding_verification_file" \
+  || fail 'finding-verification.md must require auth/security execution-point tracing'
+grep -Fq 'Do not infer framework or library internals from call-site shape alone.' "$decision_finding_verification_file" \
+  || fail 'finding-verification.md must require framework/library behavior verification'
+grep -Fq 'apply `references/decision/finding-verification.md` before finalizing the finding.' "$decision_risk_file" \
+  || fail 'risk-taxonomy.md must route strong claims through finding verification'
 grep -Fq 'redacted' "$advanced_grading_file" \
   || fail 'grading-compat.md must retain secret-handling compatibility wording'
 grep -Fq 'downstream clients' "$advanced_grading_file" \
@@ -174,6 +188,8 @@ grep -Fq 'Coverage-led review exists to prevent false confidence in large or fra
   || fail 'coverage-led-review.md must define the purpose of coverage-led review'
 grep -Fq 'The final user-facing report does not need to expose every internal reducer detail.' "$advanced_coverage_file" \
   || fail 'coverage-led-review.md must separate internal reducer state from user-facing output'
+grep -Fq 'high-impact reducer findings passed the finding verification gate or were downgraded' "$advanced_coverage_file" \
+  || fail 'coverage-led-review.md must require finding verification before final reducer output'
 grep -Fq 'Use visual review when the change meaningfully affects any of the following:' "$advanced_visual_rules_file" \
   || fail 'visual-review-rules.md must define when visual review is justified'
 grep -Fq 'Treat accessibility as a real correctness dimension, not cosmetic polish.' "$advanced_visual_rules_file" \

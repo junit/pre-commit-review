@@ -105,6 +105,63 @@
           "coverage-led"
         ]
       }
+    },
+    {
+      "id": "advanced-auth-execution-point-en",
+      "scenario": "auth-execution-point",
+      "locale": "en",
+      "prompt": "Review this staged authorization diff before commit. A prior reviewer suspected an auth bypass at the controller, so trace to the execution point before reporting it.",
+      "fixture": "A new controller accepts orgId and targetUserId, while the service enforces owner authorization through a helper before mutating role state.",
+      "expected": {
+        "verdict": "SAFE_TO_COMMIT_WITH_NOTES",
+        "template": "default",
+        "scope": "full",
+        "must_include": [
+          "requireOrgRole",
+          "authorization",
+          "Suggested verification"
+        ],
+        "must_not_include": [
+          "**VERDICT:** DO_NOT_COMMIT"
+        ]
+      }
+    },
+    {
+      "id": "advanced-negative-search-cross-module-en",
+      "scenario": "negative-search-cross-module",
+      "locale": "en",
+      "prompt": "Review this staged session diff before commit. A prior reviewer claimed lastSeenAt is dead code and is never written after this change; verify that claim before including it.",
+      "fixture": "One session refresh path stops writing lastSeenAt, but another module still initializes lastSeenAt when sessions are created.",
+      "expected": {
+        "verdict": "CASE_DEPENDENT",
+        "template": "default",
+        "scope": "full",
+        "must_include": [
+          "lastSeenAt",
+          "createSession"
+        ],
+        "must_not_include": []
+      }
+    },
+    {
+      "id": "advanced-framework-behavior-source-en",
+      "scenario": "framework-behavior-source",
+      "locale": "en",
+      "prompt": "Review this staged ORM update before commit. Specifically verify whether optimistic locking is bypassed by checking the local framework behavior evidence before making that claim.",
+      "fixture": "The staged repository change adds a version field to an ORM update call, and local vendor documentation describes how the optimistic-lock interceptor handles update(entity, wrapper).",
+      "expected": {
+        "verdict": "SAFE_TO_COMMIT_WITH_NOTES",
+        "template": "default",
+        "scope": "full",
+        "must_include": [
+          "optimistic",
+          "version",
+          "Suggested verification"
+        ],
+        "must_not_include": [
+          "**VERDICT:** DO_NOT_COMMIT"
+        ]
+      }
     }
   ]
 }

@@ -190,6 +190,43 @@ build_case_full_review_split_reducer() {
   git -C "$workdir" add snapshots/large.snap zzz_auth/session.py db/migrations/20260518_drop_legacy_users.sql
 }
 
+build_case_auth_execution_point() {
+  local workdir="$1"
+
+  mkdir -p "$workdir/src"
+  init_repo "$workdir"
+  printf 'export type Role = "member" | "owner";\n\nexport function requireOrgRole(actor, orgId: string, role: Role) {\n  if (!actor || !actor.orgRoles || actor.orgRoles[orgId] !== role) {\n    throw new Error("forbidden");\n  }\n}\n' >"$workdir/src/auth.ts"
+  printf 'import { grantOrgAdmin } from "./service";\n\nexport async function postGrantAdmin(req) {\n  const { orgId, targetUserId } = req.body;\n  return grantOrgAdmin(req.actor, orgId, targetUserId);\n}\n' >"$workdir/src/controller.ts"
+  printf 'import { requireOrgRole } from "./auth";\n\nexport async function grantOrgAdmin(actor, orgId: string, targetUserId: string) {\n  requireOrgRole(actor, orgId, "owner");\n  return { orgId, targetUserId, role: "admin" };\n}\n' >"$workdir/src/service.ts"
+  git -C "$workdir" add src/auth.ts src/controller.ts src/service.ts
+}
+
+build_case_negative_search_cross_module() {
+  local workdir="$1"
+
+  mkdir -p "$workdir/src/session"
+  init_repo "$workdir"
+  printf 'export function createSession(userId: string, now: string) {\n  return { userId, createdAt: now, lastSeenAt: now };\n}\n' >"$workdir/src/session/create.ts"
+  printf 'export function refreshSession(session, now: string) {\n  return { ...session, lastSeenAt: now };\n}\n' >"$workdir/src/session/refresh.ts"
+  git -C "$workdir" add src/session/create.ts src/session/refresh.ts
+  git -C "$workdir" commit -q -m session-baseline
+  printf 'export function refreshSession(session, now: string) {\n  return { ...session, refreshedAt: now };\n}\n' >"$workdir/src/session/refresh.ts"
+  git -C "$workdir" add src/session/refresh.ts
+}
+
+build_case_framework_behavior_source() {
+  local workdir="$1"
+
+  mkdir -p "$workdir/src" "$workdir/vendor/acme-orm"
+  init_repo "$workdir"
+  printf '# Acme ORM optimistic lock behavior\n\nFor `update(entity, wrapper)`, `OptimisticLockInterceptor` appends `version = entity.version` to the generated `WHERE` clause and increments `entity.version` after a successful update.\n' >"$workdir/vendor/acme-orm/optimistic-lock.md"
+  printf 'export async function saveUserName(orm, user) {\n  return orm.update({ id: user.id, name: user.name }, { id: user.id });\n}\n' >"$workdir/src/userRepo.ts"
+  git -C "$workdir" add vendor/acme-orm/optimistic-lock.md src/userRepo.ts
+  git -C "$workdir" commit -q -m orm-baseline
+  printf 'export async function saveUserName(orm, user) {\n  return orm.update({ id: user.id, name: user.name, version: user.version }, { id: user.id });\n}\n' >"$workdir/src/userRepo.ts"
+  git -C "$workdir" add src/userRepo.ts
+}
+
 build_case_no_git_repo() {
   local workdir="$1"
 
@@ -250,6 +287,9 @@ prepare_case_fixture() {
       build_case_full_review_split_reducer "$workdir"
       env_json='{"PRE_COMMIT_REVIEW_GROUP_TARGET_BYTES":"200","PRE_COMMIT_REVIEW_GROUP_HARD_BYTES":"500"}'
       ;;
+    auth-execution-point) build_case_auth_execution_point "$workdir" ;;
+    negative-search-cross-module) build_case_negative_search_cross_module "$workdir" ;;
+    framework-behavior-source) build_case_framework_behavior_source "$workdir" ;;
     no-git-repo) build_case_no_git_repo "$workdir" ;;
     chinese-request) build_case_chinese_request "$workdir" ;;
     pasted-diff)

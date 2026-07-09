@@ -65,5 +65,9 @@ for eval_file in "${eval_files[@]}"; do
   }
 
   printf '=== Running %s ===\n' "$(basename "$eval_file")"
-  bash "$output_eval_runner" --eval-file "$eval_file" "${forward_args[@]}"
+  if [ "${#forward_args[@]}" -gt 0 ]; then
+    bash "$output_eval_runner" --eval-file "$eval_file" "${forward_args[@]}"
+  else
+    bash "$output_eval_runner" --eval-file "$eval_file"
+  fi
 done

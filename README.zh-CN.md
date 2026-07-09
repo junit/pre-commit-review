@@ -96,7 +96,7 @@
 
 | 层级 | 文件 | 加载时机 | 用途 |
 |------|------|----------|------|
-| `decision/` | `verdict-rules.md`、`risk-taxonomy.md` | 所有常规审查 | verdict 选择、阻塞阈值、finding 标记、统计口径与证据约束 |
+| `decision/` | `verdict-rules.md`、`risk-taxonomy.md`、`finding-verification.md` | 所有常规审查；强结论进入报告前额外执行 finding verification | verdict 选择、阻塞阈值、finding 标记、统计口径、证据约束与高影响结论验证 |
 | `rendering/` | `output-en.md`、`output-zh.md`、`visual-output.md`、`review-meta.md` | 生成输出时 | 中英文审查骨架、可选视觉化呈现指导，以及机器可读元数据 |
 | `advanced/` | `coverage-led-review.md`、`visual-review-rules.md`、`grading-compat.md` | 仅复杂工作流 | coverage-led 审查流程、UI/视觉审查规则，以及评测兼容精确术语 |
 | `examples/` | `default-tiny-en.md`、`default-tiny-zh.md`、`complex-visual-and-coverage.md` | 仅在需要校准结构时 | 用于对齐结构与语气的具体示例，不重新定义规则 |

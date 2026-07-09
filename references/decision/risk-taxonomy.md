@@ -256,6 +256,16 @@ Guidance:
 
 Low-confidence suspicions should usually move to review limitations or suggested verification rather than appear as a strong priority finding.
 
+High confidence for a strong claim requires the applicable verification basis:
+
+- direct diff evidence for local behavior
+- checked `file:line` or symbol evidence for cited locations
+- cross-file trace for caller/callee, auth, data-flow, or contract-impact claims
+- adequate search coverage for negative or exhaustive claims
+- versioned source, official documentation, or a focused test for framework/library behavior
+
+If that basis is missing, lower the confidence, narrow the claim, or move it to review limitations or suggested verification.
+
 ### 8. Blocking reason
 
 Include this field only for blocking findings.
@@ -267,6 +277,8 @@ It must explain why the issue must be fixed before commit, not just repeat the t
 Always prefer direct evidence from the reviewed diff.
 
 Use surrounding context only when it materially helps determine impact or correctness.
+
+For priority findings, blocking review limits, delegated/reducer findings, security/auth/privacy/data claims, negative or absolute claims, or framework/library behavior claims, apply `references/decision/finding-verification.md` before finalizing the finding.
 
 Acceptable supplementary evidence includes:
 

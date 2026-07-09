@@ -6,6 +6,7 @@ repo_root="$(CDPATH='' cd -- "$script_dir/.." && pwd -P)"
 runner="$repo_root/evals/output_eval_runner.sh"
 cases_file="$repo_root/evals/output-eval.json"
 routine_cases_file="$repo_root/evals/output/routine-output-eval.json"
+advanced_cases_file="$repo_root/evals/output/advanced-output-eval.json"
 tmp_dir="$(mktemp -d)"
 trap 'rm -rf "$tmp_dir"' EXIT
 
@@ -121,5 +122,41 @@ bash "$runner" \
   || fail 'runner did not write manifest for layered eval file'
 grep -Fq 'PREPARED tiny-docs' "$tmp_dir/layered.out" \
   || fail 'runner did not prepare tiny-docs from the layered eval file'
+
+advanced_fixtures_dir="$tmp_dir/advanced-fixtures"
+advanced_responses_dir="$tmp_dir/advanced-responses"
+
+bash "$runner" \
+  --eval-file "$advanced_cases_file" \
+  --case auth-execution-point \
+  --fixtures-dir "$advanced_fixtures_dir" \
+  --responses-dir "$advanced_responses_dir" >"$tmp_dir/advanced-auth.out"
+
+[ -f "$advanced_fixtures_dir/advanced-auth-execution-point-en/workdir/src/auth.ts" ] \
+  || fail 'runner did not prepare auth execution-point fixture'
+grep -Fq 'PREPARED auth-execution-point' "$tmp_dir/advanced-auth.out" \
+  || fail 'runner did not report auth execution-point preparation'
+
+bash "$runner" \
+  --eval-file "$advanced_cases_file" \
+  --case negative-search-cross-module \
+  --fixtures-dir "$advanced_fixtures_dir" \
+  --responses-dir "$advanced_responses_dir" >"$tmp_dir/advanced-negative.out"
+
+[ -f "$advanced_fixtures_dir/advanced-negative-search-cross-module-en/workdir/src/session/create.ts" ] \
+  || fail 'runner did not prepare negative-search cross-module fixture'
+grep -Fq 'PREPARED negative-search-cross-module' "$tmp_dir/advanced-negative.out" \
+  || fail 'runner did not report negative-search cross-module preparation'
+
+bash "$runner" \
+  --eval-file "$advanced_cases_file" \
+  --case framework-behavior-source \
+  --fixtures-dir "$advanced_fixtures_dir" \
+  --responses-dir "$advanced_responses_dir" >"$tmp_dir/advanced-framework.out"
+
+[ -f "$advanced_fixtures_dir/advanced-framework-behavior-source-en/workdir/vendor/acme-orm/optimistic-lock.md" ] \
+  || fail 'runner did not prepare framework behavior source fixture'
+grep -Fq 'PREPARED framework-behavior-source' "$tmp_dir/advanced-framework.out" \
+  || fail 'runner did not report framework behavior source preparation'
 
 printf 'output eval runner tests passed\n'

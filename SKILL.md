@@ -186,6 +186,12 @@ Use them to determine:
 - evidence requirements
 - tally rules
 
+When the review will surface priority findings, blocking review limits, delegated/reducer findings, security/auth/privacy/data claims, negative or absolute claims, or claims that depend on framework/library behavior, additionally load:
+
+- `references/decision/finding-verification.md`
+
+Use it before final synthesis to verify high-impact claims, narrow overbroad wording, and move unverified concerns into review limitations or suggested verification.
+
 ### Secret and Credential Exact Term Rules
 
 CRITICAL SECRET PRIVACY RULE: NEVER reproduce, quote, or echo full secret strings, token literals, or API keys found in the diff or prompt anywhere in your output. Always censor and redact them immediately (e.g. write `serviceToken = "sk_live_..."` or replace the value with `[redacted]`).
@@ -244,6 +250,10 @@ For routine reviews, load:
 - `references/decision/verdict-rules.md`
 - `references/decision/risk-taxonomy.md`
 - `references/rendering/output-en.md` or `references/rendering/output-zh.md`
+
+For reviews with priority findings, blocking review limits, delegated/reducer findings, security/auth/privacy/data claims, negative or absolute claims, or framework/library behavior claims, additionally load:
+
+- `references/decision/finding-verification.md`
 
 For visual reviews, additionally load:
 

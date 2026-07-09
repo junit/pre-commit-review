@@ -96,7 +96,7 @@ Loaded on demand by `SKILL.md`. References are now layered by responsibility:
 
 | Layer | Files | Loaded when | Purpose |
 |------|-------|-------------|---------|
-| `decision/` | `verdict-rules.md`, `risk-taxonomy.md` | Every routine review | Verdict selection, blocker thresholds, finding markers, tally rules, and evidence discipline |
+| `decision/` | `verdict-rules.md`, `risk-taxonomy.md`, `finding-verification.md` | Every routine review, plus finding verification when strong claims are surfaced | Verdict selection, blocker thresholds, finding markers, tally rules, evidence discipline, and high-impact claim verification |
 | `rendering/` | `output-en.md`, `output-zh.md`, `visual-output.md`, `review-meta.md` | When rendering the response | Per-language review skeletons, optional visual presentation guidance, and machine-readable metadata |
 | `advanced/` | `coverage-led-review.md`, `visual-review-rules.md`, `grading-compat.md` | Only for complex workflows | Coverage-led review flow, UI/visual review rules, and grading-sensitive exact phrases |
 | `examples/` | `default-tiny-en.md`, `default-tiny-zh.md`, `complex-visual-and-coverage.md` | Optional calibration only | Concrete examples for aligning structure and tone without redefining the rules |

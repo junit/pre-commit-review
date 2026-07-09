@@ -209,8 +209,24 @@ assert_jq "$advanced_output_eval_file" \
   'advanced-output-eval.json must cover generated, split/reducer, and advisory fallback scenarios'
 
 assert_jq "$advanced_output_eval_file" \
+  '(.cases | map(.scenario)) as $seen | ($seen | index("auth-execution-point") != null) and ($seen | index("negative-search-cross-module") != null) and ($seen | index("framework-behavior-source") != null)' \
+  'advanced-output-eval.json must cover finding verification discipline scenarios'
+
+assert_jq "$advanced_output_eval_file" \
   'any(.cases[]; .id == "advanced-advisory-fallback-en" and .expected.template == "advisory" and (.expected.must_not_include | index("**VERDICT:** SAFE_TO_COMMIT") != null))' \
   'advanced-output-eval.json must ensure advisory fallback does not masquerade as a normal verdict-bearing review'
+
+assert_jq "$advanced_output_eval_file" \
+  'any(.cases[]; .id == "advanced-auth-execution-point-en" and (.expected.must_include | index("requireOrgRole") != null) and (.expected.must_not_include | index("**VERDICT:** DO_NOT_COMMIT") != null))' \
+  'advanced auth execution-point case must require helper evidence and avoid blocking on the controller receive point'
+
+assert_jq "$advanced_output_eval_file" \
+  'any(.cases[]; .id == "advanced-negative-search-cross-module-en" and (.expected.must_include | index("lastSeenAt") != null) and (.expected.must_include | index("createSession") != null))' \
+  'advanced negative-search case must require cross-module evidence before accepting an exhaustive claim'
+
+assert_jq "$advanced_output_eval_file" \
+  'any(.cases[]; .id == "advanced-framework-behavior-source-en" and (.expected.must_include | index("optimistic") != null) and (.expected.must_not_include | index("**VERDICT:** DO_NOT_COMMIT") != null))' \
+  'advanced framework behavior case must require framework behavior evidence without blocking on call-site shape alone'
 
 assert_jq "$visual_output_eval_file" \
   '.cases | type == "array" and length >= 5' \

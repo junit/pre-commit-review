@@ -71,4 +71,14 @@ grep -Fq 'routine-output-eval.json' "$tmp_dir/out.txt" \
 grep -Fq 'localization-output-eval.json' "$tmp_dir/out.txt" \
   || fail 'wrapper output must mention the localization eval file'
 
+MOCK_LAYERED_LOG_FILE="$tmp_dir/layered-no-args.log" \
+  bash "$wrapper" \
+    --output-eval-runner "$tmp_dir/mock-output-eval-runner" >"$tmp_dir/no-args-out.txt"
+
+[ "$(wc -l <"$tmp_dir/layered-no-args.log" | tr -d ' ')" = "4" ] \
+  || fail 'wrapper must invoke all eval files when no forwarded args are provided'
+if grep -Fq -- '--runner' "$tmp_dir/layered-no-args.log"; then
+  fail 'wrapper should not invent forwarded args when none are provided'
+fi
+
 printf 'run layered output evals tests passed\n'

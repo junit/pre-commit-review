@@ -228,6 +228,7 @@ After coverage validation and before final verdict:
 - inspect dependency follow-up items
 - re-check changed imports, exports, shared types, schemas, config ordering, and migration sequencing where relevant
 - verify that the final findings reflect cross-file impact, not just isolated hunk observations
+- apply the finding verification gate to high-impact, negative, absolute, security/auth/privacy/data, framework/library behavior, and delegated/reducer findings before reporting them
 
 Do not perform cross-file reduction before coverage validation.
 
@@ -327,4 +328,5 @@ Before producing the final review, verify:
 4. coverage validation has been computed
 5. material gaps are surfaced visibly
 6. cross-file dependency or contract follow-up has been completed
-7. the final verdict matches the actual coverage state
+7. high-impact reducer findings passed the finding verification gate or were downgraded
+8. the final verdict matches the actual coverage state
