@@ -153,6 +153,8 @@ grep -Fq 'Security, auth, authorization, privacy, and injection findings must be
   || fail 'finding-verification.md must require auth/security execution-point tracing'
 grep -Fq 'Do not infer framework or library internals from call-site shape alone.' "$decision_finding_verification_file" \
   || fail 'finding-verification.md must require framework/library behavior verification'
+grep -Fq 'distinguish direct evidence from inference when claiming runtime-provided objects, generated wiring, implicit context propagation, default configuration, or auto-created resources exist' "$decision_finding_verification_file" \
+  || fail 'finding-verification.md must prevent overconfident runtime/framework existence claims'
 grep -Fq '## Priority Threshold Gate' "$decision_finding_verification_file" \
   || fail 'finding-verification.md must define a priority threshold gate'
 grep -Fq 'Priority findings are not limited to blockers.' "$decision_finding_verification_file" \
@@ -203,6 +205,10 @@ grep -Fq 'Non-priority does not mean invisible.' "$decision_risk_file" \
   || fail 'risk-taxonomy.md must require visible disposition for non-priority material concerns'
 grep -Fq 'a safety helper leaves a reachable TOCTOU gap such as DNS rebinding, redirect target drift, or post-validation connection drift' "$decision_risk_file" \
   || fail 'risk-taxonomy.md must preserve security TOCTOU residuals'
+grep -Fq 'If the report recommends adding a missing test, missing negative-path assertion, missing integration check, or missing contract test for material changed behavior, the tally must include at least one test gap' "$decision_risk_file" \
+  || fail 'risk-taxonomy.md must keep test-gap tally consistent with material missing-test recommendations'
+grep -Fq 'If the risk summary says test coverage is sufficient, its basis must not simultaneously call out missing material tests or under-verified high-risk behavior.' "$decision_risk_file" \
+  || fail 'risk-taxonomy.md must prevent contradictory test coverage summaries'
 grep -Fq 'redacted' "$advanced_grading_file" \
   || fail 'grading-compat.md must retain secret-handling compatibility wording'
 grep -Fq 'downstream clients' "$advanced_grading_file" \
@@ -250,6 +256,10 @@ grep -Fq '不要把本段文字输出给用户' "$render_output_zh_file" \
   || fail 'Chinese template must mark guardrails as internal-only'
 grep -Fq 'do not output this text to the user' "$render_output_en_file" \
   || fail 'English template must mark guardrails as internal-only'
+grep -Fq 'Keep the tally and Risk Summary consistent' "$render_output_en_file" \
+  || fail 'English template must require tally/risk summary consistency'
+grep -Fq '保持统计与风险摘要一致' "$render_output_zh_file" \
+  || fail 'Chinese template must require tally/risk summary consistency'
 grep -Fq '"Priority Findings" is not a blockers-only section' "$render_output_en_file" \
   || fail 'English template must prevent blockers-only priority findings'
 grep -Fq '“重点发现”不是“阻断项专区”' "$render_output_zh_file" \

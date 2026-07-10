@@ -159,12 +159,24 @@ Count as warnings:
 Count as test gaps:
 
 - every `🧪` finding, whether blocking or non-blocking
+- any material missing-test or missing-coverage concern surfaced outside priority findings, when it covers changed behavior that is security-sensitive, data-affecting, compatibility-sensitive, operationally important, or otherwise central to the commit decision
 
 ### Review limits
 
 Count as review limits:
 
 - every `👁️` finding, whether blocking or non-blocking
+
+### Tally consistency
+
+The top-level tally, priority findings, commit guidance, and risk summary must describe the same risk set.
+
+Rules:
+
+- If the report recommends adding a missing test, missing negative-path assertion, missing integration check, or missing contract test for material changed behavior, the tally must include at least one test gap unless the same item is explicitly classified as only routine post-commit hardening with no commit-decision value.
+- If suggested verification only says to run existing tests, perform a normal smoke check, or confirm deployment environment prerequisites, do not count that alone as a test gap.
+- If the tally includes zero test gaps, do not describe any material changed path as lacking meaningful test coverage elsewhere in the report.
+- If the risk summary says test coverage is sufficient, its basis must not simultaneously call out missing material tests or under-verified high-risk behavior. Use `Gaps`, `Not run`, `有缺口`, or `未运行` instead.
 
 ## Required Finding Structure
 

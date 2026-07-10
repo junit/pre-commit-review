@@ -2,7 +2,7 @@
 
 Loaded when the review is rendered in Chinese. This file defines only the concrete rendering skeletons. Decision rules, evidence rules, coverage-led workflow, visual review rules, grading compatibility, and examples live elsewhere.
 
-内部渲染规则（不要把本段文字输出给用户）：只有当所有 manifest/file-list 单元的文本内容已审查，且所有二进制、生成物、压缩产物、持久化输出、截断内容或不可读文件已直接检查或完成可复现 provenance 验证时，才允许写 `未审查变更：无`。若只是推测、约定一致或 presumed 已存在，必须列为建议验证、领域确认或审查限制。“重点发现”不是“阻断项专区”；非阻断但具有具体运行时、安全、数据、兼容性、运维或测试影响的问题仍应列入“重点发现”，并省略“阻塞原因”行。材料性候选问题如果不进入“重点发现”，必须在“提交建议”“建议验证”“建议补充说明”或“未审查变更”等正常栏目中可见处置；不要输出内部候选台账或本段规则说明。
+内部渲染规则（不要把本段文字输出给用户）：只有当所有 manifest/file-list 单元的文本内容已审查，且所有二进制、生成物、压缩产物、持久化输出、截断内容或不可读文件已直接检查或完成可复现 provenance 验证时，才允许写 `未审查变更：无`。若只是推测、约定一致或 presumed 已存在，必须列为建议验证、领域确认或审查限制。“重点发现”不是“阻断项专区”；非阻断但具有具体运行时、安全、数据、兼容性、运维或测试影响的问题仍应列入“重点发现”，并省略“阻塞原因”行。材料性候选问题如果不进入“重点发现”，必须在“提交建议”“建议验证”“建议补充说明”或“未审查变更”等正常栏目中可见处置。保持统计与风险摘要一致：如果报告要求补充材料性测试，或说明高风险变更行为测试不足，不得同时写 `0 个测试缺口` 或 `测试覆盖：充足`。不要输出内部候选台账或本段规则说明。
 
 ## Default Developer Review
 

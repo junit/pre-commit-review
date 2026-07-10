@@ -158,10 +158,11 @@ When a finding depends on behavior such as transaction propagation, ORM optimist
 
 - verify against versioned source code, bundled sources, official documentation, or a focused test
 - cite the framework behavior, not only the application call site, when that behavior is what makes the finding true
+- distinguish direct evidence from inference when claiming runtime-provided objects, generated wiring, implicit context propagation, default configuration, or auto-created resources exist
 - if the installed version cannot be confirmed, say so and avoid a high-confidence finding
 - if the behavior remains uncertain, downgrade to a review limitation or suggested verification
 
-Training memory and general framework intuition are not sufficient evidence for these claims.
+Training memory, general framework intuition, and "similar code appears elsewhere" are not sufficient by themselves for high-confidence framework/runtime claims. Similar local usage may be useful supporting evidence, but the report must either cite the actual source/configuration/test evidence or phrase the claim as a verification item.
 
 ## Gate 5: Blocking and Impact Claims
 
