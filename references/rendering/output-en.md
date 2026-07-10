@@ -2,6 +2,8 @@
 
 Loaded when the review is rendered in English. This file defines only the concrete rendering skeletons. Decision rules, evidence rules, coverage-led workflow, visual review rules, grading compatibility, and examples live elsewhere.
 
+Internal rendering rules (do not output this text to the user): write `Unreviewed changes: none` only when every manifest/file-list unit's text content was reviewed and every binary, generated, minified, persisted-output-only, truncated, or unreadable file was directly inspected or provenance-verified as reproducible from the reviewed source. If the evidence is presumed or convention-based, render it as suggested verification, domain confirmation, or a review limitation. "Priority Findings" is not a blockers-only section; non-blocking issues with concrete runtime, security, data, compatibility, operational, or testing impact still belong there, with the blocking-reason line omitted. If a material candidate concern does not appear in Priority Findings, give it a visible disposition in Commit Guidance, Suggested verification, Suggested documentation, Unreviewed changes, or another normal section; do not output the internal candidate ledger or this rule text.
+
 ## Default Developer Review
 
 ```markdown
@@ -30,7 +32,7 @@ Loaded when the review is rendered in English. This file defines only the concre
    - Confidence: <High | Medium | Low> - <only explain when not high-confidence>
    - Blocking reason: <include only for blockers>
 
-If there are no priority findings, write:
+Only when there are no blocker, non-blocking risk, test-gap, or review-limit items that meet the priority-finding threshold, write:
 
 None.
 
@@ -130,7 +132,7 @@ None.
    - Confidence: <High | Medium | Low> - <only explain when not high-confidence>
    - Blocking reason: <include only for blockers>
 
-If no priority findings, write:
+Only when there are no blocker, non-blocking risk, test-gap, or review-limit items that meet the priority-finding threshold, write:
 
 None.
 

@@ -529,6 +529,25 @@ file_diff_for_path() {
   esac
 }
 
+file_content_for_path() {
+  local path="$1"
+
+  case "$mode" in
+    staged)
+      git show ":$path" 2>/dev/null || { [ -f "$path" ] && cat -- "$path"; }
+      ;;
+    unstaged)
+      [ -f "$path" ] && cat -- "$path"
+      ;;
+    branch)
+      git show "HEAD:$path" 2>/dev/null || { [ -f "$path" ] && cat -- "$path"; }
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
 file_name_status_for_path() {
   local path="$1"
 
@@ -1828,6 +1847,297 @@ emit_semantic_context_queries() {
   done < "$queries_file"
 }
 
+path_is_test_like() {
+  local path="$1"
+  local lower
+  lower="$(printf '%s' "$path" | tr '[:upper:]' '[:lower:]')"
+
+  # These intentionally overlapping patterns keep common integration-test naming
+  # conventions visible in one place for maintainers.
+  # shellcheck disable=SC2221,SC2222
+  case "$lower" in
+    test/*|tests/*|e2e/*|cypress/*|playwright/*|*/test/*|*/tests/*|*/e2e/*|*/cypress/*|*/playwright/*|*/__tests__/*|src/test/*|*/src/test/*|src/it/*|*/src/it/*|src/integrationtest/*|*/src/integrationtest/*|src/integration-test/*|*/src/integration-test/*|*test.java|*tests.java|*it.java|*itcase.java|*integrationtest.java|*spec.java|*test.kt|*tests.kt|*it.kt|*itcase.kt|*integrationtest.kt|*spec.kt|*test.groovy|*spec.groovy|*it.groovy|*integrationtest.groovy|*test.scala|*spec.scala|*it.scala|*integrationtest.scala|*test.ts|*spec.ts|*e2e.ts|*cy.ts|*test.tsx|*spec.tsx|*e2e.tsx|*cy.tsx|*test.js|*spec.js|*e2e.js|*cy.js|*test.jsx|*spec.jsx|*e2e.jsx|*cy.jsx|*_test.go|*_test.py|test_*.py|*/test_*.py|*.spec.py)
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+path_indicates_jvm_integration() {
+  case "$1" in
+    src/it/*|*/src/it/*|src/integrationtest/*|*/src/integrationtest/*|src/integration-test/*|*/src/integration-test/*|*it.java|*itcase.java|*integrationtest.java|*it.kt|*itcase.kt|*integrationtest.kt|*it.groovy|*integrationtest.groovy|*it.scala|*integrationtest.scala)
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+path_indicates_node_e2e_or_integration() {
+  case "$1" in
+    e2e/*|*/e2e/*|*/integration/*|*.e2e.*)
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+path_indicates_cypress() {
+  case "$1" in
+    cypress/*|*/cypress/*|*.cy.ts|*.cy.tsx|*.cy.js|*.cy.jsx)
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+path_indicates_rust_integration() {
+  case "$1" in
+    tests/*.rs|*/tests/*.rs|*/integration/*.rs)
+      return 0
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+configured_test_hint_for_path() {
+  local path="$1"
+  local content="$2"
+  local hints_file="$repo_root/.pre-commit-review/test-hints"
+
+  [ -f "$hints_file" ] || return 1
+
+  awk -F "$TAB" -v path="$path" -v content="$content" '
+    function trim(value) {
+      sub(/^[[:space:]]+/, "", value)
+      sub(/[[:space:]]+$/, "", value)
+      return value
+    }
+    function sanitize(value) {
+      gsub(/\t|\r|\n/, " ", value)
+      return value
+    }
+    /^[[:space:]]*($|#)/ { next }
+    {
+      rule_id=trim($1)
+      path_regex=trim($2)
+      content_regex=trim($3)
+      test_kind=trim($4)
+      dependency=trim($5)
+      confidence=trim($6)
+      hint=$7
+      for (i=8; i<=NF; i++) hint=hint " " $i
+      hint=trim(hint)
+      if (rule_id == "" || test_kind == "" || dependency == "" || confidence == "" || hint == "") next
+      path_match=(path_regex != "" && path ~ path_regex)
+      content_match=(content_regex != "" && content ~ content_regex)
+      if (path_match || content_match) {
+        printf "%s\t%s\t%s\t%s\t%s\n", sanitize(rule_id), sanitize(confidence), sanitize(test_kind), sanitize(dependency), sanitize(hint)
+        found=1
+        exit
+      }
+    }
+    END { if (!found) exit 1 }
+  ' "$hints_file"
+}
+
+emit_test_selection_hints() {
+  local found='no'
+  local status
+  local path
+  local new_path
+  local content
+  local rule_id
+  local confidence
+  local kind
+  local dependency
+  local hint
+  local lower_path
+
+  echo '## Test Selection Hints'
+  printf 'path\trule_id\tconfidence\ttest_kind\tenvironment_dependency\thint\n'
+
+  while IFS="$(printf '\t')" read -r status path new_path; do
+    [ -n "$path" ] || continue
+    case "$status" in
+      R*|C*) path="$new_path" ;;
+    esac
+    [ -n "$path" ] || continue
+    path_is_test_like "$path" || continue
+
+    content="$(file_content_for_path "$path" 2>/dev/null || true)"
+    lower_path="$(printf '%s' "$path" | tr '[:upper:]' '[:lower:]')"
+    if hint_line="$(configured_test_hint_for_path "$path" "$content")" && [ -n "$hint_line" ]; then
+      printf '%s\t%s\n' "$(sanitize_tsv "$path")" "$hint_line"
+      found='yes'
+      continue
+    fi
+
+    rule_id='no-known-env-heavy-marker'
+    confidence='low'
+    kind='unit-or-unknown'
+    dependency='not-proven-isolated'
+    hint='No known env-heavy marker detected; this is not proof of unit-test isolation. Prefer the narrowest focused test command for this file.'
+
+    if printf '%s\n' "$content" | grep -Eiq 'org\.testcontainers|@Testcontainers\b|@Container\b|testcontainers-go'; then
+      rule_id='testcontainers'
+      confidence='high'
+      kind='container-integration'
+      dependency='docker-or-testcontainers'
+      hint='Requires Docker/Testcontainers; do not treat failure in a sandbox as a pure code failure without environment evidence.'
+    elif printf '%s\n' "$content" | grep -Eiq 'DockerComposeContainer|docker-compose|docker compose|compose\.ya?ml'; then
+      rule_id='docker-compose-test'
+      confidence='high'
+      kind='compose-backed-integration'
+      dependency='docker-compose-runtime'
+      hint='Uses Docker Compose or compose-backed services; verify in an environment with Docker and required service images.'
+    elif printf '%s\n' "$content" | grep -Eiq 'WireMockServer|WireMockExtension|@AutoConfigureWireMock|com\.github\.tomakehurst\.wiremock|wiremock\.org'; then
+      rule_id='wiremock-test'
+      confidence='high'
+      kind='http-stub-integration'
+      dependency='wiremock-runtime'
+      hint='Uses WireMock HTTP stubs; sandbox failures may reflect port/runtime setup rather than the changed code.'
+    elif printf '%s\n' "$content" | grep -Eiq 'org\.mockserver|MockServerContainer|ClientAndServer'; then
+      rule_id='mockserver-test'
+      confidence='high'
+      kind='http-stub-integration'
+      dependency='mockserver-runtime'
+      hint='Uses MockServer or its container runtime; verify with the required local or CI service setup.'
+    elif printf '%s\n' "$content" | grep -Eiq '@AutoConfigureStubRunner|StubRunner|spring-cloud-contract|org\.springframework\.cloud\.contract'; then
+      rule_id='spring-cloud-contract'
+      confidence='high'
+      kind='contract-integration'
+      dependency='spring-cloud-contract-runtime'
+      hint='Uses Spring Cloud Contract or Stub Runner; may require generated stubs, broker settings, or CI contract artifacts.'
+    elif printf '%s\n' "$content" | grep -Eiq 'jdbc:|r2dbc:|spring\.datasource\.url|datasource\.url|postgresql|mysql|mariadb|oracle\.jdbc|mongodb://|redis://|spring\.redis|spring\.data\.redis|kafka\.bootstrap|bootstrap\.servers|spring\.kafka|elasticsearch|opensearch|rabbitmq|amqp://|localstack|minio'; then
+      rule_id='external-service-config'
+      confidence='high'
+      kind='service-backed-integration'
+      dependency='database-cache-broker-or-search-service'
+      hint='References database, cache, broker, search, or object-storage service configuration; run with the expected local profile or CI services.'
+    elif printf '%s\n' "$content" | grep -Eiq '@QuarkusTest|@QuarkusIntegrationTest|io\.quarkus\.test'; then
+      rule_id='quarkus-test-context'
+      confidence='high'
+      kind='quarkus-integration'
+      dependency='quarkus-test-runtime'
+      hint='Loads a Quarkus test context; may require Quarkus profiles, dev services, containers, or CI runtime support.'
+    elif printf '%s\n' "$content" | grep -Eiq '@MicronautTest|io\.micronaut\.test'; then
+      rule_id='micronaut-test-context'
+      confidence='high'
+      kind='micronaut-integration'
+      dependency='micronaut-test-runtime'
+      hint='Loads a Micronaut test context; may require application context configuration or service-backed test resources.'
+    elif printf '%s\n' "$content" | grep -Eq '@SpringBootTest\b'; then
+      rule_id='spring-boot-context'
+      confidence='high'
+      kind='spring-boot-integration'
+      dependency='spring-context'
+      hint='Loads a Spring Boot application context; may require local profiles, DB, middleware, or CI-provided services.'
+    elif printf '%s\n' "$content" | grep -Eq '@(DataJpaTest|JdbcTest|JooqTest|MybatisTest)\b'; then
+      rule_id='spring-data-slice'
+      confidence='high'
+      kind='data-slice-integration'
+      dependency='database-or-spring-test-slice'
+      hint='Loads a data test slice; may require an embedded or configured database.'
+    elif printf '%s\n' "$content" | grep -Eq '@(WebMvcTest|AutoConfigureMockMvc)\b'; then
+      rule_id='spring-web-slice'
+      confidence='high'
+      kind='spring-web-slice'
+      dependency='spring-test-context'
+      hint='Loads a Spring web test slice; usually narrower than full integration but not a pure unit test.'
+    elif printf '%s\n' "$content" | grep -Eiq '@ActiveProfiles|SPRING_PROFILES_ACTIVE|quarkus\.test\.profile|micronaut\.environments'; then
+      rule_id='jvm-test-profile'
+      confidence='high'
+      kind='profile-backed-test'
+      dependency='maven-gradle-or-framework-profile'
+      hint='Selects framework test profiles or environments; use the matching Maven/Gradle profile or CI profile configuration.'
+    elif printf '%s\n' "$content" | grep -Eiq '@Tag\("(integration|e2e|contract|slow)"\)|@Category\((IntegrationTest|E2ETest)'; then
+      rule_id='junit-integration-tag'
+      confidence='high'
+      kind='tagged-jvm-integration'
+      dependency='junit-tag-or-category-selection'
+      hint='Uses JUnit integration/e2e/contract tags; run with the tag expression and environment expected by the project.'
+    elif path_indicates_jvm_integration "$lower_path"; then
+      rule_id='jvm-integration-naming'
+      confidence='medium'
+      kind='jvm-integration-by-convention'
+      dependency='maven-failsafe-or-gradle-integration-profile'
+      hint='Path or class name follows common JVM integration-test conventions such as *IT or src/integrationTest; run the project integration-test profile if available.'
+    elif printf '%s\n' "$content" | grep -Eiq 'pytest\.mark\.(integration|e2e|contract|system|django_db|db|redis|kafka|elasticsearch)'; then
+      rule_id='pytest-env-marker'
+      confidence='high'
+      kind='pytest-marked-integration'
+      dependency='pytest-marker-or-service-runtime'
+      hint='Uses pytest markers that usually select integration/e2e/database/service tests; run with the matching marker and required services.'
+    elif printf '%s\n' "$content" | grep -Eiq '@playwright/test|playwright/test' || case "$lower_path" in *.pw.ts|*.pw.js) true ;; *) false ;; esac; then
+      rule_id='playwright-e2e'
+      confidence='high'
+      kind='browser-e2e'
+      dependency='browser-runtime-and-app-server'
+      hint='Uses Playwright; requires browser runtime and usually a running app server or configured webServer.'
+    elif path_indicates_cypress "$lower_path" || printf '%s\n' "$content" | grep -Eiq 'cy\.visit\(|cypress\.'; then
+      rule_id='cypress-e2e'
+      confidence='high'
+      kind='browser-e2e'
+      dependency='browser-runtime-and-app-server'
+      hint='Uses Cypress; requires browser runtime and usually a running app server.'
+    elif path_indicates_node_e2e_or_integration "$lower_path" && printf '%s\n' "$content" | grep -Eiq 'vitest|jest|describe\(|test\('; then
+      rule_id='node-e2e-or-integration'
+      confidence='medium'
+      kind='node-e2e-or-integration'
+      dependency='node-runtime-and-possibly-app-server'
+      hint='Path/content follows common Node e2e or integration-test conventions; verify with the project test script and required runtime services.'
+    elif printf '%s\n' "$content" | grep -Eiq '//go:build (integration|e2e|docker)|// \+build (integration|e2e|docker)'; then
+      rule_id='go-integration-build-tag'
+      confidence='high'
+      kind='go-tagged-integration'
+      dependency='go-build-tags-and-service-runtime'
+      hint='Uses Go integration/e2e/docker build tags; run go test with the matching tags and required services.'
+    elif case "$lower_path" in *_test.go) true ;; *) false ;; esac && case "$lower_path" in *integration*|*/e2e/*) true ;; *) false ;; esac; then
+      rule_id='go-integration-naming'
+      confidence='medium'
+      kind='go-integration-by-convention'
+      dependency='go-test-selection-or-service-runtime'
+      hint='Go test path suggests integration coverage; check project docs for tags, env vars, or service dependencies.'
+    elif printf '%s\n' "$content" | grep -Eq '#\[ignore\]'; then
+      rule_id='rust-ignored-test'
+      confidence='medium'
+      kind='rust-ignored-or-slow-test'
+      dependency='cargo-test-ignored-selection'
+      # shellcheck disable=SC2016
+      hint='Rust ignored tests are not run by default and often need explicit `cargo test -- --ignored` plus external setup.'
+    elif path_indicates_rust_integration "$lower_path"; then
+      rule_id='rust-integration-path'
+      confidence='low'
+      kind='rust-integration-by-convention'
+      dependency='cargo-test-selection-or-project-specific-runtime'
+      hint='Rust test path follows Cargo integration-test layout; treat as a planning hint and verify whether external setup is required.'
+    fi
+
+    printf '%s\t%s\t%s\t%s\t%s\t%s\n' \
+      "$(sanitize_tsv "$path")" \
+      "$(sanitize_tsv "$rule_id")" \
+      "$(sanitize_tsv "$confidence")" \
+      "$(sanitize_tsv "$kind")" \
+      "$(sanitize_tsv "$dependency")" \
+      "$(sanitize_tsv "$hint")"
+    found='yes'
+  done < <(selected_name_status || true)
+
+  if [ "$found" = 'no' ]; then
+    echo 'none	none	none	none	none	no changed test files detected'
+  fi
+}
+
 emit_diff_limited() {
   local tmp_file="$1"
   local size
@@ -2204,6 +2514,9 @@ emit_dependency_summary
 
 echo
 emit_semantic_context_queries
+
+echo
+emit_test_selection_hints
 
 echo
 echo '## Suggested Review Queue'

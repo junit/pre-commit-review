@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# shellcheck disable=SC1091,SC2016
 set -euo pipefail
 
 script_dir="$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd -P)"

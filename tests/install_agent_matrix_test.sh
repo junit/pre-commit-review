@@ -23,6 +23,16 @@ assert_target() {
   }
 }
 
+run_install_clean() (
+  unset AGENT_SKILLS_DIR
+  unset CODEX_SKILLS_DIR
+  unset CLAUDE_SKILLS_DIR
+  unset GEMINI_SKILLS_DIR
+  unset KIRO_SKILLS_DIR
+  unset CODEX_HOME
+  HOME="$home_dir" "$repo_root/install.sh" "$@"
+)
+
 home_dir="$tmp_dir/home"
 project_dir="$tmp_dir/project"
 mkdir -p "$home_dir" "$project_dir"
@@ -31,14 +41,14 @@ while IFS='|' read -r agent project_path global_path; do
   [ -n "$agent" ] || continue
 
   global_output="$tmp_dir/${agent}-global.out"
-  HOME="$home_dir" "$repo_root/install.sh" --agent "$agent" --dry-run >"$global_output"
+  run_install_clean --agent "$agent" --dry-run >"$global_output"
   expected_global="${global_path/#\~/$home_dir}"
   assert_target "$global_output" "${expected_global%/}/pre-commit-review"
 
   project_output="$tmp_dir/${agent}-project.out"
   (
     cd "$project_dir"
-    "$repo_root/install.sh" --agent "$agent" --project --dry-run
+    run_install_clean --agent "$agent" --project --dry-run
   ) >"$project_output"
   assert_target "$project_output" "${project_path%/}/pre-commit-review"
 done <<'EOF'
@@ -100,7 +110,7 @@ adal|.adal/skills|~/.adal/skills
 EOF
 
 for alias in claude gemini kiro; do
-  "$repo_root/install.sh" "$alias" --dry-run >/dev/null
+  run_install_clean "$alias" --dry-run >/dev/null
 done
 
 printf 'install agent matrix tests passed\n'

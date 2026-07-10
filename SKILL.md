@@ -1,7 +1,7 @@
 ---
 name: pre-commit-review
 description: |
-  Use when the user wants a commit-readiness review of a staged diff, unstaged diff, pasted patch, branch-vs-base change, or other code intended for imminent commit, push, or submission.
+  Use when the user wants a commit-readiness review of a staged diff, unstaged diff, pasted patch, branch-vs-base change, or other code intended for imminent commit, push, or submission. Trigger for requests like pre-commit review, ready to commit, check staged changes, 提交前审查, 提交前检查, 检查 staged 变更. Avoid for broad architecture review, debugging help, or isolated code explanation unless the user frames it as commit-readiness.
 ---
 
 # Pre-Commit Review
@@ -10,16 +10,9 @@ Review a code change as a commit-readiness gate. Determine whether the reviewed 
 
 This review does not replace CI or prove correctness. It is a developer-facing decision memo based on reviewed evidence.
 
-## When To Use
+## Scope Guard
 
-Use this skill when the user asks for any of the following:
-
-- A pre-commit review of staged, unstaged, or branch-vs-base changes
-- A review of a pasted diff, patch, or code intended for imminent commit or push
-- A commit-readiness check such as "is this safe to commit?", "can I push this?", or "anything I should fix before landing this?"
-- A request framed as "review before commit", "ready to commit", "check staged changes", "提交前审查", "提交前检查", or "检查 staged 变更"
-
-Avoid triggering for general architecture review, broad design review, debugging help, or isolated code explanation unless the user explicitly frames the request as commit-readiness.
+If this skill was loaded for a request that is not actually asking for commit-readiness, do not force a verdict report. Answer the user's actual request directly or ask for the missing diff/review source.
 
 ## Core Contract
 
@@ -69,6 +62,7 @@ This is a mandatory gateway. Attempt the helper before any direct `git status`, 
 - review manifest units, when emitted
 - review plan and group ordering, when emitted
 - coverage ledger requirements, when emitted
+- test selection hints for changed tests, when emitted
 
 Only fall back to direct Git inspection when the helper is unavailable at that resolved path, exits non-zero, cannot be executed in the current host, or the user already provided the review material explicitly. When falling back, keep the source selection order above.
 
@@ -78,6 +72,8 @@ The helper is plan-first. Its default output may omit the global raw diff when t
 - use helper-mediated `--group` and `--path` commands to load bounded diff content
 - do not rebuild the review scope with direct `git status`, `git diff --name-only`, `git diff --stat`, or ad hoc path selection
 - use helper-emitted `review_command` values only as a compatibility fallback when a helper-mediated `context_command` cannot be run
+
+If the helper emits `Test Selection Hints`, use them only as read-only guidance for verification planning. They do not prove test safety, do not replace CI, and must not be described as skipped or stripped tests. Built-in hints cover common JVM/Spring/Quarkus/Micronaut, pytest, Node e2e, Go, Rust, container, HTTP-stub, and external-service markers; project-specific `.pre-commit-review/test-hints` rules still take precedence for local conventions. Treat env-dependent tests such as `@SpringBootTest`, Testcontainers, or DB slices as verification that may require CI/local profile support, not as sandbox-safe unit tests. Treat `no-known-env-heavy-marker` as "no known marker matched", not as proof that the test is a pure unit test.
 
 If the host persists helper output because it is too large and only returns a preview:
 
@@ -250,10 +246,15 @@ Rules:
 - for partial reviews, state `**Review scope:** partial — <explain what was covered and uncovered>`; do NOT use negative phrase contrasts like "not a full review"
 - NEVER mention or output internal workflow terms like "coverage-led", "Visual Review Matrix", or "Review Manifest" in routine or non-matching reviews (do not explain why coverage-led accounting was skipped or not needed)
 - localize headings, labels, and connective prose into the selected output language (do not mix English headings like "Risk Summary" or "Priority Findings" with Chinese content; if Chinese is selected, all headings and metadata labels must match output-zh.md exactly)
-- keep the review concise by default and expand only when the added detail improves the decision; however, do not arbitrarily cap the findings count to a fixed number (like 3). List EVERY verified priority finding that meets the threshold (especially correctness, security, authorization, PII, and migration risks). If findings are numerous, prioritize higher-severity issues (correctness/security) over lower-severity maintainability comments (such as style or Spring dependency smells) to prevent high-risk findings from being squeezed out.
+- keep the review concise by default and expand only when the added detail improves the decision; however, do not arbitrarily cap the findings count to a fixed number (like 3). List EVERY verified priority finding that meets the threshold (especially correctness, security, authorization, PII, and migration risks). If findings are numerous, prioritize higher-severity issues (correctness/security) over lower-severity maintainability comments (such as style, naming, or framework-wiring smells) to prevent high-risk findings from being squeezed out.
+- Interpret priority findings as commit-relevant, high-signal findings, not as blockers only. A finding can be non-blocking and still belong in the priority findings list when it has concrete runtime, security, data, compatibility, operational, or testing impact. Do not write "no priority findings" merely because there are no blockers.
 - Treat candidate risks as independent by default when they differ in affected object, trigger condition, failure mode, or required fix. Merge findings only when the risks share the same root cause and the same corrective action.
 - Execution summaries, commit guidance, and risk summaries cannot replace a priority finding entry. If a verified priority-threshold issue is mentioned outside the findings list, it must still appear as its own finding.
 - Every material candidate concern must have a visible disposition in the final report: priority finding, suggested verification, follow-up/domain confirmation, review limitation, or omission because it is low-confidence speculation that would not help the commit decision.
+- Do not let brevity remove material technical detail. Boundary-condition failures, ignored validation/intent parameters, side-effect contract gaps, and security TOCTOU residuals are not clean-code smells when they can affect runtime behavior, data integrity, or trust boundaries.
+- Verification recommendations must preserve the specific behavioral assertion that makes the concern meaningful. Do not replace a compatibility assertion such as "fallback behavior remains equivalent to the previous implementation for the same input" with a generic logging or "add more tests" suggestion.
+
+Before final synthesis, harvest material candidate concerns from changed behavior categories such as externally observable value construction, cross-boundary I/O, side-effect protection, access or isolation scope, execution-context propagation, runtime prerequisites, and compatibility-sensitive fallbacks. Maintain an internal candidate disposition ledger for those harvested candidates. For every material candidate concern, record: affected object, risk class, evidence status, disposition, and final report location. The final report may use normal user-facing sections rather than showing this ledger, but every material candidate that is not disproven or low-confidence speculation must be visible somewhere in the report. If any material candidate lacks a final report location, revise the report before emitting the verdict.
 
 ## Language Selection
 
@@ -312,6 +313,10 @@ If material high-risk areas cannot be reviewed:
 - surface them clearly under review limitations or unreviewed changes
 - let the verdict reflect that limitation
 - do not silently downgrade the scope
+
+Before writing `Unreviewed changes: none` / `未审查变更：无`, reconcile the helper manifest, file list, and inspected content. If any binary, generated artifact, minified asset, persisted-output-only content, truncated unit, or unreadable file was not actually inspected, list it as an unreviewed change or review limitation with verdict impact. You may mark such a unit reviewed only when you inspected the artifact directly or verified reproducible provenance from the changed source and state that method explicitly.
+
+Do not state schema, migration, generated artifact, or binary provenance assumptions as facts. If the evidence is only "presumed", "likely", or "consistent with convention", render it as suggested verification, domain confirmation, or a review limitation instead of a full-scope claim.
 
 If the entire diff was reviewed, the review may still be full even when repository context outside the diff is unavailable. Lack of broader repository access is a blind spot, not automatically a partial review.
 

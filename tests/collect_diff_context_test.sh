@@ -270,6 +270,139 @@ assert_contains "$risk_queue_output" '## Suggested Review Queue'
 assert_contains "$risk_queue_output" 'high-risk: db/migrations/20260518_add_admin.sql'
 assert_contains "$risk_queue_output" 'high-risk: zzz_auth/session.py'
 
+test_hint_repo="$tmp_dir/test-hints"
+mkdir -p "$test_hint_repo/src/test/java/com/example"
+init_repo "$test_hint_repo"
+cat >"$test_hint_repo/src/test/java/com/example/UserServiceTest.java" <<'EOF_TEST'
+package com.example;
+
+import org.springframework.boot.test.context.SpringBootTest;
+import org.junit.jupiter.api.Test;
+
+@SpringBootTest
+class UserServiceTest {
+  @Test
+  void loadsContext() {}
+}
+EOF_TEST
+git -C "$test_hint_repo" add src/test/java/com/example/UserServiceTest.java
+test_hint_output="$tmp_dir/test-hints.out"
+run_helper "$test_hint_repo" "$test_hint_output"
+assert_contains "$test_hint_output" '## Test Selection Hints'
+assert_contains "$test_hint_output" $'path\trule_id\tconfidence\ttest_kind\tenvironment_dependency\thint'
+assert_contains "$test_hint_output" $'src/test/java/com/example/UserServiceTest.java\tspring-boot-context\thigh\tspring-boot-integration\tspring-context'
+assert_contains "$test_hint_output" 'Loads a Spring Boot application context; may require local profiles, DB, middleware, or CI-provided services.'
+
+custom_test_hint_repo="$tmp_dir/custom-test-hints"
+mkdir -p "$custom_test_hint_repo/.pre-commit-review" "$custom_test_hint_repo/tests/e2e"
+init_repo "$custom_test_hint_repo"
+cat >"$custom_test_hint_repo/.pre-commit-review/test-hints" <<'EOF_HINTS'
+# rule_id	path_regex	content_regex	test_kind	environment_dependency	confidence	hint
+playwright-e2e	(^|/)tests/e2e/		frontend-e2e	browser-runtime	high	Requires browser runtime and app server; run in CI or a prepared local environment.
+EOF_HINTS
+printf 'test("login", async ({ page }) => { await page.goto("/login"); });\n' >"$custom_test_hint_repo/tests/e2e/login.spec.ts"
+git -C "$custom_test_hint_repo" add .pre-commit-review/test-hints tests/e2e/login.spec.ts
+custom_test_hint_output="$tmp_dir/custom-test-hints.out"
+run_helper "$custom_test_hint_repo" "$custom_test_hint_output"
+assert_contains "$custom_test_hint_output" $'tests/e2e/login.spec.ts\tplaywright-e2e\thigh\tfrontend-e2e\tbrowser-runtime'
+assert_contains "$custom_test_hint_output" 'Requires browser runtime and app server; run in CI or a prepared local environment.'
+
+popular_test_hint_repo="$tmp_dir/popular-test-hints"
+mkdir -p \
+  "$popular_test_hint_repo/src/test/java/com/example" \
+  "$popular_test_hint_repo/src/integrationTest/java/com/example" \
+  "$popular_test_hint_repo/tests" \
+  "$popular_test_hint_repo/e2e" \
+  "$popular_test_hint_repo/cypress/e2e" \
+  "$popular_test_hint_repo/pkg/service" \
+  "$popular_test_hint_repo/tests/rust"
+init_repo "$popular_test_hint_repo"
+cat >"$popular_test_hint_repo/src/integrationTest/java/com/example/OrderIT.java" <<'EOF_JVM_IT'
+class OrderIT {}
+EOF_JVM_IT
+cat >"$popular_test_hint_repo/src/test/java/com/example/TaggedTest.java" <<'EOF_JUNIT_TAG'
+import org.junit.jupiter.api.Tag;
+@Tag("integration")
+class TaggedTest {}
+EOF_JUNIT_TAG
+cat >"$popular_test_hint_repo/src/test/java/com/example/QuarkusResourceTest.java" <<'EOF_QUARKUS'
+import io.quarkus.test.junit.QuarkusTest;
+@QuarkusTest
+class QuarkusResourceTest {}
+EOF_QUARKUS
+cat >"$popular_test_hint_repo/src/test/java/com/example/MicronautResourceTest.java" <<'EOF_MICRONAUT'
+import io.micronaut.test.extensions.junit5.annotation.MicronautTest;
+@MicronautTest
+class MicronautResourceTest {}
+EOF_MICRONAUT
+cat >"$popular_test_hint_repo/src/test/java/com/example/ContractTest.java" <<'EOF_CONTRACT'
+import org.springframework.cloud.contract.stubrunner.spring.AutoConfigureStubRunner;
+@AutoConfigureStubRunner
+class ContractTest {}
+EOF_CONTRACT
+cat >"$popular_test_hint_repo/src/test/java/com/example/WireMockTest.java" <<'EOF_WIREMOCK'
+import com.github.tomakehurst.wiremock.WireMockServer;
+class WireMockTest { WireMockServer server; }
+EOF_WIREMOCK
+cat >"$popular_test_hint_repo/src/test/java/com/example/MockServerTest.java" <<'EOF_MOCKSERVER'
+import org.mockserver.integration.ClientAndServer;
+class MockServerTest { ClientAndServer server; }
+EOF_MOCKSERVER
+cat >"$popular_test_hint_repo/src/test/java/com/example/ComposeTest.java" <<'EOF_COMPOSE'
+class ComposeTest { String compose = "docker-compose.yml"; }
+EOF_COMPOSE
+cat >"$popular_test_hint_repo/src/test/java/com/example/ExternalServiceTest.java" <<'EOF_SERVICES'
+class ExternalServiceTest {
+  String db = "jdbc:postgresql://localhost/app";
+  String kafka = "spring.kafka.bootstrap-servers=localhost:9092";
+}
+EOF_SERVICES
+cat >"$popular_test_hint_repo/tests/test_payments.py" <<'EOF_PYTEST'
+import pytest
+@pytest.mark.integration
+def test_payments():
+    pass
+EOF_PYTEST
+cat >"$popular_test_hint_repo/e2e/login.spec.ts" <<'EOF_PLAYWRIGHT'
+import { test } from "@playwright/test";
+test("login", async ({ page }) => { await page.goto("/login"); });
+EOF_PLAYWRIGHT
+cat >"$popular_test_hint_repo/cypress/e2e/login.cy.ts" <<'EOF_CYPRESS'
+describe("login", () => { it("works", () => { cy.visit("/login"); }); });
+EOF_CYPRESS
+cat >"$popular_test_hint_repo/e2e/api.e2e.ts" <<'EOF_NODE_E2E'
+import { test } from "vitest";
+test("api", () => {});
+EOF_NODE_E2E
+cat >"$popular_test_hint_repo/pkg/service/service_test.go" <<'EOF_GO'
+//go:build integration
+package service
+func TestService(t *testing.T) {}
+EOF_GO
+cat >"$popular_test_hint_repo/tests/rust/payment.rs" <<'EOF_RUST'
+#[test]
+#[ignore]
+fn payment_flow() {}
+EOF_RUST
+git -C "$popular_test_hint_repo" add .
+popular_test_hint_output="$tmp_dir/popular-test-hints.out"
+run_helper "$popular_test_hint_repo" "$popular_test_hint_output"
+assert_contains "$popular_test_hint_output" $'src/integrationTest/java/com/example/OrderIT.java\tjvm-integration-naming\tmedium\tjvm-integration-by-convention\tmaven-failsafe-or-gradle-integration-profile'
+assert_contains "$popular_test_hint_output" $'src/test/java/com/example/TaggedTest.java\tjunit-integration-tag\thigh\ttagged-jvm-integration\tjunit-tag-or-category-selection'
+assert_contains "$popular_test_hint_output" $'src/test/java/com/example/QuarkusResourceTest.java\tquarkus-test-context\thigh\tquarkus-integration\tquarkus-test-runtime'
+assert_contains "$popular_test_hint_output" $'src/test/java/com/example/MicronautResourceTest.java\tmicronaut-test-context\thigh\tmicronaut-integration\tmicronaut-test-runtime'
+assert_contains "$popular_test_hint_output" $'src/test/java/com/example/ContractTest.java\tspring-cloud-contract\thigh\tcontract-integration\tspring-cloud-contract-runtime'
+assert_contains "$popular_test_hint_output" $'src/test/java/com/example/WireMockTest.java\twiremock-test\thigh\thttp-stub-integration\twiremock-runtime'
+assert_contains "$popular_test_hint_output" $'src/test/java/com/example/MockServerTest.java\tmockserver-test\thigh\thttp-stub-integration\tmockserver-runtime'
+assert_contains "$popular_test_hint_output" $'src/test/java/com/example/ComposeTest.java\tdocker-compose-test\thigh\tcompose-backed-integration\tdocker-compose-runtime'
+assert_contains "$popular_test_hint_output" $'src/test/java/com/example/ExternalServiceTest.java\texternal-service-config\thigh\tservice-backed-integration\tdatabase-cache-broker-or-search-service'
+assert_contains "$popular_test_hint_output" $'tests/test_payments.py\tpytest-env-marker\thigh\tpytest-marked-integration\tpytest-marker-or-service-runtime'
+assert_contains "$popular_test_hint_output" $'e2e/login.spec.ts\tplaywright-e2e\thigh\tbrowser-e2e\tbrowser-runtime-and-app-server'
+assert_contains "$popular_test_hint_output" $'cypress/e2e/login.cy.ts\tcypress-e2e\thigh\tbrowser-e2e\tbrowser-runtime-and-app-server'
+assert_contains "$popular_test_hint_output" $'e2e/api.e2e.ts\tnode-e2e-or-integration\tmedium\tnode-e2e-or-integration\tnode-runtime-and-possibly-app-server'
+assert_contains "$popular_test_hint_output" $'pkg/service/service_test.go\tgo-integration-build-tag\thigh\tgo-tagged-integration\tgo-build-tags-and-service-runtime'
+assert_contains "$popular_test_hint_output" $'tests/rust/payment.rs\trust-ignored-test\tmedium\trust-ignored-or-slow-test\tcargo-test-ignored-selection'
+
 plan_first_repo="$tmp_dir/plan-first"
 mkdir -p "$plan_first_repo/src/auth"
 init_repo "$plan_first_repo"

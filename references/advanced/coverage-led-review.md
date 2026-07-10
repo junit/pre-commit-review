@@ -12,6 +12,30 @@ It answers only these questions:
 
 Verdict selection, finding taxonomy, rendering templates, and grading-compatibility wording are defined elsewhere.
 
+## Contents
+
+- Purpose
+- When To Use Coverage-Led Review
+- Core Contract
+- Authoritative Inputs
+- Review Units
+- Coverage Ledger
+- Work Order
+- Splitting Rules
+- Context Retrieval
+- Generated, Vendored, and Snapshot-Heavy Changes
+- Group Review Result
+- Reducer State
+- Coverage Validation
+- Dependency and Contract Follow-Up
+- Review Limits
+- Verdict Interaction
+- What The Developer Must See
+- Minimal User-Facing Coverage Summary
+- Advisory Fallback
+- Failure Modes To Avoid
+- Final Checklist
+
 ## Purpose
 
 Coverage-led review exists to prevent false confidence in large or fragmented reviews.
@@ -160,7 +184,7 @@ For these units:
 - check for suspicious drift, unexplained version jumps, or mismatched lock/source behavior
 - surface unexplained generated output as a review limit or finding
 
-For large generated updates, the review should explicitly note that the method was `coverage-led` and whether the output appears `reproducible`.
+For large generated updates, the user-facing report should explicitly note the coverage method and whether the output appears reproducible, but do not output the literal internal term `coverage-led` unless a grading-sensitive compatibility instruction explicitly requires that exact token.
 
 ## Group Review Result
 
@@ -250,6 +274,9 @@ Rules:
 - do not omit a material unreviewed unit from user-visible output
 - do not hide a blocking coverage gap under soft wording
 - do not enter Tiny mode if any material review limit exists
+- do not mark binary, generated, minified, persisted-output-only, or otherwise unreadable units as fully reviewed by assumption
+- if a non-text artifact is accepted through provenance instead of direct inspection, state the exact provenance check, such as matching a freshly built artifact from the reviewed source; otherwise surface it as an unreviewed change or review limitation
+- never write "Unreviewed changes: none" / `未审查变更：无` when the manifest contains material units whose content was not actually inspected or provenance-verified
 
 ## Verdict Interaction
 
@@ -266,7 +293,7 @@ Coverage-led review does not replace the main verdict rules; it constrains when 
 
 The final user-facing report does not need to expose every internal reducer detail.
 
-But for any meaningful coverage-led review, the final output should make the following visible in concise form:
+But for any meaningful explicit coverage-accounting review, the final output should make the following visible in concise form:
 
 - what the review units or review scope were
 - whether any splitting was required
@@ -278,13 +305,13 @@ But for any meaningful coverage-led review, the final output should make the fol
 Keep the report decision-oriented.
 Do not dump raw reducer state unless the user explicitly asks for process detail.
 
-## Minimal User-Facing Coverage-Led Summary
+## Minimal User-Facing Coverage Summary
 
-When coverage-led review is used, the final report should include enough information to show process rigor without turning the whole output into an internal protocol dump.
+When explicit coverage accounting is used, the final report should include enough information to show process rigor without turning the whole output into an internal protocol dump. Do not output the literal internal term `coverage-led` in routine reports.
 
 A concise summary should usually answer:
 
-- Was this a coverage-led review?
+- Was explicit coverage accounting required for this review?
 - What units or groups were reviewed?
 - Was any unit split?
 - Did coverage validation finish cleanly?
@@ -297,14 +324,14 @@ Use advisory fallback only when:
 
 - repository/helper access is unavailable, or
 - the user explicitly wants fast bounded triage, or
-- the user declines to continue a required coverage-led review
+- the user declines to continue a required explicit coverage-accounting review
 
 In advisory fallback:
 
 - name exactly what was reviewed
 - name exactly what was not reviewed
 - do not present the result as full commit-readiness
-- explain what additional review would be needed to upgrade the result into a coverage-led commit decision
+- explain what additional review would be needed to upgrade the result into a complete commit-readiness decision
 
 ## Failure Modes To Avoid
 

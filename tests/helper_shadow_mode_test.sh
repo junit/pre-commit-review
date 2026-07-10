@@ -69,5 +69,20 @@ grep -Fxq 'legacy' "$stdout_file" \
   || fail 'PRE_COMMIT_REVIEW_SHADOW_MODE=1 should force shadow execution even when helper impl is legacy'
 grep -Fq 'Output mismatch detected' "$stderr_file" \
   || fail 'shadow mode should report mismatched shadow output to stderr'
+grep -Fq 'Diff logging is disabled by default' "$stderr_file" \
+  || fail 'shadow mode should not write mismatch diffs by default'
+
+explicit_log="$tmp_dir/shadow-diff.log"
+(
+  cd "$tmp_dir"
+  PRE_COMMIT_REVIEW_HELPER_IMPL=legacy PRE_COMMIT_REVIEW_SHADOW_MODE=1 \
+    PRE_COMMIT_REVIEW_SHADOW_DIFF_LOG="$explicit_log" \
+    "$helper_root/collect_diff_context.sh"
+) >"$tmp_dir/stdout-with-log.txt" 2>"$tmp_dir/stderr-with-log.txt"
+
+[ -s "$explicit_log" ] \
+  || fail 'shadow mode should write mismatch details only when PRE_COMMIT_REVIEW_SHADOW_DIFF_LOG is set'
+grep -Fq 'DIFF MISMATCH' "$explicit_log" \
+  || fail 'shadow diff log should include the mismatch marker'
 
 printf 'helper shadow mode tests passed\n'

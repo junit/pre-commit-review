@@ -6,6 +6,15 @@ These rules are compatibility constraints, not primary writing guidance.
 
 Load this file only when exact phrase preservation matters for automated checks, evaluations, or known compatibility harnesses.
 
+## Contents
+
+- Core Rule
+- Required Exact Terms By Scenario
+- Usage Boundaries
+- Style Guidance
+- Priority Rule
+- Quick Checklist
+
 ## Core Rule
 
 When one of the scenarios below is present, include the required exact lowercase term or phrase somewhere in the final review output.

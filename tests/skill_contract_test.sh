@@ -1,4 +1,5 @@
 #!/usr/bin/env bash
+# shellcheck disable=SC2016
 set -euo pipefail
 
 script_dir="$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd -P)"
@@ -62,6 +63,10 @@ for concrete_file in \
 done
 
 # SKILL.md must route through the new layered structure.
+grep -Fq '提交前审查' "$skill_file" \
+  || fail 'SKILL.md frontmatter must include Chinese commit-review trigger wording'
+grep -Fq '## Scope Guard' "$skill_file" \
+  || fail 'SKILL.md must include a post-trigger scope guard'
 grep -Fq 'Always preserve the field label `VERDICT` in English.' "$skill_file" \
   || fail 'SKILL.md must keep the VERDICT localization rule'
 grep -Fq 'references/decision/verdict-rules.md' "$skill_file" \
@@ -96,8 +101,28 @@ grep -Fq 'Treat candidate risks as independent by default when they differ in af
   || fail 'SKILL.md must define independent candidate risk enumeration'
 grep -Fq 'Execution summaries, commit guidance, and risk summaries cannot replace a priority finding entry.' "$skill_file" \
   || fail 'SKILL.md must forbid summary-only priority finding coverage'
+grep -Fq 'Interpret priority findings as commit-relevant, high-signal findings, not as blockers only.' "$skill_file" \
+  || fail 'SKILL.md must prevent treating priority findings as blockers only'
 grep -Fq 'Every material candidate concern must have a visible disposition in the final report' "$skill_file" \
   || fail 'SKILL.md must require visible disposition for material candidate concerns'
+grep -Fq 'Before final synthesis, harvest material candidate concerns from changed behavior categories' "$skill_file" \
+  || fail 'SKILL.md must require material candidate harvesting before final synthesis'
+grep -Fq 'Maintain an internal candidate disposition ledger for those harvested candidates.' "$skill_file" \
+  || fail 'SKILL.md must require an internal candidate disposition ledger'
+grep -Fq 'If any material candidate lacks a final report location, revise the report before emitting the verdict.' "$skill_file" \
+  || fail 'SKILL.md must block final verdict until material candidates have report locations'
+grep -Fq 'Boundary-condition failures, ignored validation/intent parameters, side-effect contract gaps, and security TOCTOU residuals are not clean-code smells' "$skill_file" \
+  || fail 'SKILL.md must prevent material runtime/contract/security issues from being demoted as clean-code smells'
+grep -Fq 'framework-wiring smells' "$skill_file" \
+  || fail 'SKILL.md must use generic framework-wiring wording instead of framework-specific smells'
+grep -Fq 'Before writing `Unreviewed changes: none` / `未审查变更：无`, reconcile the helper manifest, file list, and inspected content.' "$skill_file" \
+  || fail 'SKILL.md must require scope honesty before claiming no unreviewed changes'
+grep -Fq 'Verification recommendations must preserve the specific behavioral assertion that makes the concern meaningful.' "$skill_file" \
+  || fail 'SKILL.md must preserve specific behavioral verification assertions'
+grep -Fq 'If the helper emits `Test Selection Hints`, use them only as read-only guidance for verification planning.' "$skill_file" \
+  || fail 'SKILL.md must treat helper test hints as read-only verification guidance'
+grep -Fq 'Treat `no-known-env-heavy-marker` as "no known marker matched", not as proof that the test is a pure unit test.' "$skill_file" \
+  || fail 'SKILL.md must keep no-known test hints conservative'
 if grep -Fq 'prefer `scripts/collect_diff_context.sh`' "$skill_file"; then
   fail 'SKILL.md must not describe helper-first collection as a soft preference'
 fi
@@ -128,6 +153,36 @@ grep -Fq 'Security, auth, authorization, privacy, and injection findings must be
   || fail 'finding-verification.md must require auth/security execution-point tracing'
 grep -Fq 'Do not infer framework or library internals from call-site shape alone.' "$decision_finding_verification_file" \
   || fail 'finding-verification.md must require framework/library behavior verification'
+grep -Fq '## Priority Threshold Gate' "$decision_finding_verification_file" \
+  || fail 'finding-verification.md must define a priority threshold gate'
+grep -Fq 'Priority findings are not limited to blockers.' "$decision_finding_verification_file" \
+  || fail 'finding-verification.md must define priority findings as more than blockers'
+grep -Fq 'Do not promote pure clean-code smells into priority findings by default.' "$decision_finding_verification_file" \
+  || fail 'finding-verification.md must demote pure clean-code smells by default'
+grep -Fq 'a boundary fallback is missing and can produce an invalid externally observable value, resource locator, cross-boundary identifier, request descriptor, or persisted state at runtime' "$decision_finding_verification_file" \
+  || fail 'finding-verification.md must classify runtime boundary fallback failures as priority-threshold candidates'
+grep -Fq 'a caller-visible parameter, flag, mode, or option is ignored' "$decision_finding_verification_file" \
+  || fail 'finding-verification.md must classify ignored validation/intent parameters as priority-threshold candidates'
+grep -Fq 'SSRF, redirect, proxy, and other outbound-interaction claims must account for time-of-check/time-of-use behavior.' "$decision_finding_verification_file" \
+  || fail 'finding-verification.md must require TOCTOU handling for outbound security claims'
+grep -Fq '## Candidate Harvest Gate' "$decision_finding_verification_file" \
+  || fail 'finding-verification.md must define a candidate harvest gate'
+grep -Fq 'construction or rewriting of externally observable values or cross-boundary identifiers' "$decision_finding_verification_file" \
+  || fail 'finding-verification.md must harvest externally observable value construction candidates'
+grep -Fq 'cross-boundary I/O, such as network, file-system, process, browser, IPC, plugin, database, message-bus' "$decision_finding_verification_file" \
+  || fail 'finding-verification.md must harvest language-agnostic cross-boundary I/O candidates'
+grep -Fq 'Do not let a changed behavior category disappear merely because no one had already named it as a finding.' "$decision_finding_verification_file" \
+  || fail 'finding-verification.md must prevent unnamed changed behavior candidates from disappearing'
+grep -Fq 'Maintain a candidate disposition ledger from verification through final synthesis.' "$decision_finding_verification_file" \
+  || fail 'finding-verification.md must require a candidate disposition ledger'
+grep -Fq 'Do not emit the final verdict until this ledger has no material candidate without a final report location.' "$decision_finding_verification_file" \
+  || fail 'finding-verification.md must block final verdict until candidate disposition is complete'
+grep -Fq 'state-changing or configuration-changing code silently bypasses a validation contract' "$decision_finding_verification_file" \
+  || fail 'finding-verification.md must describe validation bypass generically'
+grep -Fq 'stored or serialized field names' "$decision_finding_verification_file" \
+  || fail 'finding-verification.md must use generic stored/serialized field wording'
+grep -Fq 'reconcile the material candidate concern ledger' "$decision_finding_verification_file" \
+  || fail 'finding-verification.md must require final candidate concern reconciliation'
 grep -Fq 'report every independently verified priority-threshold risk as its own priority finding' "$decision_finding_verification_file" \
   || fail 'finding-verification.md must require each independently verified priority risk to be reported'
 grep -Fq 'when a material candidate concern is downgraded or omitted, keep the disposition visible' "$decision_finding_verification_file" \
@@ -138,6 +193,16 @@ grep -Fq 'independent candidate risk points were dispositioned as a priority fin
   || fail 'risk-taxonomy.md must require final disposition for independent candidate risks'
 grep -Fq 'no independent priority-threshold risk was replaced by executive summary, commit guidance, or risk summary prose' "$decision_risk_file" \
   || fail 'risk-taxonomy.md must forbid summary prose replacing priority findings'
+grep -Fq 'the concern is only a clean-code smell with no demonstrated behavior, contract, release, performance, security, data, or testing impact' "$decision_risk_file" \
+  || fail 'risk-taxonomy.md must keep pure clean-code smells out of priority findings'
+grep -Fq 'Do not treat "priority finding" as a synonym for "blocker."' "$decision_risk_file" \
+  || fail 'risk-taxonomy.md must keep non-blocking material issues eligible for priority findings'
+grep -Fq 'Do not use the clean-code-smell exclusion for verified boundary or contract failures.' "$decision_risk_file" \
+  || fail 'risk-taxonomy.md must not let clean-code filtering hide boundary or contract failures'
+grep -Fq 'Non-priority does not mean invisible.' "$decision_risk_file" \
+  || fail 'risk-taxonomy.md must require visible disposition for non-priority material concerns'
+grep -Fq 'a safety helper leaves a reachable TOCTOU gap such as DNS rebinding, redirect target drift, or post-validation connection drift' "$decision_risk_file" \
+  || fail 'risk-taxonomy.md must preserve security TOCTOU residuals'
 grep -Fq 'redacted' "$advanced_grading_file" \
   || fail 'grading-compat.md must retain secret-handling compatibility wording'
 grep -Fq 'downstream clients' "$advanced_grading_file" \
@@ -177,6 +242,28 @@ grep -Fq '阻塞原因：<仅阻塞项包含此行>' "$render_output_zh_file" \
   || fail 'Chinese finding template must make 阻塞原因 conditional'
 grep -Eq '\*\*变更规模：\*\* .*个文件.*\+[0-9<]+.*行.*/.*-[0-9<]+.*行' "$render_output_zh_file" \
   || fail 'Chinese templates must use localized file and line count units'
+grep -Fq '只有当所有 manifest/file-list 单元的文本内容已审查' "$render_output_zh_file" \
+  || fail 'Chinese template must guard against falsely claiming no unreviewed changes'
+grep -Fq 'write `Unreviewed changes: none` only when every manifest/file-list unit' "$render_output_en_file" \
+  || fail 'English template must guard against falsely claiming no unreviewed changes'
+grep -Fq '不要把本段文字输出给用户' "$render_output_zh_file" \
+  || fail 'Chinese template must mark guardrails as internal-only'
+grep -Fq 'do not output this text to the user' "$render_output_en_file" \
+  || fail 'English template must mark guardrails as internal-only'
+grep -Fq '"Priority Findings" is not a blockers-only section' "$render_output_en_file" \
+  || fail 'English template must prevent blockers-only priority findings'
+grep -Fq '“重点发现”不是“阻断项专区”' "$render_output_zh_file" \
+  || fail 'Chinese template must prevent blockers-only priority findings'
+grep -Fq 'Only when there are no blocker, non-blocking risk, test-gap, or review-limit items that meet the priority-finding threshold' "$render_output_en_file" \
+  || fail 'English template must limit None priority findings to no material priority-threshold items'
+grep -Fq '只有在没有任何达到重点发现门槛的阻断项、非阻断风险、测试缺口或审查限制时' "$render_output_zh_file" \
+  || fail 'Chinese template must limit 无 priority findings to no material priority-threshold items'
+if grep -Fq '渲染守卫：' "$render_output_zh_file"; then
+  fail 'Chinese template must not include literal 渲染守卫 output text'
+fi
+if grep -Fq 'Rendering guardrail:' "$render_output_en_file"; then
+  fail 'English template must not include literal Rendering guardrail output text'
+fi
 
 if grep -Fq '## Supporting Analysis' "$render_output_en_file"; then
   fail 'English default template must not include Supporting Analysis by default'
@@ -197,6 +284,18 @@ grep -Fq 'Do not invent precision.' "$render_visual_file" \
 grep -Fq 'Only calculate distribution from real reviewed counts.' "$render_visual_file" \
   || fail 'visual-output.md must forbid invented distribution percentages'
 
+# Long reference files must remain navigable when loaded through progressive disclosure.
+for long_reference_file in \
+  "$decision_verdict_file" \
+  "$decision_risk_file" \
+  "$decision_finding_verification_file" \
+  "$advanced_coverage_file" \
+  "$advanced_visual_rules_file" \
+  "$advanced_grading_file"; do
+  grep -Fq '## Contents' "$long_reference_file" \
+    || fail "long reference file must include a Contents section: $long_reference_file"
+done
+
 # Advanced layer must remain focused on complex workflows.
 grep -Fq 'Coverage-led review exists to prevent false confidence in large or fragmented reviews.' "$advanced_coverage_file" \
   || fail 'coverage-led-review.md must define the purpose of coverage-led review'
@@ -204,6 +303,14 @@ grep -Fq 'The final user-facing report does not need to expose every internal re
   || fail 'coverage-led-review.md must separate internal reducer state from user-facing output'
 grep -Fq 'high-impact reducer findings passed the finding verification gate or were downgraded' "$advanced_coverage_file" \
   || fail 'coverage-led-review.md must require finding verification before final reducer output'
+grep -Fq 'do not mark binary, generated, minified, persisted-output-only, or otherwise unreadable units as fully reviewed by assumption' "$advanced_coverage_file" \
+  || fail 'coverage-led-review.md must require honest binary/generated/unreadable coverage'
+grep -Fq 'do not output the literal internal term `coverage-led` unless a grading-sensitive compatibility instruction explicitly requires that exact token' "$advanced_coverage_file" \
+  || fail 'coverage-led-review.md must not leak internal workflow terms into routine reports'
+grep -Fq 'Was explicit coverage accounting required for this review?' "$advanced_coverage_file" \
+  || fail 'coverage-led-review.md must phrase user-facing coverage summary without leaking internal mode names'
+grep -Fq 'complete commit-readiness decision' "$advanced_coverage_file" \
+  || fail 'coverage-led-review.md must avoid user-facing internal coverage-led decision wording'
 grep -Fq 'Use visual review when the change meaningfully affects any of the following:' "$advanced_visual_rules_file" \
   || fail 'visual-review-rules.md must define when visual review is justified'
 grep -Fq 'Treat accessibility as a real correctness dimension, not cosmetic polish.' "$advanced_visual_rules_file" \
@@ -245,6 +352,14 @@ grep -Fq 'readme_surface_test.sh' "$readme_file" \
   || fail 'README.md must document the README surface test'
 grep -Fq 'readme_host_entrypoints_test.sh' "$readme_file" \
   || fail 'README.md must document the README host entrypoints surface test'
+grep -Fq '.pre-commit-review/test-hints' "$readme_file" \
+  || fail 'README.md must document project-specific test selection hints'
+grep -Fq 'no-known-env-heavy-marker' "$readme_file" \
+  || fail 'README.md must document conservative no-known test hint semantics'
+grep -Fq 'Playwright/Cypress/Node e2e' "$readme_file" \
+  || fail 'README.md must document popular built-in test hint ecosystems'
+grep -Fq 'Go build tags' "$readme_file" \
+  || fail 'README.md must document Go built-in test hint coverage'
 grep -Fq '用户提供代码但没有 before/after diff' "$readme_zh_file" \
   || fail 'README.zh-CN.md must document the user-provided code input path'
 grep -Fq '执行静态的提交前风格审查' "$readme_zh_file" \
@@ -255,5 +370,23 @@ grep -Fq 'readme_surface_test.sh' "$readme_zh_file" \
   || fail 'README.zh-CN.md must document the README surface test'
 grep -Fq 'readme_host_entrypoints_test.sh' "$readme_zh_file" \
   || fail 'README.zh-CN.md must document the README host entrypoints surface test'
+grep -Fq '.pre-commit-review/test-hints' "$readme_zh_file" \
+  || fail 'README.zh-CN.md must document project-specific test selection hints'
+grep -Fq 'no-known-env-heavy-marker' "$readme_zh_file" \
+  || fail 'README.zh-CN.md must document conservative no-known test hint semantics'
+grep -Fq 'Playwright/Cypress/Node e2e' "$readme_zh_file" \
+  || fail 'README.zh-CN.md must document popular built-in test hint ecosystems'
+grep -Fq 'Go build tags' "$readme_zh_file" \
+  || fail 'README.zh-CN.md must document Go built-in test hint coverage'
+grep -Fq 'minimal runtime skill payload' "$readme_file" \
+  || fail 'README.md must document minimal runtime copy installs'
+grep -Fq '最小运行时 skill payload' "$readme_zh_file" \
+  || fail 'README.zh-CN.md must document minimal runtime copy installs'
+grep -Fq 'By default, shadow mode does not write diff content to `/tmp`.' "$readme_file" \
+  || fail 'README.md must document shadow mode diff logging as opt-in'
+grep -Fq '默认 shadow mode 不会把 diff 内容写入 `/tmp`。' "$readme_zh_file" \
+  || fail 'README.zh-CN.md must document shadow mode diff logging as opt-in'
+grep -Fq 'default_prompt: "Use $pre-commit-review' "$repo_root/agents/openai.yaml" \
+  || fail 'agents/openai.yaml default_prompt must explicitly mention $pre-commit-review'
 
 printf 'skill contract tests passed\n'

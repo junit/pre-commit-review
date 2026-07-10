@@ -11,6 +11,19 @@ It answers only these questions:
 
 Rendering layout belongs in the rendering templates. General verdict and finding rules belong in the decision files.
 
+## Contents
+
+- When To Use Visual Review
+- Core Expectation
+- Primary Visual Dimensions
+- Acceptable Evidence
+- Evidence Boundaries
+- Screenshot and Preview Guidance
+- Review Limit Interaction
+- Common Findings
+- How To Write Visual Findings
+- Final Checklist
+
 ## When To Use Visual Review
 
 Use visual review when the change meaningfully affects any of the following:

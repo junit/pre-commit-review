@@ -136,11 +136,13 @@ A read-only helper script that gathers local repository context for the review w
 - emits a Reducer Finalization Template for final synthesis gates
 - emits a best-effort Dependency Summary for cross-file reduction
 - emits bounded Semantic Context Queries from project-provided read-only grep patterns
+- emits Test Selection Hints for changed test files that look environment-dependent, including common JVM/Spring/Quarkus/Micronaut, Maven/Gradle integration naming, JUnit tags, Testcontainers, Docker Compose, WireMock/MockServer, pytest markers, Playwright/Cypress/Node e2e, Go build tags, Rust ignored/integration tests, and database/cache/broker/search service configuration
 - emits a suggested review queue for large or truncated diffs
 - omits the global raw diff from default output when it exceeds the inline budget, while keeping the structured plan visible
 - truncates explicitly requested or inlined diffs safely when needed
 
 It does not fetch, stage, reset, install, or modify files.
+It does not run, rewrite, or skip tests. Test Selection Hints are read-only guidance for choosing focused verification commands and for distinguishing sandbox failures from code failures. A `no-known-env-heavy-marker` hint is not proof that a test is isolated; it only means the helper did not match a known environment-heavy marker.
 
 The default gateway is plan-first. It always emits the structured control plane before any raw diff, and it may omit the global raw diff to avoid host-side persisted-output truncation. `PRE_COMMIT_REVIEW_INLINE_DIFF_BYTES` (default `60000`) controls when the default gateway inlines the global diff. `PRE_COMMIT_REVIEW_MAX_DIFF_BYTES` (default `200000`) controls truncation for a diff that is actually emitted; use `0` only when printing the full diff is safe.
 
@@ -158,8 +160,9 @@ The entrypoint wrapper `scripts/collect_diff_context.sh` supports multiple execu
 - `PRE_COMMIT_REVIEW_HELPER_IMPL`: Specifies the helper implementation mode.
   - `rust` (default): Executes the compiled Rust CLI binary. If it fails, prints a warning to `stderr` and gracefully falls back to the legacy script `collect_diff_context.legacy.sh`.
   - `legacy` or `shell`: Forces execution of the legacy Shell script.
-  - `shadow`: Runs both the legacy Shell script and the Rust binary, compares their stdout, logs any differences to `/tmp/collect_diff_context_shadow_diff.log`, and returns the legacy script's stdout to ensure safety.
+  - `shadow`: Runs both the legacy Shell script and the Rust binary, compares their stdout, warns on mismatches, and returns the legacy script's stdout to ensure safety.
 - `PRE_COMMIT_REVIEW_SHADOW_MODE`: If set to `1`, forces Shadow Mode comparison even when `PRE_COMMIT_REVIEW_HELPER_IMPL` is explicitly set to `legacy` or `shell`.
+- `PRE_COMMIT_REVIEW_SHADOW_DIFF_LOG`: Optional path for writing shadow mismatch diffs. By default, shadow mode does not write diff content to `/tmp`.
 - `PRE_COMMIT_REVIEW_DISABLE_FALLBACK`: If set to `1`, disables the legacy script fallback, strictly propagating Rust CLI process failures.
 
 Use `scripts/collect_diff_context.sh --plan-only` or `--include-diff never` to recover only the structured control plane when a host persisted the original helper output. Use `--include-diff always` only when you explicitly want the global raw diff, still bounded by `PRE_COMMIT_REVIEW_MAX_DIFF_BYTES`.
@@ -169,6 +172,14 @@ Use `scripts/collect_diff_context.sh --source <staged|unstaged|branch> --group <
 Project-specific risk hints can live in `.pre-commit-review/risk-paths` and `.pre-commit-review/risk-content`. Each non-empty, non-comment line is an extended regular expression; matches promote files into high-risk ordering but do not change coverage requirements.
 
 Project-specific semantic context hints can live in `.pre-commit-review/context-queries`. Each non-empty, non-comment line is an extended regular expression executed only through bounded read-only `git grep`; these matches can guide dependency or caller checks but never satisfy review coverage.
+
+Project-specific test selection hints can live in `.pre-commit-review/test-hints`. Each non-comment line is a TSV row:
+
+```text
+rule_id<TAB>path_regex<TAB>content_regex<TAB>test_kind<TAB>environment_dependency<TAB>confidence<TAB>hint
+```
+
+The helper emits the first custom hint whose path or content regex matches a changed test file, ahead of built-in hints. Built-ins cover popular cross-ecosystem conventions, but project-specific config should still be used for local profiles, naming schemes, proprietary test harnesses, and service-backed suites that are not visible from path/content markers alone.
 
 Review-planning tables and `Dependency Summary` use TSV because paths, commands, and dependency details may contain commas.
 
@@ -259,7 +270,7 @@ Defaults:
 
 Useful flags:
 
-- `--copy` copies the skill into the target directory and is the default mode
+- `--copy` copies the minimal runtime skill payload into the target directory and is the default mode
 - `--link` creates a symlink to this repository, which is useful for local development
 - `--project` installs into the agent's project-local skills directory
 - `--dir PATH` overrides the target skills directory

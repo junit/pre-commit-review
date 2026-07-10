@@ -11,6 +11,17 @@ It answers only these questions:
 
 Rendering templates, evidence formatting, visual review matrices, coverage-led workflow, and grading compatibility rules are defined elsewhere.
 
+## Contents
+
+- Verdict Tokens
+- Verdict Definitions
+- Blocking Matrix
+- Normally Non-blocking Matrix
+- How To Decide
+- Special Cases
+- Output Quality Gate
+- Final Check
+
 ## Verdict Tokens
 
 Use exactly one top-level verdict token:

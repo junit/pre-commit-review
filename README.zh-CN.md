@@ -136,11 +136,13 @@
 - 输出 Reducer Finalization Template，用于最终综合门禁
 - 输出 best-effort Dependency Summary，用于跨文件综合
 - 根据项目提供的只读 grep 模式输出有界 Semantic Context Queries
+- 对变更中的测试文件输出 Test Selection Hints，用于识别常见 JVM/Spring/Quarkus/Micronaut、Maven/Gradle 集成测试命名、JUnit tags、Testcontainers、Docker Compose、WireMock/MockServer、pytest markers、Playwright/Cypress/Node e2e、Go build tags、Rust ignored/integration tests，以及数据库/缓存/消息/搜索服务配置等环境依赖测试
 - 为大体积或被截断的 diff 输出建议审查队列
 - 当全局 raw diff 超过 inline 预算时，在默认输出中省略 diff，确保结构化计划始终可见
 - 在显式请求或被内联的 diff 过大时安全截断输出
 
 它不会执行 fetch、stage、reset、install，也不会修改任何文件。
+它不会运行、改写或跳过测试。Test Selection Hints 只是只读提示，用于选择更聚焦的验证命令，并区分沙箱环境失败和代码失败。`no-known-env-heavy-marker` 并不证明测试是隔离单测，只表示 helper 没匹配到已知的重环境标记。
 
 默认 gateway 是 plan-first：始终先输出结构化控制面，再根据预算决定是否输出 raw diff；为了避免宿主将大输出持久化并只返回 preview，默认可能省略全局 raw diff。`PRE_COMMIT_REVIEW_INLINE_DIFF_BYTES`（默认 `60000`）控制默认 gateway 何时内联全局 diff。`PRE_COMMIT_REVIEW_MAX_DIFF_BYTES`（默认 `200000`）只控制已经被选择输出的 diff 如何截断；只有在确认完整 diff 输出安全时才设为 `0`。
 
@@ -158,8 +160,9 @@ Review group 预算默认目标值为 120KB，硬上限为 160KB。可通过 `PR
 - `PRE_COMMIT_REVIEW_HELPER_IMPL`: 指定底层调用的辅助脚本实现模式。
   - `rust` (默认值): 优先执行编译后的 Rust CLI 二进制程序。如果执行失败，会在 `stderr` 打印警告，并**自动无缝降级执行**旧版 Shell 脚本 `collect_diff_context.legacy.sh`。
   - `legacy` 或 `shell`: 强制直接运行旧版 Shell 脚本。
-  - `shadow`: 双路执行模式。同时运行旧版 Shell 脚本和 Rust 二进制程序，比对它们的标准输出，将差异记录至 `/tmp/collect_diff_context_shadow_diff.log` 中。此模式下返回旧版 Shell 的结果以绝对保障生产安全。
+  - `shadow`: 双路执行模式。同时运行旧版 Shell 脚本和 Rust 二进制程序，比对它们的标准输出，并在不一致时告警。此模式下返回旧版 Shell 的结果以保障生产安全。
 - `PRE_COMMIT_REVIEW_SHADOW_MODE`: 设为 `1` 时会强制开启上述 `shadow` 双路比对模式，即使 `PRE_COMMIT_REVIEW_HELPER_IMPL` 被显式设为 `legacy` 或 `shell` 也一样。
+- `PRE_COMMIT_REVIEW_SHADOW_DIFF_LOG`: 可选的 shadow mismatch diff 日志路径。默认 shadow mode 不会把 diff 内容写入 `/tmp`。
 - `PRE_COMMIT_REVIEW_DISABLE_FALLBACK`: 设为 `1` 时禁用 Rust 失败降级机制，直接透传 Rust 程序的异常和退出码（用于测试与 CI）。
 
 当宿主把 helper 输出持久化、只返回 preview 时，可用 `scripts/collect_diff_context.sh --plan-only` 或 `--include-diff never` 重新获取结构化控制面。只有明确需要全局 raw diff 时才使用 `--include-diff always`；它仍受 `PRE_COMMIT_REVIEW_MAX_DIFF_BYTES` 限制。
@@ -169,6 +172,14 @@ Review group 预算默认目标值为 120KB，硬上限为 160KB。可通过 `PR
 项目级风险提示可以放在 `.pre-commit-review/risk-paths` 和 `.pre-commit-review/risk-content`。每个非空、非注释行都是一个扩展正则表达式；匹配项只会提升到 high-risk 审查顺序，不会改变覆盖要求。
 
 项目级语义上下文提示可以放在 `.pre-commit-review/context-queries`。每个非空、非注释行都是一个扩展正则表达式，只会通过有界、只读的 `git grep` 执行；匹配结果可辅助依赖或调用方检查，但永远不能满足审查覆盖。
+
+项目级测试选择提示可以放在 `.pre-commit-review/test-hints`。每个非注释行是一条 TSV 规则：
+
+```text
+rule_id<TAB>path_regex<TAB>content_regex<TAB>test_kind<TAB>environment_dependency<TAB>confidence<TAB>hint
+```
+
+helper 会优先输出第一条路径或内容正则匹配变更测试文件的自定义提示，再回退到内置提示。内置规则覆盖热门跨生态约定，但项目级配置仍应用于本地 profile、命名约定、私有测试框架，以及无法仅从路径/内容标记稳定识别的服务依赖测试套件。
 
 Review-planning 表和 `Dependency Summary` 使用 TSV，因为路径、命令和依赖详情中可能包含逗号。
 
@@ -259,7 +270,7 @@ Reducer 和 subagent 自动化应优先使用 `Review Plan JSON`、`Review Manif
 
 常用参数：
 
-- `--copy` 把 skill 复制到目标目录，默认就是这个模式
+- `--copy` 只把最小运行时 skill payload 复制到目标目录，默认就是这个模式
 - `--link` 把当前仓库以符号链接形式安装过去，适合本地开发
 - `--project` 安装到该 agent 的项目级 skills 目录
 - `--dir PATH` 手动指定目标 skills 目录

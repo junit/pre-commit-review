@@ -2,7 +2,7 @@ use regex::Regex;
 use serde::Serialize;
 use std::collections::{HashMap, HashSet};
 use std::env;
-use std::fs::File;
+use std::fs::{self, File};
 use std::io::{BufRead, BufReader};
 use std::path::{Path, PathBuf};
 use std::process::Command;
@@ -690,6 +690,557 @@ fn git_run_diff_string(
 ) -> Result<String, AppError> {
     let bytes = git_run_diff_bytes(mode, selected_ref, extra_args, path, cwd)?;
     Ok(String::from_utf8_lossy(&bytes).into_owned())
+}
+
+fn git_show_ref_bytes(refspec: &str, cwd: &str) -> Option<Vec<u8>> {
+    let output = Command::new("git")
+        .args(["show", refspec])
+        .current_dir(cwd)
+        .output()
+        .ok()?;
+    if output.status.success() {
+        Some(output.stdout)
+    } else {
+        None
+    }
+}
+
+fn file_content_for_diff_source(
+    mode: &str,
+    _selected_ref: &str,
+    path: &str,
+    repo_root: &str,
+) -> String {
+    let refspec;
+    let bytes = match mode {
+        "staged" => {
+            refspec = format!(":{}", path);
+            git_show_ref_bytes(&refspec, repo_root)
+        }
+        "branch" => {
+            refspec = format!("HEAD:{}", path);
+            git_show_ref_bytes(&refspec, repo_root)
+        }
+        "unstaged" => fs::read(Path::new(repo_root).join(path)).ok(),
+        _ => None,
+    }
+    .or_else(|| fs::read(Path::new(repo_root).join(path)).ok())
+    .unwrap_or_default();
+
+    String::from_utf8_lossy(&bytes).into_owned()
+}
+
+fn is_test_like_path(path: &str) -> bool {
+    let lower = path.to_ascii_lowercase();
+    lower.starts_with("test/")
+        || lower.starts_with("tests/")
+        || lower.starts_with("e2e/")
+        || lower.starts_with("cypress/")
+        || lower.starts_with("playwright/")
+        || lower.starts_with("src/test/")
+        || lower.contains("/test/")
+        || lower.contains("/tests/")
+        || lower.contains("/e2e/")
+        || lower.contains("/cypress/")
+        || lower.contains("/playwright/")
+        || lower.contains("/__tests__/")
+        || lower.contains("/src/test/")
+        || lower.contains("/src/it/")
+        || lower.contains("/src/integrationtest/")
+        || lower.contains("/src/integration-test/")
+        || lower.ends_with("test.java")
+        || lower.ends_with("tests.java")
+        || lower.ends_with("it.java")
+        || lower.ends_with("itcase.java")
+        || lower.ends_with("integrationtest.java")
+        || lower.ends_with("spec.java")
+        || lower.ends_with("test.kt")
+        || lower.ends_with("tests.kt")
+        || lower.ends_with("it.kt")
+        || lower.ends_with("itcase.kt")
+        || lower.ends_with("integrationtest.kt")
+        || lower.ends_with("spec.kt")
+        || lower.ends_with("test.groovy")
+        || lower.ends_with("spec.groovy")
+        || lower.ends_with("it.groovy")
+        || lower.ends_with("integrationtest.groovy")
+        || lower.ends_with("test.scala")
+        || lower.ends_with("spec.scala")
+        || lower.ends_with("it.scala")
+        || lower.ends_with("integrationtest.scala")
+        || lower.ends_with("test.ts")
+        || lower.ends_with("spec.ts")
+        || lower.ends_with("e2e.ts")
+        || lower.ends_with("cy.ts")
+        || lower.ends_with("test.tsx")
+        || lower.ends_with("spec.tsx")
+        || lower.ends_with("e2e.tsx")
+        || lower.ends_with("cy.tsx")
+        || lower.ends_with("test.js")
+        || lower.ends_with("spec.js")
+        || lower.ends_with("e2e.js")
+        || lower.ends_with("cy.js")
+        || lower.ends_with("test.jsx")
+        || lower.ends_with("spec.jsx")
+        || lower.ends_with("e2e.jsx")
+        || lower.ends_with("cy.jsx")
+        || lower.ends_with("_test.go")
+        || lower.ends_with("_test.py")
+        || lower.ends_with(".spec.py")
+        || lower.starts_with("test_")
+        || lower.contains("/test_")
+}
+
+fn configured_test_hint_for_path(
+    path: &str,
+    content: &str,
+    repo_root: &str,
+) -> Option<[String; 5]> {
+    let hints_path = Path::new(repo_root).join(".pre-commit-review/test-hints");
+    let file = File::open(hints_path).ok()?;
+    let reader = BufReader::new(file);
+    for line_result in reader.lines() {
+        let line = line_result.ok()?;
+        let trimmed = line.trim();
+        if trimmed.is_empty() || trimmed.starts_with('#') {
+            continue;
+        }
+        let parts: Vec<&str> = line.split('\t').collect();
+        if parts.len() < 7 {
+            continue;
+        }
+        let rule_id = parts[0].trim();
+        let path_regex = parts[1].trim();
+        let content_regex = parts[2].trim();
+        let test_kind = parts[3].trim();
+        let dependency = parts[4].trim();
+        let confidence = parts[5].trim();
+        let hint = parts[6..].join(" ").trim().to_string();
+
+        if rule_id.is_empty()
+            || test_kind.is_empty()
+            || dependency.is_empty()
+            || confidence.is_empty()
+            || hint.is_empty()
+        {
+            continue;
+        }
+
+        let path_match = !path_regex.is_empty()
+            && Regex::new(path_regex)
+                .map(|re| re.is_match(path))
+                .unwrap_or(false);
+        let content_match = !content_regex.is_empty()
+            && Regex::new(content_regex)
+                .map(|re| re.is_match(content))
+                .unwrap_or(false);
+        if path_match || content_match {
+            return Some([
+                rule_id.to_string(),
+                confidence.to_string(),
+                test_kind.to_string(),
+                dependency.to_string(),
+                hint,
+            ]);
+        }
+    }
+    None
+}
+
+fn contains_any(haystack: &str, needles: &[&str]) -> bool {
+    needles.iter().any(|needle| haystack.contains(needle))
+}
+
+fn path_indicates_jvm_integration(lower_path: &str) -> bool {
+    lower_path.contains("/src/it/")
+        || lower_path.contains("/src/integrationtest/")
+        || lower_path.contains("/src/integration-test/")
+        || lower_path.ends_with("it.java")
+        || lower_path.ends_with("itcase.java")
+        || lower_path.ends_with("integrationtest.java")
+        || lower_path.ends_with("it.kt")
+        || lower_path.ends_with("itcase.kt")
+        || lower_path.ends_with("integrationtest.kt")
+        || lower_path.ends_with("it.groovy")
+        || lower_path.ends_with("integrationtest.groovy")
+        || lower_path.ends_with("it.scala")
+        || lower_path.ends_with("integrationtest.scala")
+}
+
+fn classify_test_hint(
+    path: &str,
+    content: &str,
+) -> (
+    &'static str,
+    &'static str,
+    &'static str,
+    &'static str,
+    &'static str,
+) {
+    let lower_path = path.to_ascii_lowercase();
+    let lower_content = content.to_ascii_lowercase();
+
+    if contains_any(
+        &lower_content,
+        &[
+            "org.testcontainers",
+            "@testcontainers",
+            "@container",
+            "testcontainers-go",
+        ],
+    ) {
+        (
+            "testcontainers",
+            "high",
+            "container-integration",
+            "docker-or-testcontainers",
+            "Requires Docker/Testcontainers; do not treat failure in a sandbox as a pure code failure without environment evidence.",
+        )
+    } else if contains_any(
+        &lower_content,
+        &[
+            "dockercomposecontainer",
+            "docker-compose",
+            "docker compose",
+            "compose.yml",
+            "compose.yaml",
+        ],
+    ) {
+        (
+            "docker-compose-test",
+            "high",
+            "compose-backed-integration",
+            "docker-compose-runtime",
+            "Uses Docker Compose or compose-backed services; verify in an environment with Docker and required service images.",
+        )
+    } else if contains_any(
+        &lower_content,
+        &[
+            "wiremockserver",
+            "wiremockextension",
+            "@autoconfigurewiremock",
+            "com.github.tomakehurst.wiremock",
+            "wiremock.org",
+        ],
+    ) {
+        (
+            "wiremock-test",
+            "high",
+            "http-stub-integration",
+            "wiremock-runtime",
+            "Uses WireMock HTTP stubs; sandbox failures may reflect port/runtime setup rather than the changed code.",
+        )
+    } else if contains_any(
+        &lower_content,
+        &["org.mockserver", "mockservercontainer", "clientandserver"],
+    ) {
+        (
+            "mockserver-test",
+            "high",
+            "http-stub-integration",
+            "mockserver-runtime",
+            "Uses MockServer or its container runtime; verify with the required local or CI service setup.",
+        )
+    } else if contains_any(
+        &lower_content,
+        &[
+            "@autoconfigurestubrunner",
+            "stubrunner",
+            "spring-cloud-contract",
+            "org.springframework.cloud.contract",
+        ],
+    ) {
+        (
+            "spring-cloud-contract",
+            "high",
+            "contract-integration",
+            "spring-cloud-contract-runtime",
+            "Uses Spring Cloud Contract or Stub Runner; may require generated stubs, broker settings, or CI contract artifacts.",
+        )
+    } else if contains_any(
+        &lower_content,
+        &[
+            "jdbc:",
+            "r2dbc:",
+            "spring.datasource.url",
+            "datasource.url",
+            "postgresql",
+            "mysql",
+            "mariadb",
+            "oracle.jdbc",
+            "mongodb://",
+            "redis://",
+            "spring.redis",
+            "spring.data.redis",
+            "kafka.bootstrap",
+            "bootstrap.servers",
+            "spring.kafka",
+            "elasticsearch",
+            "opensearch",
+            "rabbitmq",
+            "amqp://",
+            "localstack",
+            "minio",
+        ],
+    ) {
+        (
+            "external-service-config",
+            "high",
+            "service-backed-integration",
+            "database-cache-broker-or-search-service",
+            "References database, cache, broker, search, or object-storage service configuration; run with the expected local profile or CI services.",
+        )
+    } else if contains_any(
+        &lower_content,
+        &["@quarkustest", "@quarkusintegrationtest", "io.quarkus.test"],
+    ) {
+        (
+            "quarkus-test-context",
+            "high",
+            "quarkus-integration",
+            "quarkus-test-runtime",
+            "Loads a Quarkus test context; may require Quarkus profiles, dev services, containers, or CI runtime support.",
+        )
+    } else if contains_any(&lower_content, &["@micronauttest", "io.micronaut.test"]) {
+        (
+            "micronaut-test-context",
+            "high",
+            "micronaut-integration",
+            "micronaut-test-runtime",
+            "Loads a Micronaut test context; may require application context configuration or service-backed test resources.",
+        )
+    } else if content.contains("@SpringBootTest") {
+        (
+            "spring-boot-context",
+            "high",
+            "spring-boot-integration",
+            "spring-context",
+            "Loads a Spring Boot application context; may require local profiles, DB, middleware, or CI-provided services.",
+        )
+    } else if content.contains("@DataJpaTest")
+        || content.contains("@JdbcTest")
+        || content.contains("@JooqTest")
+        || content.contains("@MybatisTest")
+    {
+        (
+            "spring-data-slice",
+            "high",
+            "data-slice-integration",
+            "database-or-spring-test-slice",
+            "Loads a data test slice; may require an embedded or configured database.",
+        )
+    } else if content.contains("@WebMvcTest") || content.contains("@AutoConfigureMockMvc") {
+        (
+            "spring-web-slice",
+            "high",
+            "spring-web-slice",
+            "spring-test-context",
+            "Loads a Spring web test slice; usually narrower than full integration but not a pure unit test.",
+        )
+    } else if contains_any(
+        &lower_content,
+        &[
+            "@activeprofiles",
+            "spring_profiles_active",
+            "quarkus.test.profile",
+            "micronaut.environments",
+        ],
+    ) {
+        (
+            "jvm-test-profile",
+            "high",
+            "profile-backed-test",
+            "maven-gradle-or-framework-profile",
+            "Selects framework test profiles or environments; use the matching Maven/Gradle profile or CI profile configuration.",
+        )
+    } else if contains_any(
+        &lower_content,
+        &[
+            "@tag(\"integration\")",
+            "@tag(\"e2e\")",
+            "@tag(\"contract\")",
+            "@tag(\"slow\")",
+            "@category(integrationtest",
+            "@category(e2etest",
+        ],
+    ) {
+        (
+            "junit-integration-tag",
+            "high",
+            "tagged-jvm-integration",
+            "junit-tag-or-category-selection",
+            "Uses JUnit integration/e2e/contract tags; run with the tag expression and environment expected by the project.",
+        )
+    } else if path_indicates_jvm_integration(&lower_path) {
+        (
+            "jvm-integration-naming",
+            "medium",
+            "jvm-integration-by-convention",
+            "maven-failsafe-or-gradle-integration-profile",
+            "Path or class name follows common JVM integration-test conventions such as *IT or src/integrationTest; run the project integration-test profile if available.",
+        )
+    } else if contains_any(
+        &lower_content,
+        &[
+            "pytest.mark.integration",
+            "pytest.mark.e2e",
+            "pytest.mark.contract",
+            "pytest.mark.system",
+            "pytest.mark.django_db",
+            "pytest.mark.db",
+            "pytest.mark.redis",
+            "pytest.mark.kafka",
+            "pytest.mark.elasticsearch",
+        ],
+    ) {
+        (
+            "pytest-env-marker",
+            "high",
+            "pytest-marked-integration",
+            "pytest-marker-or-service-runtime",
+            "Uses pytest markers that usually select integration/e2e/database/service tests; run with the matching marker and required services.",
+        )
+    } else if contains_any(&lower_content, &["@playwright/test", "playwright/test"])
+        || lower_path.ends_with(".pw.ts")
+        || lower_path.ends_with(".pw.js")
+    {
+        (
+            "playwright-e2e",
+            "high",
+            "browser-e2e",
+            "browser-runtime-and-app-server",
+            "Uses Playwright; requires browser runtime and usually a running app server or configured webServer.",
+        )
+    } else if lower_path.contains("/cypress/")
+        || lower_path.ends_with(".cy.ts")
+        || lower_path.ends_with(".cy.tsx")
+        || lower_path.ends_with(".cy.js")
+        || lower_path.ends_with(".cy.jsx")
+        || contains_any(&lower_content, &["cy.visit(", "cypress."])
+    {
+        (
+            "cypress-e2e",
+            "high",
+            "browser-e2e",
+            "browser-runtime-and-app-server",
+            "Uses Cypress; requires browser runtime and usually a running app server.",
+        )
+    } else if (lower_path.contains("/e2e/")
+        || lower_path.contains(".e2e.")
+        || lower_path.contains("/integration/"))
+        && contains_any(&lower_content, &["vitest", "jest", "describe(", "test("])
+    {
+        (
+            "node-e2e-or-integration",
+            "medium",
+            "node-e2e-or-integration",
+            "node-runtime-and-possibly-app-server",
+            "Path/content follows common Node e2e or integration-test conventions; verify with the project test script and required runtime services.",
+        )
+    } else if contains_any(
+        &lower_content,
+        &[
+            "//go:build integration",
+            "//go:build e2e",
+            "//go:build docker",
+            "// +build integration",
+            "// +build e2e",
+            "// +build docker",
+        ],
+    ) {
+        (
+            "go-integration-build-tag",
+            "high",
+            "go-tagged-integration",
+            "go-build-tags-and-service-runtime",
+            "Uses Go integration/e2e/docker build tags; run go test with the matching tags and required services.",
+        )
+    } else if lower_path.ends_with("_test.go")
+        && (lower_path.contains("integration") || lower_path.contains("/e2e/"))
+    {
+        (
+            "go-integration-naming",
+            "medium",
+            "go-integration-by-convention",
+            "go-test-selection-or-service-runtime",
+            "Go test path suggests integration coverage; check project docs for tags, env vars, or service dependencies.",
+        )
+    } else if lower_content.contains("#[ignore]") {
+        (
+            "rust-ignored-test",
+            "medium",
+            "rust-ignored-or-slow-test",
+            "cargo-test-ignored-selection",
+            "Rust ignored tests are not run by default and often need explicit `cargo test -- --ignored` plus external setup.",
+        )
+    } else if lower_path.ends_with(".rs")
+        && (lower_path.starts_with("tests/")
+            || lower_path.contains("/tests/")
+            || lower_path.contains("/integration/"))
+    {
+        (
+            "rust-integration-path",
+            "low",
+            "rust-integration-by-convention",
+            "cargo-test-selection-or-project-specific-runtime",
+            "Rust test path follows Cargo integration-test layout; treat as a planning hint and verify whether external setup is required.",
+        )
+    } else {
+        (
+            "no-known-env-heavy-marker",
+            "low",
+            "unit-or-unknown",
+            "not-proven-isolated",
+            "No known env-heavy marker detected; this is not proof of unit-test isolation. Prefer the narrowest focused test command for this file.",
+        )
+    }
+}
+
+fn emit_test_selection_hints(
+    name_status_entries: &[NameStatusEntry],
+    mode: &str,
+    selected_ref: &str,
+    repo_root: &str,
+) {
+    println!("## Test Selection Hints");
+    println!("path\trule_id\tconfidence\ttest_kind\tenvironment_dependency\thint");
+    let mut emitted = false;
+    for entry in name_status_entries {
+        let path = &entry.path;
+        if !is_test_like_path(path) {
+            continue;
+        }
+        let content = file_content_for_diff_source(mode, selected_ref, path, repo_root);
+        if let Some([rule_id, confidence, kind, dependency, hint]) =
+            configured_test_hint_for_path(path, &content, repo_root)
+        {
+            println!(
+                "{}\t{}\t{}\t{}\t{}\t{}",
+                sanitize_tsv_field(path),
+                sanitize_tsv_field(&rule_id),
+                sanitize_tsv_field(&confidence),
+                sanitize_tsv_field(&kind),
+                sanitize_tsv_field(&dependency),
+                sanitize_tsv_field(&hint)
+            );
+            emitted = true;
+            continue;
+        }
+        let (rule_id, confidence, kind, dependency, hint) = classify_test_hint(path, &content);
+        println!(
+            "{}\t{}\t{}\t{}\t{}\t{}",
+            sanitize_tsv_field(path),
+            sanitize_tsv_field(rule_id),
+            sanitize_tsv_field(confidence),
+            sanitize_tsv_field(kind),
+            sanitize_tsv_field(dependency),
+            sanitize_tsv_field(hint)
+        );
+        emitted = true;
+    }
+    if !emitted {
+        println!("none\tnone\tnone\tnone\tnone\tno changed test files detected");
+    }
 }
 
 // Thread-Safe OnceLock Classifiers for Tier-1 Quality
@@ -2739,6 +3290,9 @@ fn run_app() -> Result<(), AppError> {
             }
         }
     }
+    println!();
+
+    emit_test_selection_hints(&name_status_entries, mode, &selected_ref, &repo_root);
     println!();
 
     // Suggested Review Queue

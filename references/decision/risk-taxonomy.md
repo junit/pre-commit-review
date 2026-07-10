@@ -11,6 +11,18 @@ It answers only these questions:
 
 Verdict selection rules, rendering templates, visual review layout, coverage-led workflow, and grading compatibility are defined elsewhere.
 
+## Contents
+
+- Finding Markers
+- Marker Selection Rule
+- Tally Rules
+- Required Finding Structure
+- Evidence Rules
+- Evidence Discipline
+- Scope and Confidence Interaction
+- Performance and Release Escalation
+- Final Selection Checklist
+
 ## Finding Markers
 
 Each priority finding must use exactly one primary marker.
@@ -304,13 +316,26 @@ Do not output a priority finding when:
 - the supporting evidence is absent
 - the concern depends entirely on unknown business rules
 - the problem could equally plausibly be intentional and harmless
+- the concern is only a clean-code smell with no demonstrated behavior, contract, release, performance, security, data, or testing impact
+
+Do not treat "priority finding" as a synonym for "blocker." Non-blocking issues with concrete runtime, security, data, compatibility, operational, or testing impact can still be priority findings. Use the verdict and the optional blocking-reason line to communicate whether the issue blocks commit.
+
+Do not use the clean-code-smell exclusion for verified boundary or contract failures. A concern remains a priority-threshold candidate when the evidence shows:
+
+- an empty, null, missing, stale, malformed, or environment-specific boundary value can create a broken externally observable value, operation target, artifact reference, or persisted state
+- an ignored caller intent, validation, mode, guard, or safety input can bypass side-effect protection, access control, isolation, preview/simulation behavior, rollback, or retention semantics
+- a safety helper leaves a reachable TOCTOU gap such as DNS rebinding, redirect target drift, or post-validation connection drift
+- a state, data, artifact, or configuration operation can silently invalidate live references, derived behavior, downstream consumers, or future recomputation
 
 In those cases, use one of:
 
 - review limitation
 - suggested verification
 - domain confirmation needed
+- follow-up cleanup
 - non-priority supporting analysis
+
+Non-priority does not mean invisible. If a verified or plausible material concern is not selected as a priority finding, give it a visible home in suggested verification, follow-up/domain confirmation, review limitation, or another normal report section. Omit only when the concern was disproven or is low-confidence speculation that would not help the commit decision.
 
 ## Scope and Confidence Interaction
 
@@ -349,3 +374,5 @@ Before finalizing the findings list, verify:
 - findings were merged only when the underlying risks share the same affected object, trigger condition, failure mode, root cause, and corrective action
 - tally counts match the final set of findings
 - speculative concerns have not been overstated as priority findings
+- no runtime boundary failure, ignored contract parameter, side-effect validation gap, security TOCTOU residual, or material review-scope gap was removed merely to make the report shorter
+- every material candidate omitted from priority findings has a visible non-priority disposition unless it was disproven or low-confidence speculation

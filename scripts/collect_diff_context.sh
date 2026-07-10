@@ -90,8 +90,7 @@ run_legacy() {
 # Run Rust implementation
 run_rust_only() {
   local bin
-  bin="$(get_rust_binary)"
-  if [ $? -ne 0 ] || [ -z "$bin" ]; then
+  if ! bin="$(get_rust_binary)" || [ -z "$bin" ]; then
     echo "Warning: Rust binary not found and cargo build failed. Falling back to legacy shell script..." >&2
     run_legacy "$@"
   fi
@@ -102,8 +101,7 @@ run_rust_only() {
 # Run Rust implementation with fallback to legacy on failure
 run_rust_with_fallback() {
   local bin
-  bin="$(get_rust_binary)"
-  if [ $? -ne 0 ] || [ -z "$bin" ]; then
+  if ! bin="$(get_rust_binary)" || [ -z "$bin" ]; then
     echo "Warning: Rust binary not found. Falling back to legacy shell script..." >&2
     run_legacy "$@"
   fi
@@ -141,8 +139,7 @@ run_rust_with_fallback() {
 # Run in shadow comparison mode
 run_shadow() {
   local bin
-  bin="$(get_rust_binary)"
-  if [ $? -ne 0 ] || [ -z "$bin" ]; then
+  if ! bin="$(get_rust_binary)" || [ -z "$bin" ]; then
     echo "Warning: Rust binary not found for shadow mode. Running legacy shell script only..." >&2
     run_legacy "$@"
   fi
@@ -172,12 +169,19 @@ run_shadow() {
   # Compare outputs
   if ! diff -u "$legacy_out" "$rust_out" > /dev/null 2>&1; then
     echo "Warning: [Shadow Mode] Output mismatch detected between legacy shell and Rust implementation!" >&2
-    # Optional: log the diff
-    local diff_log="/tmp/collect_diff_context_shadow_diff.log"
-    echo "=== DIFF MISMATCH ON $(date) ===" >> "$diff_log"
-    printf 'Args: %s\n' "$*" >> "$diff_log"
-    diff -u "$legacy_out" "$rust_out" >> "$diff_log" 2>&1 || true
-    echo "================================" >> "$diff_log"
+    if [ -n "${PRE_COMMIT_REVIEW_SHADOW_DIFF_LOG:-}" ]; then
+      local diff_log="$PRE_COMMIT_REVIEW_SHADOW_DIFF_LOG"
+      {
+        echo "=== DIFF MISMATCH ON $(date) ==="
+        printf 'Args: %s\n' "$*"
+        diff -u "$legacy_out" "$rust_out" || true
+        echo "================================"
+      } >> "$diff_log" 2>/dev/null || {
+        printf 'Warning: [Shadow Mode] Could not write diff log to %s\n' "$diff_log" >&2
+      }
+    else
+      echo "Warning: [Shadow Mode] Diff logging is disabled by default; set PRE_COMMIT_REVIEW_SHADOW_DIFF_LOG to a local path if you need mismatch details." >&2
+    fi
   fi
 
   if [ $legacy_exit -ne $rust_exit ]; then

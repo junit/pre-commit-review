@@ -20,7 +20,7 @@ Usage:
 
 Options:
   --agent NAME  Agent id to install for
-  --copy       Copy this repository into the target skills directory (default)
+  --copy       Copy the minimal runtime skill payload into the target skills directory (default)
   --link       Symlink this repository into the target skills directory
   --project    Install to the agent's project-local skills directory
   --dir PATH   Override the target skills directory
@@ -279,7 +279,7 @@ copy_payload() {
   local staging_dir="${target}.tmp.$$"
 
   if [ "$dry_run" = 'yes' ]; then
-    log "DRY RUN copy $source_dir -> $target"
+    log "DRY RUN copy runtime payload $source_dir -> $target"
     return 0
   fi
 
@@ -287,10 +287,7 @@ copy_payload() {
   mkdir -p "$staging_dir"
 
   cp "$source_dir/SKILL.md" "$staging_dir/"
-  cp "$source_dir/README.md" "$staging_dir/"
-  cp "$source_dir/README.zh-CN.md" "$staging_dir/"
   cp "$source_dir/LICENSE" "$staging_dir/"
-  cp "$source_dir/install.sh" "$staging_dir/"
   cp -R "$source_dir/agents" "$staging_dir/"
   cp -R "$source_dir/references" "$staging_dir/"
   cp -R "$source_dir/scripts" "$staging_dir/"
