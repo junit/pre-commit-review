@@ -95,8 +95,22 @@ grep -Fq 'Resolve this path relative to the skill package directory containing t
   || fail 'SKILL.md must disambiguate the helper path relative to the skill package'
 grep -Fq 'This is a mandatory gateway. Attempt the helper before any direct `git status`, `git diff`, `git diff --cached`, or branch comparison command.' "$skill_file" \
   || fail 'SKILL.md must require the helper before direct Git inspection'
-grep -Fq 'Only fall back to direct Git inspection when the helper is unavailable at that resolved path, exits non-zero, cannot be executed in the current host, or the user already provided the review material explicitly.' "$skill_file" \
+grep -Fq 'Only fall back to direct Git inspection when the helper is unavailable at that resolved path, exits non-zero without structured output, cannot be executed in the current host, or the user already provided the review material explicitly.' "$skill_file" \
   || fail 'SKILL.md must bound direct Git fallback to explicit helper-unavailable scenarios'
+grep -Fq 'scripts/collect_diff_context.sh --control-plane' "$skill_file" \
+  || fail 'SKILL.md must use the bounded control-plane gateway'
+grep -Fq '`--expect-scope <scope_fingerprint>`' "$skill_file" \
+  || fail 'SKILL.md must pin group/path retrieval to the opening scope fingerprint'
+grep -Fq 'Any mismatch invalidates the old coverage ledger' "$skill_file" \
+  || fail 'SKILL.md must invalidate coverage when the final snapshot drifts'
+grep -Fq 'Treat verification as read-only with respect to the reviewed repository:' "$skill_file" \
+  || fail 'SKILL.md must guard the business repository against verification writes'
+grep -Fq 'Before emitting the report, perform a format and consistency audit against the loaded template' "$skill_file" \
+  || fail 'SKILL.md must audit the selected output template before the verdict'
+grep -Fq 'authoritative `Review Control Plane JSON`' "$advanced_coverage_file" \
+  || fail 'coverage-led review must prefer the authoritative compact control plane'
+grep -Fq 'the opening and final authoritative scope fingerprints match' "$advanced_coverage_file" \
+  || fail 'coverage-led review must revalidate the final snapshot'
 grep -Fq 'Treat candidate risks as independent by default when they differ in affected object, trigger condition, failure mode, or required fix.' "$skill_file" \
   || fail 'SKILL.md must define independent candidate risk enumeration'
 grep -Fq 'Execution summaries, commit guidance, and risk summaries cannot replace a priority finding entry.' "$skill_file" \

@@ -117,6 +117,9 @@ Defines the skill itself:
 
 A read-only helper script that gathers local repository context for the review workflow. It:
 
+- emits a compact `--control-plane` JSON gateway with an authoritative full-scope content fingerprint, per-unit fingerprints, bounded units/groups, work order, and reusable command templates
+- supports `--expect-scope <fingerprint>` on follow-up retrieval so stale group/path output fails closed
+- disables external diff and textconv drivers for both fingerprints and emitted review bytes, keeping snapshot identity and inspected content semantically aligned
 - detects whether the current directory is a Git repository
 - prefers staged changes when present
 - falls back to unstaged changes or branch-vs-base comparison
@@ -144,7 +147,7 @@ A read-only helper script that gathers local repository context for the review w
 It does not fetch, stage, reset, install, or modify files.
 It does not run, rewrite, or skip tests. Test Selection Hints are read-only guidance for choosing focused verification commands and for distinguishing sandbox failures from code failures. A `no-known-env-heavy-marker` hint is not proof that a test is isolated; it only means the helper did not match a known environment-heavy marker.
 
-The default gateway is plan-first. It always emits the structured control plane before any raw diff, and it may omit the global raw diff to avoid host-side persisted-output truncation. `PRE_COMMIT_REVIEW_INLINE_DIFF_BYTES` (default `60000`) controls when the default gateway inlines the global diff. `PRE_COMMIT_REVIEW_MAX_DIFF_BYTES` (default `200000`) controls truncation for a diff that is actually emitted; use `0` only when printing the full diff is safe.
+The review workflow starts with `scripts/collect_diff_context.sh --control-plane`. This bounded gateway emits no raw diff and is authoritative only when its collection-start and collection-end fingerprints match. The legacy default output remains plan-first and may omit the global raw diff. `PRE_COMMIT_REVIEW_INLINE_DIFF_BYTES` (default `60000`) controls when that default output inlines the global diff. `PRE_COMMIT_REVIEW_MAX_DIFF_BYTES` (default `200000`) controls truncation for a diff that is actually emitted; use `0` only when printing the full diff is safe.
 
 The default budgets are intentionally conservative even when the selected model advertises a 200K+ context window. CLI hosts can persist or preview large tool stdout before it ever reaches the model, long raw diffs increase latency and multi-turn token cost, and broad diffs can reduce review focus. Treat the defaults as a stable cross-host baseline rather than a model-context maximum.
 
@@ -167,7 +170,7 @@ The entrypoint wrapper `scripts/collect_diff_context.sh` supports multiple execu
 
 Use `scripts/collect_diff_context.sh --plan-only` or `--include-diff never` to recover only the structured control plane when a host persisted the original helper output. Use `--include-diff always` only when you explicitly want the global raw diff, still bounded by `PRE_COMMIT_REVIEW_MAX_DIFF_BYTES`.
 
-Use `scripts/collect_diff_context.sh --source <staged|unstaged|branch> --group <group_id>` to retrieve one in-budget review group's diff after a global diff is omitted or truncated. Use `--path <path>` for file-level follow-up when a group needs narrower context or has been split. Helper-emitted `context_command` values include `--source` so follow-up retrieval stays pinned to the original diff source; `split-required` groups must be reviewed through split suggestions instead of as one group.
+Use `scripts/collect_diff_context.sh --source <staged|unstaged|branch> --group <group_id> --expect-scope <fingerprint>` to retrieve one in-budget review group's diff after opening the control plane. Use `--path <path>` with the same fingerprint for file-level follow-up when a group needs narrower context or has been split. Rerun `--control-plane` before the verdict; snapshot drift invalidates the old ledger instead of being merged into a false complete review. `split-required` groups must be reviewed through bounded replacements instead of as one group.
 
 Project-specific risk hints can live in `.pre-commit-review/risk-paths` and `.pre-commit-review/risk-content`. Each non-empty, non-comment line is an extended regular expression; matches promote files into high-risk ordering but do not change coverage requirements.
 
@@ -183,11 +186,11 @@ The helper emits the first custom hint whose path or content regex matches a cha
 
 Review-planning tables and `Dependency Summary` use TSV because paths, commands, and dependency details may contain commas.
 
-Reducer and subagent automation should prefer `Review Plan JSON`, `Review Manifest JSONL`, `Coverage Ledger Template`, `Reducer State Snapshot Template`, and JSONL sections when present; TSV tables are primarily for human scanning. Automation must not reconstruct scope from direct `git status` or `git diff --name-only` after the helper has emitted a manifest.
+Reducer and subagent automation should prefer authoritative `Review Control Plane JSON`; the older Review Plan/Manifest/Ledger sections remain compatibility output. TSV tables are primarily for human scanning. Automation must not reconstruct scope from direct `git status` or `git diff --name-only` after the helper has emitted a manifest.
 
 ### `tests/`
 
-Deterministic shell tests with no model dependency. `skill_contract_test.sh` pins the cross-document contract between `SKILL.md` and `references/` (forbidden placeholders, required labels, the untranslatable `VERDICT` field). `collect_diff_context_test.sh` and `full_review_workflow_test.sh` exercise the helper script against temporary real Git repositories. `parity_golden_test.sh` reuses shared parity fixtures plus a dedicated normalizer to keep legacy-vs-Rust comparisons stable. `install_smoke_test.sh` and `install_agent_matrix_test.sh` verify the installer across copy/link/dry-run modes and the supported agent matrix. All of them run with plain `bash` and `jq`, never call a model, and are safe in CI.
+Deterministic shell tests with no model dependency. `skill_contract_test.sh` pins the cross-document contract between `SKILL.md` and `references/` (forbidden placeholders, required labels, the untranslatable `VERDICT` field). `collect_diff_context_test.sh`, `control_plane_test.sh`, and `full_review_workflow_test.sh` exercise normal output, authoritative snapshot pinning/drift failure, schemas, and full reduction against temporary real Git repositories. `parity_golden_test.sh` reuses shared parity fixtures plus a dedicated normalizer to keep legacy-vs-Rust comparisons stable. `install_smoke_test.sh` and `install_agent_matrix_test.sh` verify the installer across copy/link/dry-run modes and the supported agent matrix. All of them avoid model calls and are safe in CI.
 
 ### `evals/`
 

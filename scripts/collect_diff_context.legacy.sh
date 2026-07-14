@@ -79,23 +79,49 @@ sanitize_tsv() {
 }
 
 shell_quote() {
-  printf '%q' "$1"
+  local value="$1"
+  local quoted=''
+  local char
+  local index
+  if [ -z "$value" ]; then
+    printf "''"
+    return 0
+  fi
+  if [[ "$value" == *$'\t'* || "$value" == *$'\n'* || "$value" == *$'\r'* ]]; then
+    printf '%q' "$value"
+    return 0
+  fi
+  for ((index = 0; index < ${#value}; index += 1)); do
+    char="${value:index:1}"
+    case "$char" in
+      ' '|\\|\'|'"'|'$'|'`'|'&'|'*'|'('|')'|'|'|'<'|'>'|';'|'!'|','|'?'|'['|']'|'{'|'}'|'^'|'~'|'#'|'='|$'\t'|$'\n'|$'\r')
+        quoted="${quoted}\\${char}"
+        ;;
+      *) quoted="${quoted}${char}" ;;
+    esac
+  done
+  printf '%s' "$quoted"
 }
 
 SCRIPT_PATH="${PRE_COMMIT_REVIEW_HELPER_PATH:-$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd -P)/$(basename -- "$0")}"
 REQUEST_PATH=''
 REQUEST_SOURCE=''
 REQUEST_GROUP=''
+CONTROL_PLANE='no'
+EXPECT_SCOPE=''
 INCLUDE_DIFF_MODE="${PRE_COMMIT_REVIEW_INCLUDE_DIFF:-auto}"
 
 usage() {
   cat <<'USAGE'
-Usage: collect_diff_context.sh [--source staged|unstaged|branch] [--path PATH | --group GROUP_ID] [--plan-only | --include-diff auto|never|always]
+Usage: collect_diff_context.sh [--source staged|unstaged|branch] [--control-plane] [--expect-scope FINGERPRINT] [--path PATH | --group GROUP_ID] [--plan-only | --include-diff auto|never|always]
 
 Collect read-only Git diff context for pre-commit review.
 
 Options:
   --source SOURCE  Read from one diff source: staged, unstaged, or branch.
+  --control-plane  Emit bounded authoritative planning JSON without raw diff.
+  --expect-scope FINGERPRINT
+                   Fail closed unless the selected full diff matches this fingerprint.
   --path PATH      Emit file-specific context for one changed path only.
   --group GROUP_ID Emit group-specific context for one review group only.
   --plan-only      Emit only planning metadata for the selected diff source; omit the global raw diff.
@@ -138,6 +164,17 @@ while [ "$#" -gt 0 ]; do
           ;;
       esac
       ;;
+    --control-plane)
+      CONTROL_PLANE='yes'
+      ;;
+    --expect-scope)
+      shift
+      if [ "$#" -eq 0 ]; then
+        echo 'collect_diff_context.sh: --expect-scope requires a value' >&2
+        exit 2
+      fi
+      EXPECT_SCOPE="$1"
+      ;;
     --plan-only)
       INCLUDE_DIFF_MODE='never'
       ;;
@@ -171,6 +208,12 @@ done
 
 if [ -n "$REQUEST_PATH" ] && [ -n "$REQUEST_GROUP" ]; then
   echo 'collect_diff_context.sh: --path and --group are mutually exclusive' >&2
+  usage >&2
+  exit 2
+fi
+
+if [ "$CONTROL_PLANE" = 'yes' ] && { [ -n "$REQUEST_PATH" ] || [ -n "$REQUEST_GROUP" ]; }; then
+  echo 'collect_diff_context.sh: --control-plane cannot be combined with --path or --group' >&2
   usage >&2
   exit 2
 fi
@@ -518,19 +561,30 @@ group_component_for_path() {
   printf '%s\n' "$first"
 }
 
-file_diff_for_path() {
+unquote_path() {
   local path="$1"
+  if [[ "$path" =~ ^\"(.*)\"$ ]]; then
+    path="${BASH_REMATCH[1]}"
+    printf -v path '%b' "$path"
+  fi
+  printf '%s' "$path"
+}
+
+file_diff_for_path() {
+  local path
+  path="$(unquote_path "$1")"
 
   case "$mode" in
-    staged) git -c color.ui=false diff --no-ext-diff --find-renames --cached -- "$path" ;;
-    unstaged) git -c color.ui=false diff --no-ext-diff --find-renames -- "$path" ;;
-    branch) git -c color.ui=false diff --no-ext-diff --find-renames "$selected_ref...HEAD" -- "$path" ;;
+    staged) git -c color.ui=false diff --no-ext-diff --no-textconv --find-renames --cached -- "$path" ;;
+    unstaged) git -c color.ui=false diff --no-ext-diff --no-textconv --find-renames -- "$path" ;;
+    branch) git -c color.ui=false diff --no-ext-diff --no-textconv --find-renames "$selected_ref...HEAD" -- "$path" ;;
     *) return 1 ;;
   esac
 }
 
 file_content_for_path() {
-  local path="$1"
+  local path
+  path="$(unquote_path "$1")"
 
   case "$mode" in
     staged)
@@ -549,34 +603,37 @@ file_content_for_path() {
 }
 
 file_name_status_for_path() {
-  local path="$1"
+  local path
+  path="$(unquote_path "$1")"
 
   case "$mode" in
-    staged) git -c color.ui=false diff --no-ext-diff --find-renames --cached --name-status -- "$path" ;;
-    unstaged) git -c color.ui=false diff --no-ext-diff --find-renames --name-status -- "$path" ;;
-    branch) git -c color.ui=false diff --no-ext-diff --find-renames --name-status "$selected_ref...HEAD" -- "$path" ;;
+    staged) git -c color.ui=false diff --no-ext-diff --no-textconv --find-renames --cached --name-status -- "$path" ;;
+    unstaged) git -c color.ui=false diff --no-ext-diff --no-textconv --find-renames --name-status -- "$path" ;;
+    branch) git -c color.ui=false diff --no-ext-diff --no-textconv --find-renames --name-status "$selected_ref...HEAD" -- "$path" ;;
     *) return 1 ;;
   esac
 }
 
 file_numstat_for_path() {
-  local path="$1"
+  local path
+  path="$(unquote_path "$1")"
 
   case "$mode" in
-    staged) git -c color.ui=false diff --no-ext-diff --find-renames --cached --numstat -- "$path" ;;
-    unstaged) git -c color.ui=false diff --no-ext-diff --find-renames --numstat -- "$path" ;;
-    branch) git -c color.ui=false diff --no-ext-diff --find-renames --numstat "$selected_ref...HEAD" -- "$path" ;;
+    staged) git -c color.ui=false diff --no-ext-diff --no-textconv --find-renames --cached --numstat -- "$path" ;;
+    unstaged) git -c color.ui=false diff --no-ext-diff --no-textconv --find-renames --numstat -- "$path" ;;
+    branch) git -c color.ui=false diff --no-ext-diff --no-textconv --find-renames --numstat "$selected_ref...HEAD" -- "$path" ;;
     *) return 1 ;;
   esac
 }
 
 file_stat_for_path() {
-  local path="$1"
+  local path
+  path="$(unquote_path "$1")"
 
   case "$mode" in
-    staged) git -c color.ui=false diff --no-ext-diff --find-renames --cached --stat -- "$path" ;;
-    unstaged) git -c color.ui=false diff --no-ext-diff --find-renames --stat -- "$path" ;;
-    branch) git -c color.ui=false diff --no-ext-diff --find-renames --stat "$selected_ref...HEAD" -- "$path" ;;
+    staged) git -c color.ui=false diff --no-ext-diff --no-textconv --find-renames --cached --stat -- "$path" ;;
+    unstaged) git -c color.ui=false diff --no-ext-diff --no-textconv --find-renames --stat -- "$path" ;;
+    branch) git -c color.ui=false diff --no-ext-diff --no-textconv --find-renames --stat "$selected_ref...HEAD" -- "$path" ;;
     *) return 1 ;;
   esac
 }
@@ -621,29 +678,31 @@ file_numstat_counts_for_rename() {
 }
 
 review_command_for_path() {
-  local path="$1"
+  local path
   local quoted_path
   local quoted_ref_expr
 
+  path="$(unquote_path "$1")"
   quoted_path="$(shell_quote "$path")"
 
   case "$mode" in
-    staged) printf 'git diff --cached -- %s\n' "$quoted_path" ;;
-    unstaged) printf 'git diff -- %s\n' "$quoted_path" ;;
+    staged) printf 'git diff --cached --no-textconv -- %s\n' "$quoted_path" ;;
+    unstaged) printf 'git diff --no-textconv -- %s\n' "$quoted_path" ;;
     branch)
       quoted_ref_expr="$(shell_quote "${selected_ref}...HEAD")"
-      printf 'git diff %s -- %s\n' "$quoted_ref_expr" "$quoted_path"
+      printf 'git diff --no-textconv %s -- %s\n' "$quoted_ref_expr" "$quoted_path"
       ;;
     *) printf 'unavailable\n' ;;
   esac
 }
 
 context_command_for_path() {
-  local path="$1"
+  local path
   local quoted_script
   local quoted_path
   local quoted_source
 
+  path="$(unquote_path "$1")"
   quoted_script="$(shell_quote "$SCRIPT_PATH")"
   quoted_path="$(shell_quote "$path")"
   quoted_source="$(shell_quote "$mode")"
@@ -736,10 +795,12 @@ build_review_manifest_tmp() {
   local safe_component
   local review_command
   local context_command
+  local content_fingerprint
+  local file_diff_tmp
   local old_path
   local new_path
 
-  printf 'unit_id\tpath\tstatus\tadditions\tdeletions\tdiff_bytes\trisk_tags\tgroup_id\treview_command\tcontext_command\n' > "$manifest_tmp"
+  printf 'unit_id\tpath\tstatus\tadditions\tdeletions\tdiff_bytes\trisk_tags\tgroup_id\treview_command\tcontext_command\tcontent_fingerprint\n' > "$manifest_tmp"
 
   run_diff --name-status | while IFS="$(printf '\t')" read -r status path new_path; do
     [ -n "$path" ] || continue
@@ -756,7 +817,9 @@ build_review_manifest_tmp() {
     else
       read -r add del < <(file_numstat_counts_for_path "$path")
     fi
-    diff_bytes="$(file_diff_for_path "$path" | wc -c | tr -d ' ')"
+    file_diff_tmp="$(mktemp)"
+    file_diff_for_path "$path" > "$file_diff_tmp"
+    diff_bytes="$(wc -c < "$file_diff_tmp" | tr -d ' ')"
     top_component="$(group_component_for_path "$path")"
     safe_component="$(safe_group_component "$top_component")"
 
@@ -776,8 +839,113 @@ build_review_manifest_tmp() {
 
     review_command="$(review_command_for_path "$path")"
     context_command="$(context_command_for_path "$path")"
-    printf 'file:%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$path" "$path" "${status:-unknown}" "$add" "$del" "$diff_bytes" "$risk_tags" "$group_id" "$review_command" "$context_command" >> "$manifest_tmp"
+    content_fingerprint="$(file_content_fingerprint_from_file "$path" "$file_diff_tmp")"
+    printf 'file:%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\t%s\n' "$path" "$path" "${status:-unknown}" "$add" "$del" "$diff_bytes" "$risk_tags" "$group_id" "$review_command" "$context_command" "$content_fingerprint" >> "$manifest_tmp"
+    rm -f "$file_diff_tmp"
   done
+}
+
+emit_control_plane_json() {
+  local manifest_tmp="$1"
+  local fingerprint="$2"
+
+  echo '# Pre-Commit Review Control Plane'
+  echo
+  echo '## Review Control Plane JSON'
+  awk -F "$TAB" \
+    -v source="$mode" \
+    -v selected_ref="$selected_ref" \
+    -v head="$head_oid" \
+    -v base="$base" \
+    -v fingerprint="$fingerprint" \
+    -v target="$GROUP_TARGET_BYTES" \
+    -v hard="$GROUP_HARD_BYTES" \
+    -v helper="$SCRIPT_PATH" '
+    function esc(value) {
+      gsub(/\\/, "\\\\", value)
+      gsub(/"/, "\\\"", value)
+      gsub(/\r/, "\\r", value)
+      gsub(/\t/, "\\t", value)
+      return value
+    }
+    function str(value) { return "\"" esc(value) "\"" }
+    function append(value, item) { return value == "" ? item : value "," item }
+    NR == 1 { next }
+    {
+      row_count += 1
+      path[row_count]=$2; status[row_count]=$3; additions[row_count]=$4
+      deletions[row_count]=$5; unit_bytes[row_count]=$6; tags[row_count]=$7
+      unit_group[row_count]=$8; unit_hash[row_count]=$11; unit_id[row_count]=$1
+      total_additions += $4; total_deletions += $5; total_diff_bytes += $6
+      group=$8
+      if (!(group in seen)) { seen[group]=1; groups[++group_count]=group }
+      group_bytes[group]+=$6
+      group_indexes[group]=append(group_indexes[group], row_count - 1)
+      if ($7 == "high-risk") { risk[group]="high"; reason[group]="path-or-content-risk"; high_risk_units += 1 }
+      else if (($7 == "generated-like" || $7 == "lockfile") && risk[group] != "high") { risk[group]="consistency"; reason[group]=$7 }
+      else if (risk[group] == "") { risk[group]="medium"; reason[group]="module" }
+    }
+    END {
+      split_required=0
+      for (i=1; i<=group_count; i++) for (j=i+1; j<=group_count; j++) {
+        if (groups[j] < groups[i]) { swap=groups[i]; groups[i]=groups[j]; groups[j]=swap }
+      }
+      for (i=1; i<=group_count; i++) {
+        group=groups[i]
+        budget[group]="ok"
+        priority[group]=4
+        if (group_bytes[group] > hard) { budget[group]="split-required"; priority[group]=1; split_required += 1 }
+        else if (risk[group] == "high") priority[group]=2
+        else if (risk[group] == "consistency") priority[group]=3
+        else if (group_bytes[group] > target) budget[group]="over-target"
+      }
+      for (i=1; i<=group_count; i++) work_groups[i]=groups[i]
+      for (i=1; i<=group_count; i++) for (j=i+1; j<=group_count; j++) {
+        left=work_groups[i]; right=work_groups[j]
+        if (priority[right] < priority[left] || (priority[right] == priority[left] && right < left)) {
+          work_groups[i]=right; work_groups[j]=left
+        }
+      }
+
+      printf "{"
+      printf "\"schema_version\":1,\"kind\":\"review_control_plane\",\"authoritative\":true,"
+      printf "\"source\":%s,\"selected_ref\":%s,\"head\":%s,\"base\":%s,", str(source), str(selected_ref), str(head), str(base)
+      printf "\"scope_fingerprint\":%s,", str(fingerprint)
+      printf "\"fingerprint_algorithm\":\"git-hash-object(binary-full-index-no-textconv)\",\"collection\":{\"start\":%s,\"end\":%s},", str(fingerprint), str(fingerprint)
+      printf "\"counts\":{\"units\":%d,\"groups\":%d,\"additions\":%d,\"deletions\":%d,\"diff_bytes\":%d,\"high_risk_units\":%d,\"split_required_groups\":%d},", row_count, group_count, total_additions, total_deletions, total_diff_bytes, high_risk_units, split_required
+      printf "\"command_templates\":{\"helper\":%s,\"source_args\":[\"--source\",%s],\"refresh_args\":[\"--control-plane\"],\"group_args\":[\"--group\",\"{group_id}\",\"--expect-scope\",\"{scope_fingerprint}\"],\"path_args\":[\"--path\",\"{path}\",\"--expect-scope\",\"{scope_fingerprint}\"]},", str(helper), str(source)
+      printf "\"unit_tuple_fields\":[\"path\",\"status\",\"additions\",\"deletions\",\"diff_bytes\",\"risk_tags\",\"group_id\",\"content_fingerprint\"],\"units\":["
+      for (i=1; i<=row_count; i++) {
+        if (i>1) printf ","
+        printf "[%s,%s,%d,%d,%d,%s,%s,%s]", str(path[i]), str(status[i]), additions[i], deletions[i], unit_bytes[i], str(tags[i]), str(unit_group[i]), str(unit_hash[i])
+      }
+      printf "],\"group_tuple_fields\":[\"group_id\",\"risk\",\"reason\",\"diff_bytes\",\"budget_status\",\"unit_indexes\"],\"groups\":["
+      for (i=1; i<=group_count; i++) {
+        group=groups[i]
+        if (i>1) printf ","
+        printf "[%s,%s,%s,%d,%s,[%s]]", str(group), str(risk[group]), str(reason[group]), group_bytes[group], str(budget[group]), group_indexes[group]
+      }
+      printf "],\"work_order_tuple_fields\":[\"priority\",\"group_id\",\"action\"],\"work_order\":["
+      for (i=1; i<=group_count; i++) { group=work_groups[i]; if (i>1) printf ","; action=budget[group] == "split-required" ? "split" : "review"; printf "[%d,%s,%s]", priority[group], str(group), str(action) }
+      printf "],\"coverage_contract\":{\"unit_id\":\"file:<unit path>\",\"initial_status\":\"pending\",\"completion\":\"every unit index is reviewed under this exact scope_fingerprint\",\"split_rule\":\"replace each unit in a split-required group with bounded review units before claiming coverage\",\"blocking_rule\":\"scope drift or any high-risk/needs-split coverage gap forces DO_NOT_COMMIT\",\"finalization\":\"rerun --control-plane and require unchanged scope_fingerprint, units, groups, and work_order\"}}\n"
+    }
+  ' "$manifest_tmp"
+}
+
+emit_scope_failure() {
+  local reason="$1"
+  local expected="$2"
+  local started="$3"
+  local observed="$4"
+  local expected_json='null'
+  if [ -n "$expected" ]; then
+    expected_json="\"$expected\""
+  fi
+  echo '# Pre-Commit Review Control Plane'
+  echo
+  echo '## Review Control Plane JSON'
+  printf '{"schema_version":1,"kind":"review_control_plane","authoritative":false,"reason":"%s","source":"%s","head":"%s","base":"%s","selected_ref":"%s","expected_scope_fingerprint":%s,"collection_start_fingerprint":"%s","observed_scope_fingerprint":"%s","recovery":"rerun --control-plane and discard all coverage recorded under the previous scope fingerprint"}\n' \
+    "$reason" "$mode" "$head_oid" "$base" "$selected_ref" "$expected_json" "$started" "$observed"
 }
 
 emit_review_plan_json() {
@@ -1029,7 +1197,8 @@ emit_review_manifest_and_groups() {
         printf "\"risk_tags\":[%s],", json_string_array($7)
         printf "\"group_id\":%s,", json_string($8)
         printf "\"review_command\":%s,", json_string($9)
-        printf "\"context_command\":%s", json_string($10)
+        printf "\"context_command\":%s,", json_string($10)
+        printf "\"content_fingerprint\":%s", json_string($11)
         print "}"
       }
     ' "$manifest_tmp"
@@ -1216,7 +1385,8 @@ emit_review_manifest_and_groups() {
       printf "\"risk_tags\":[%s],", json_string_array($7)
       printf "\"group_id\":%s,", json_string($8)
       printf "\"review_command\":%s,", json_string($9)
-      printf "\"context_command\":%s", json_string($10)
+      printf "\"context_command\":%s,", json_string($10)
+      printf "\"content_fingerprint\":%s", json_string($11)
       print "}"
     }
   ' "$manifest_tmp"
@@ -1589,6 +1759,7 @@ emit_requested_group_context() {
   local requested_group="$1"
   local manifest_tmp
   local group_diff_tmp
+  local group_body_tmp
   local summary
   local group_id
   local group_risk
@@ -1598,11 +1769,14 @@ emit_requested_group_context() {
   local budget_status
   local path
   local review_command
+  local scope_fingerprint_group_end
 
   manifest_tmp="$(mktemp)"
   group_diff_tmp="$(mktemp)"
+  group_body_tmp="$(mktemp)"
   register_temp_file "$manifest_tmp"
   register_temp_file "$group_diff_tmp"
+  register_temp_file "$group_body_tmp"
   build_review_manifest_tmp "$manifest_tmp"
 
   summary="$(
@@ -1636,17 +1810,73 @@ emit_requested_group_context() {
   )"
 
   if [ -z "$summary" ]; then
+    if [ -n "$EXPECT_SCOPE" ]; then
+      scope_fingerprint_group_end="$(scope_fingerprint)"
+      if [ "$scope_fingerprint_group_end" != "$EXPECT_SCOPE" ]; then
+        emit_scope_failure 'snapshot_changed_during_group_collection' "$EXPECT_SCOPE" "$scope_fingerprint_start" "$scope_fingerprint_group_end"
+        rm -f "$manifest_tmp" "$group_diff_tmp" "$group_body_tmp"
+        return 0
+      fi
+    fi
     echo '## Requested Group Diff'
     print_kv 'group_id' "$requested_group"
     echo
     echo 'No review group found for requested group in the selected diff source.'
-    rm -f "$manifest_tmp" "$group_diff_tmp"
+    rm -f "$manifest_tmp" "$group_diff_tmp" "$group_body_tmp"
     return 0
   fi
 
   IFS="$TAB" read -r group_id group_risk group_bytes group_units group_files budget_status <<EOF_SUMMARY
 $summary
 EOF_SUMMARY
+
+  if [ "$budget_status" = 'split-required' ]; then
+    {
+      echo
+      echo 'Group exceeds hard review budget; use split suggestions instead of reviewing it as one group.'
+      echo
+      echo '## Split Suggestions'
+      echo 'parent_group_id	unit_id	path	split_kind	diff_bytes	hunk_header	review_command'
+      awk -F "$TAB" -v requested_group="$requested_group" '
+        NR > 1 && $8 == requested_group {
+          printf "%s\t%s\n", $2, $9
+        }
+      ' "$manifest_tmp" | while IFS="$(printf '\t')" read -r path review_command; do
+        [ -n "$path" ] || continue
+        emit_hunk_split_suggestions_for_path "$requested_group" "$path" "$review_command"
+      done
+      echo
+      echo '## Split Unit Diff Preview'
+      awk -F "$TAB" -v requested_group="$requested_group" '
+        NR > 1 && $8 == requested_group {
+          print $2
+        }
+      ' "$manifest_tmp" | while IFS= read -r path; do
+        [ -n "$path" ] || continue
+        emit_hunk_split_previews_for_path "$requested_group" "$path"
+      done
+    } > "$group_body_tmp"
+  else
+    awk -F "$TAB" -v requested_group="$requested_group" '
+      NR > 1 && $8 == requested_group {
+        print $2
+      }
+    ' "$manifest_tmp" | while IFS= read -r path; do
+      [ -n "$path" ] || continue
+      file_diff_for_path "$path" >> "$group_diff_tmp"
+    done
+  fi
+
+  # Buffer every projected review byte, then recheck the authoritative full
+  # scope before emitting it. This closes the group-collection TOCTOU window.
+  if [ -n "$EXPECT_SCOPE" ]; then
+    scope_fingerprint_group_end="$(scope_fingerprint)"
+    if [ "$scope_fingerprint_group_end" != "$EXPECT_SCOPE" ]; then
+      emit_scope_failure 'snapshot_changed_during_group_collection' "$EXPECT_SCOPE" "$scope_fingerprint_start" "$scope_fingerprint_group_end"
+      rm -f "$manifest_tmp" "$group_diff_tmp" "$group_body_tmp"
+      return 0
+    fi
+  fi
 
   echo '## Requested Group Files'
   echo 'status	path	unit_id	review_command'
@@ -1667,51 +1897,14 @@ EOF_SUMMARY
   print_kv 'context_command' "$(context_command_for_group "$group_id")"
 
   if [ "$budget_status" = 'split-required' ]; then
-    echo
-    echo 'Group exceeds hard review budget; use split suggestions instead of reviewing it as one group.'
-    echo
-    echo '## Split Suggestions'
-    echo 'parent_group_id	unit_id	path	split_kind	diff_bytes	hunk_header	review_command'
-    awk -F "$TAB" -v requested_group="$requested_group" '
-      NR > 1 && $8 == requested_group {
-        printf "%s\t%s\n", $2, $9
-      }
-    ' "$manifest_tmp" | while IFS="$(printf '\t')" read -r path review_command; do
-      [ -n "$path" ] || continue
-      emit_hunk_split_suggestions_for_path "$requested_group" "$path" "$review_command"
-    done
-    echo
-    echo '## Split Unit Diff Preview'
-    awk -F "$TAB" -v requested_group="$requested_group" '
-      NR > 1 && $8 == requested_group {
-        print $2
-      }
-    ' "$manifest_tmp" | while IFS= read -r path; do
-      [ -n "$path" ] || continue
-      emit_hunk_split_previews_for_path "$requested_group" "$path"
-    done
-    rm -f "$manifest_tmp" "$group_diff_tmp"
-    return 0
-  fi
-
-  awk -F "$TAB" -v requested_group="$requested_group" '
-    NR > 1 && $8 == requested_group {
-      print $2
-    }
-  ' "$manifest_tmp" | while IFS= read -r path; do
-    [ -n "$path" ] || continue
-    file_diff_for_path "$path" >> "$group_diff_tmp"
-  done
-
-  if [ ! -s "$group_diff_tmp" ]; then
+    cat "$group_body_tmp"
+  elif [ ! -s "$group_diff_tmp" ]; then
     echo
     echo 'No diff available for requested group in the selected diff source.'
-    rm -f "$manifest_tmp" "$group_diff_tmp"
-    return 0
+  else
+    emit_diff_limited "$group_diff_tmp"
   fi
-
-  emit_diff_limited "$group_diff_tmp"
-  rm -f "$manifest_tmp" "$group_diff_tmp"
+  rm -f "$manifest_tmp" "$group_diff_tmp" "$group_body_tmp"
 }
 
 emit_dependency_summary() {
@@ -2177,7 +2370,9 @@ emit_diff_omitted() {
 }
 
 branch="$(git branch --show-current 2>/dev/null || true)"
-head_sha="$(git rev-parse --short HEAD 2>/dev/null || true)"
+head_sha="$(git rev-parse --verify --short HEAD 2>/dev/null || true)"
+head_oid="$(git rev-parse --verify --quiet HEAD 2>/dev/null || true)"
+[ -n "$head_oid" ] || head_oid='unknown'
 base="$(detect_base_branch)"
 
 staged='no'
@@ -2198,6 +2393,10 @@ register_temp_file "$diff_tmp"
 staged_files=''
 unstaged_files=''
 same_files=''
+path_status_tmp=''
+path_stat_tmp=''
+path_numstat_tmp=''
+path_name_status_tmp=''
 diff_size='0'
 diff_output_decision='omitted'
 diff_omitted_reason='no diff available'
@@ -2205,11 +2404,65 @@ compact_plan='no'
 
 run_diff() {
   case "$mode" in
-    staged) git -c color.ui=false diff --no-ext-diff --find-renames --cached "$@" -- . ;;
-    unstaged) git -c color.ui=false diff --no-ext-diff --find-renames "$@" -- . ;;
-    branch) git -c color.ui=false diff --no-ext-diff --find-renames "$@" "$selected_ref...HEAD" -- . ;;
+    staged) git -c color.ui=false diff --no-ext-diff --no-textconv --find-renames --cached "$@" -- . ;;
+    unstaged) git -c color.ui=false diff --no-ext-diff --no-textconv --find-renames "$@" -- . ;;
+    branch) git -c color.ui=false diff --no-ext-diff --no-textconv --find-renames "$@" "$selected_ref...HEAD" -- . ;;
     *) return 1 ;;
   esac
+}
+
+scope_fingerprint() {
+  local fingerprint_diff_tmp
+  local diff_length
+  fingerprint_diff_tmp="$(mktemp)"
+  run_diff --binary --full-index > "$fingerprint_diff_tmp"
+  diff_length="$(wc -c < "$fingerprint_diff_tmp" | tr -d ' ')"
+  {
+    printf 'pre-commit-review-diff-fingerprint-v1\0'
+    emit_fingerprint_field 'source' "$mode"
+    emit_fingerprint_field 'selected-ref' "$selected_ref"
+    emit_fingerprint_field 'head' "$head_oid"
+    printf 'diff\0%s\0' "$diff_length"
+    cat "$fingerprint_diff_tmp"
+    printf '\0'
+  } | git hash-object --stdin
+  rm -f "$fingerprint_diff_tmp"
+}
+
+file_content_fingerprint_from_file() {
+  local path="$1"
+  local fingerprint_diff_tmp="$2"
+  local diff_length
+  diff_length="$(wc -c < "$fingerprint_diff_tmp" | tr -d ' ')"
+  {
+    printf 'pre-commit-review-diff-fingerprint-v1\0'
+    emit_fingerprint_field 'source' "$mode"
+    emit_fingerprint_field 'selected-ref' "$selected_ref"
+    emit_fingerprint_field 'head' "$head_oid"
+    emit_fingerprint_field 'path' "$path"
+    printf 'diff\0%s\0' "$diff_length"
+    cat "$fingerprint_diff_tmp"
+    printf '\0'
+  } | git hash-object --stdin
+}
+
+file_content_fingerprint() {
+  local path="$1"
+  local fingerprint_diff_tmp
+  local fingerprint
+  fingerprint_diff_tmp="$(mktemp)"
+  file_diff_for_path "$path" > "$fingerprint_diff_tmp"
+  fingerprint="$(file_content_fingerprint_from_file "$path" "$fingerprint_diff_tmp")"
+  rm -f "$fingerprint_diff_tmp"
+  printf '%s\n' "$fingerprint"
+}
+
+emit_fingerprint_field() {
+  local name="$1"
+  local value="$2"
+  local length
+  length="$(printf '%s' "$value" | wc -c | tr -d ' ')"
+  printf '%s\0%s\0%s\0' "$name" "$length" "$value"
 }
 
 select_branch_ref() {
@@ -2242,7 +2495,9 @@ write_selected_diff() {
 }
 
 selected_numstat() {
-  if [ -n "$REQUEST_PATH" ]; then
+  if [ -n "$path_numstat_tmp" ]; then
+    cat "$path_numstat_tmp"
+  elif [ -n "$REQUEST_PATH" ]; then
     file_numstat_for_path "$REQUEST_PATH"
   else
     run_diff --numstat
@@ -2250,7 +2505,9 @@ selected_numstat() {
 }
 
 selected_stat() {
-  if [ -n "$REQUEST_PATH" ]; then
+  if [ -n "$path_stat_tmp" ]; then
+    cat "$path_stat_tmp"
+  elif [ -n "$REQUEST_PATH" ]; then
     file_stat_for_path "$REQUEST_PATH"
   else
     run_diff --stat
@@ -2258,7 +2515,9 @@ selected_stat() {
 }
 
 selected_name_status() {
-  if [ -n "$REQUEST_PATH" ]; then
+  if [ -n "$path_name_status_tmp" ]; then
+    cat "$path_name_status_tmp"
+  elif [ -n "$REQUEST_PATH" ]; then
     file_name_status_for_path "$REQUEST_PATH"
   else
     run_diff --name-status
@@ -2335,6 +2594,15 @@ if [ -n "$REQUEST_PATH" ] && [ "$mode" != 'none' ]; then
 fi
 if [ -n "$REQUEST_GROUP" ] && [ "$mode" != 'none' ]; then
   review_limit_note='group-specific diff for requested group; no other groups included'
+fi
+
+scope_fingerprint_start=''
+if [ "$mode" != 'none' ]; then
+  scope_fingerprint_start="$(scope_fingerprint)"
+  if [ -n "$EXPECT_SCOPE" ] && [ "$scope_fingerprint_start" != "$EXPECT_SCOPE" ]; then
+    emit_scope_failure 'scope_fingerprint_mismatch' "$EXPECT_SCOPE" "$scope_fingerprint_start" "$scope_fingerprint_start"
+    exit 0
+  fi
 fi
 
 if [ -n "$untracked_names" ]; then
@@ -2417,6 +2685,48 @@ if [ "$mode" != 'none' ]; then
   top_churn_files="$(printf '%s\n' "$top_churn_file_lines" | join_lines_csv)"
 fi
 
+# Cache every Git-derived part of a scoped path projection before the final
+# fingerprint check. Later output reads only these files, so an index change
+# cannot mix post-check metadata with the pinned diff bytes in diff_tmp.
+if [ -n "$EXPECT_SCOPE" ] && [ -n "$REQUEST_PATH" ] && [ "$mode" != 'none' ]; then
+  path_status_tmp="$(mktemp)"
+  path_stat_tmp="$(mktemp)"
+  path_numstat_tmp="$(mktemp)"
+  path_name_status_tmp="$(mktemp)"
+  register_temp_file "$path_status_tmp"
+  register_temp_file "$path_stat_tmp"
+  register_temp_file "$path_numstat_tmp"
+  register_temp_file "$path_name_status_tmp"
+  git status --short -- "$(unquote_path "$REQUEST_PATH")" > "$path_status_tmp" || true
+  file_stat_for_path "$REQUEST_PATH" > "$path_stat_tmp"
+  file_numstat_for_path "$REQUEST_PATH" > "$path_numstat_tmp"
+  file_name_status_for_path "$REQUEST_PATH" > "$path_name_status_tmp"
+  scope_fingerprint_path_end="$(scope_fingerprint)"
+  if [ "$scope_fingerprint_path_end" != "$EXPECT_SCOPE" ]; then
+    emit_scope_failure 'snapshot_changed_during_path_collection' "$EXPECT_SCOPE" "$scope_fingerprint_start" "$scope_fingerprint_path_end"
+    exit 0
+  fi
+fi
+
+if [ "$CONTROL_PLANE" = 'yes' ]; then
+  if [ "$mode" = 'none' ] || [ ! -s "$diff_tmp" ]; then
+    mode='none'
+    selected_ref=''
+    emit_scope_failure 'no_diff_available' "$EXPECT_SCOPE" '' ''
+    exit 0
+  fi
+  control_manifest_tmp="$(mktemp)"
+  register_temp_file "$control_manifest_tmp"
+  build_review_manifest_tmp "$control_manifest_tmp"
+  scope_fingerprint_end="$(scope_fingerprint)"
+  if [ "$scope_fingerprint_start" != "$scope_fingerprint_end" ]; then
+    emit_scope_failure 'snapshot_changed_during_collection' "$EXPECT_SCOPE" "$scope_fingerprint_start" "$scope_fingerprint_end"
+    exit 0
+  fi
+  emit_control_plane_json "$control_manifest_tmp" "$scope_fingerprint_end"
+  exit 0
+fi
+
 echo '# Pre-Commit Review Diff Context'
 echo
 print_kv 'repository' "$repo_root"
@@ -2461,7 +2771,11 @@ echo
 
 echo '## Status'
 if [ -n "$REQUEST_PATH" ]; then
-  git status --short -- "$REQUEST_PATH" || true
+  if [ -n "$path_status_tmp" ]; then
+    cat "$path_status_tmp"
+  else
+    git status --short -- "$(unquote_path "$REQUEST_PATH")" || true
+  fi
 elif [ -n "$REQUEST_GROUP" ]; then
   echo 'group-specific status is emitted after group resolution'
 else
@@ -2472,6 +2786,16 @@ echo
 if [ "$mode" = 'none' ]; then
   echo 'No diff available. Stage your changes or provide a diff to review.'
   exit 0
+fi
+
+if [ -n "$EXPECT_SCOPE" ]; then
+  scope_fingerprint_before_output="$(scope_fingerprint)"
+  if [ "$scope_fingerprint_before_output" != "$EXPECT_SCOPE" ]; then
+    emit_scope_failure 'snapshot_changed_before_output' "$EXPECT_SCOPE" "$scope_fingerprint_start" "$scope_fingerprint_before_output"
+    exit 0
+  fi
+  print_kv 'scope_fingerprint' "$scope_fingerprint_before_output"
+  echo
 fi
 
 if [ -n "$REQUEST_GROUP" ]; then

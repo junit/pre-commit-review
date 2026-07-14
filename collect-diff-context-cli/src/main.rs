@@ -3,9 +3,9 @@ use serde::Serialize;
 use std::collections::{HashMap, HashSet};
 use std::env;
 use std::fs::{self, File};
-use std::io::{BufRead, BufReader};
+use std::io::{BufRead, BufReader, Write};
 use std::path::{Path, PathBuf};
-use std::process::Command;
+use std::process::{Command, Stdio};
 use std::sync::OnceLock;
 
 // Core Constants and Defaults
@@ -52,6 +52,8 @@ struct CliArgs {
     path: Option<String>,
     group: Option<String>,
     include_diff: String,
+    control_plane: bool,
+    expect_scope: Option<String>,
 }
 
 impl CliArgs {
@@ -60,6 +62,8 @@ impl CliArgs {
         let mut source = None;
         let mut path = None;
         let mut group = None;
+        let mut control_plane = false;
+        let mut expect_scope = None;
         let mut include_diff =
             env::var("PRE_COMMIT_REVIEW_INCLUDE_DIFF").unwrap_or_else(|_| "auto".to_string());
 
@@ -87,6 +91,20 @@ impl CliArgs {
                 "--plan-only" => {
                     include_diff = "never".to_string();
                     i += 1;
+                }
+                "--control-plane" => {
+                    control_plane = true;
+                    i += 1;
+                }
+                "--expect-scope" => {
+                    if i + 1 < args.len() {
+                        expect_scope = Some(args[i + 1].clone());
+                        i += 2;
+                    } else {
+                        return Err(AppError::InvalidArgument(
+                            "missing value for --expect-scope".to_string(),
+                        ));
+                    }
                 }
                 "--include-diff" => {
                     if i + 1 < args.len() {
@@ -127,7 +145,7 @@ impl CliArgs {
                     }
                 }
                 "-h" | "--help" => {
-                    println!("Usage: collect_diff_context [--source staged|unstaged|branch] [--path PATH | --group GROUP_ID] [--plan-only | --include-diff auto|never|always]");
+                    println!("Usage: collect_diff_context [--source staged|unstaged|branch] [--path PATH | --group GROUP_ID] [--plan-only | --include-diff auto|never|always] [--control-plane] [--expect-scope FINGERPRINT]");
                     println!();
                     println!("Collect read-only Git diff context for pre-commit review.");
                     println!();
@@ -140,6 +158,9 @@ impl CliArgs {
                         "  --group GROUP_ID Emit group-specific context for one review group only."
                     );
                     println!("  --plan-only      Emit only planning metadata for the selected diff source; omit the global raw diff.");
+                    println!("  --control-plane  Emit only the compact authoritative scope manifest and review work order.");
+                    println!("  --expect-scope FINGERPRINT");
+                    println!("                   Fail closed if the selected full diff scope no longer matches this fingerprint.");
                     println!("  --include-diff MODE");
                     println!("                   Control global diff inclusion for default output: auto, never, or always.");
                     println!("  -h, --help    Show this help.");
@@ -159,6 +180,11 @@ impl CliArgs {
                 "--path and --group are mutually exclusive".to_string(),
             ));
         }
+        if control_plane && (path.is_some() || group.is_some()) {
+            return Err(AppError::InvalidArgument(
+                "--control-plane cannot be combined with --path or --group".to_string(),
+            ));
+        }
 
         if include_diff != "auto" && include_diff != "never" && include_diff != "always" {
             include_diff = "auto".to_string();
@@ -169,6 +195,8 @@ impl CliArgs {
             path,
             group,
             include_diff,
+            control_plane,
+            expect_scope,
         })
     }
 }
@@ -202,6 +230,7 @@ struct ManifestUnit {
     group_id: String,
     review_command: String,
     context_command: String,
+    content_fingerprint: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -309,6 +338,21 @@ fn shell_quote(s: &str) -> String {
     if s.is_empty() {
         return "''".to_string();
     }
+    if s.contains(['\t', '\n', '\r']) {
+        let mut quoted = String::from("$'");
+        for c in s.chars() {
+            match c {
+                '\\' => quoted.push_str("\\\\"),
+                '\'' => quoted.push_str("\\'"),
+                '\t' => quoted.push_str("\\t"),
+                '\n' => quoted.push_str("\\n"),
+                '\r' => quoted.push_str("\\r"),
+                _ => quoted.push(c),
+            }
+        }
+        quoted.push('\'');
+        return quoted;
+    }
     let mut quoted = String::new();
     for c in s.chars() {
         match c {
@@ -349,6 +393,48 @@ fn run_command_bytes(args: &[&str], cwd: &str) -> Result<Vec<u8>, AppError> {
         }
     };
 
+    if output.status.success() {
+        Ok(output.stdout)
+    } else {
+        Err(AppError::GitError {
+            cmd: args.join(" "),
+            details: String::from_utf8_lossy(&output.stderr).into_owned(),
+        })
+    }
+}
+
+// Run a command with exact stdin bytes. This is used for Git's repository-native
+// object hashing so the helper works with both SHA-1 and SHA-256 repositories.
+fn run_command_bytes_with_stdin(
+    args: &[&str],
+    stdin_bytes: &[u8],
+    cwd: &str,
+) -> Result<Vec<u8>, AppError> {
+    let mut cmd = Command::new(args[0]);
+    cmd.args(&args[1..]);
+    cmd.current_dir(cwd);
+    cmd.stdin(Stdio::piped());
+    cmd.stdout(Stdio::piped());
+    cmd.stderr(Stdio::piped());
+
+    let mut child = match cmd.spawn() {
+        Ok(child) => child,
+        Err(e) => {
+            if e.kind() == std::io::ErrorKind::NotFound {
+                return Err(AppError::GitMissing {
+                    details: e.to_string(),
+                    cmd: args.join(" "),
+                    cwd: cwd.to_string(),
+                });
+            }
+            return Err(AppError::IoError(e));
+        }
+    };
+
+    if let Some(mut stdin) = child.stdin.take() {
+        stdin.write_all(stdin_bytes).map_err(AppError::IoError)?;
+    }
+    let output = child.wait_with_output().map_err(AppError::IoError)?;
     if output.status.success() {
         Ok(output.stdout)
     } else {
@@ -506,6 +592,13 @@ fn git_get_head_sha(cwd: &str) -> String {
         .to_string()
 }
 
+fn git_get_head_oid(cwd: &str) -> String {
+    let out = run_command_string(&["git", "rev-parse", "HEAD"], cwd);
+    out.unwrap_or_else(|_| "unknown".to_string())
+        .trim()
+        .to_string()
+}
+
 fn git_get_branch_name(cwd: &str) -> String {
     let out = run_command_string(&["git", "branch", "--show-current"], cwd);
     out.unwrap_or_else(|_| "".to_string()).trim().to_string()
@@ -655,6 +748,7 @@ fn git_run_diff_bytes(
         "color.ui=false",
         "diff",
         "--no-ext-diff",
+        "--no-textconv",
         "--find-renames",
     ];
     for arg in extra_args {
@@ -690,6 +784,251 @@ fn git_run_diff_string(
 ) -> Result<String, AppError> {
     let bytes = git_run_diff_bytes(mode, selected_ref, extra_args, path, cwd)?;
     Ok(String::from_utf8_lossy(&bytes).into_owned())
+}
+
+fn append_fingerprint_field(material: &mut Vec<u8>, name: &str, value: &[u8]) {
+    material.extend_from_slice(name.as_bytes());
+    material.push(0);
+    material.extend_from_slice(value.len().to_string().as_bytes());
+    material.push(0);
+    material.extend_from_slice(value);
+    material.push(0);
+}
+
+fn git_hash_object_bytes(bytes: &[u8], cwd: &str) -> Result<String, AppError> {
+    let out = run_command_bytes_with_stdin(&["git", "hash-object", "--stdin"], bytes, cwd)?;
+    let oid = String::from_utf8_lossy(&out).trim().to_string();
+    if oid.is_empty() {
+        return Err(AppError::GitError {
+            cmd: "git hash-object --stdin".to_string(),
+            details: "Git returned an empty object id".to_string(),
+        });
+    }
+    Ok(oid)
+}
+
+fn diff_fingerprint(
+    mode: &str,
+    selected_ref: &str,
+    head_oid: &str,
+    path: Option<&str>,
+    identity_path: Option<&str>,
+    cwd: &str,
+) -> Result<String, AppError> {
+    let diff_bytes = if mode == "none" {
+        Vec::new()
+    } else {
+        // The full-scope fingerprint uses binary-safe, full-index output. Keep
+        // per-unit framing on the ordinary helper diff because that is the
+        // exact review unit emitted by both native and legacy implementations.
+        let fingerprint_args: &[&str] = if path.is_none() {
+            &["--binary", "--full-index"]
+        } else {
+            &[]
+        };
+        git_run_diff_bytes(mode, selected_ref, fingerprint_args, path, cwd)?
+    };
+
+    diff_fingerprint_from_bytes(
+        mode,
+        selected_ref,
+        head_oid,
+        identity_path.or(path),
+        &diff_bytes,
+        cwd,
+    )
+}
+
+fn diff_fingerprint_from_bytes(
+    mode: &str,
+    selected_ref: &str,
+    head_oid: &str,
+    identity_path: Option<&str>,
+    diff_bytes: &[u8],
+    cwd: &str,
+) -> Result<String, AppError> {
+    let mut material = b"pre-commit-review-diff-fingerprint-v1\0".to_vec();
+    append_fingerprint_field(&mut material, "source", mode.as_bytes());
+    append_fingerprint_field(&mut material, "selected-ref", selected_ref.as_bytes());
+    append_fingerprint_field(&mut material, "head", head_oid.as_bytes());
+    if let Some(path) = identity_path {
+        append_fingerprint_field(&mut material, "path", path.as_bytes());
+    }
+    append_fingerprint_field(&mut material, "diff", diff_bytes);
+    git_hash_object_bytes(&material, cwd)
+}
+
+struct ScopeIdentity<'a> {
+    source: &'a str,
+    head: &'a str,
+    base: &'a str,
+    selected_ref: &'a str,
+}
+
+fn emit_authority_failure(
+    scope: &ScopeIdentity<'_>,
+    expected: Option<&str>,
+    started: &str,
+    observed: &str,
+    reason: &str,
+) {
+    let payload = serde_json::json!({
+        "schema_version": 1,
+        "kind": "review_control_plane",
+        "authoritative": false,
+        "reason": reason,
+        "source": scope.source,
+        "head": scope.head,
+        "base": scope.base,
+        "selected_ref": scope.selected_ref,
+        "expected_scope_fingerprint": expected,
+        "collection_start_fingerprint": started,
+        "observed_scope_fingerprint": observed,
+        "recovery": "rerun --control-plane and discard all coverage recorded under the previous scope fingerprint"
+    });
+    println!("# Pre-Commit Review Control Plane\n");
+    println!("## Review Control Plane JSON");
+    println!("{}", serde_json::to_string(&payload).unwrap_or_default());
+}
+
+fn emit_control_plane(
+    scope: &ScopeIdentity<'_>,
+    scope_fingerprint: &str,
+    self_exe: &str,
+    manifest_units: &[ManifestUnit],
+    groups: &[ReviewGroup],
+) {
+    let total_additions: usize = manifest_units.iter().map(|u| u.additions).sum();
+    let total_deletions: usize = manifest_units.iter().map(|u| u.deletions).sum();
+    let total_diff_bytes: usize = manifest_units.iter().map(|u| u.diff_bytes).sum();
+    let high_risk_units = manifest_units
+        .iter()
+        .filter(|u| u.risk_tags.iter().any(|tag| tag == "high-risk"))
+        .count();
+    let split_required_groups = groups
+        .iter()
+        .filter(|g| g.budget_status == "split-required")
+        .count();
+
+    // Positional tuple schema keeps large manifests compact while preserving a
+    // single, explicit field definition for consumers.
+    let units: Vec<serde_json::Value> = manifest_units
+        .iter()
+        .map(|u| {
+            serde_json::json!([
+                u.file_path,
+                u.status,
+                u.additions,
+                u.deletions,
+                u.diff_bytes,
+                u.risk_tags.join(";"),
+                u.group_id,
+                u.content_fingerprint
+            ])
+        })
+        .collect();
+
+    let compact_groups: Vec<serde_json::Value> = groups
+        .iter()
+        .map(|g| {
+            let unit_indexes: Vec<usize> = manifest_units
+                .iter()
+                .enumerate()
+                .filter(|(_, u)| u.group_id == g.group_id)
+                .map(|(idx, _)| idx)
+                .collect();
+            serde_json::json!([
+                g.group_id,
+                g.risk,
+                g.reason,
+                g.diff_bytes,
+                g.budget_status,
+                unit_indexes
+            ])
+        })
+        .collect();
+
+    let mut work_order: Vec<serde_json::Value> = groups
+        .iter()
+        .map(|g| {
+            let (priority, action) = if g.budget_status == "split-required" {
+                (1, "split")
+            } else if g.risk == "high" {
+                (2, "review")
+            } else if g.risk == "consistency" {
+                (3, "review")
+            } else {
+                (4, "review")
+            };
+            serde_json::json!([priority, g.group_id, action])
+        })
+        .collect();
+    work_order.sort_by(|a, b| {
+        let a_priority = a
+            .get(0)
+            .and_then(|v| v.as_u64())
+            .unwrap_or(usize::MAX as u64);
+        let b_priority = b
+            .get(0)
+            .and_then(|v| v.as_u64())
+            .unwrap_or(usize::MAX as u64);
+        a_priority.cmp(&b_priority).then_with(|| {
+            a.get(1)
+                .and_then(|v| v.as_str())
+                .unwrap_or("")
+                .cmp(b.get(1).and_then(|v| v.as_str()).unwrap_or(""))
+        })
+    });
+
+    let payload = serde_json::json!({
+        "schema_version": 1,
+        "kind": "review_control_plane",
+        "authoritative": true,
+        "source": scope.source,
+        "head": scope.head,
+        "base": scope.base,
+        "selected_ref": scope.selected_ref,
+        "scope_fingerprint": scope_fingerprint,
+        "fingerprint_algorithm": "git-hash-object(binary-full-index-no-textconv)",
+        "collection": {
+            "start": scope_fingerprint,
+            "end": scope_fingerprint
+        },
+        "counts": {
+            "units": manifest_units.len(),
+            "groups": groups.len(),
+            "additions": total_additions,
+            "deletions": total_deletions,
+            "diff_bytes": total_diff_bytes,
+            "high_risk_units": high_risk_units,
+            "split_required_groups": split_required_groups
+        },
+        "command_templates": {
+            "helper": self_exe,
+            "source_args": ["--source", scope.source],
+            "refresh_args": ["--control-plane"],
+            "group_args": ["--group", "{group_id}", "--expect-scope", "{scope_fingerprint}"],
+            "path_args": ["--path", "{path}", "--expect-scope", "{scope_fingerprint}"]
+        },
+        "unit_tuple_fields": ["path", "status", "additions", "deletions", "diff_bytes", "risk_tags", "group_id", "content_fingerprint"],
+        "units": units,
+        "group_tuple_fields": ["group_id", "risk", "reason", "diff_bytes", "budget_status", "unit_indexes"],
+        "groups": compact_groups,
+        "work_order_tuple_fields": ["priority", "group_id", "action"],
+        "work_order": work_order,
+        "coverage_contract": {
+            "unit_id": "file:<unit path>",
+            "initial_status": "pending",
+            "completion": "every unit index is reviewed under this exact scope_fingerprint",
+            "split_rule": "replace each unit in a split-required group with bounded review units before claiming coverage",
+            "blocking_rule": "scope drift or any high-risk/needs-split coverage gap forces DO_NOT_COMMIT",
+            "finalization": "rerun --control-plane and require unchanged scope_fingerprint, units, groups, and work_order"
+        }
+    });
+
+    println!("# Pre-Commit Review Control Plane\n");
+    println!("## Review Control Plane JSON");
+    println!("{}", serde_json::to_string(&payload).unwrap_or_default());
 }
 
 fn git_show_ref_bytes(refspec: &str, cwd: &str) -> Option<Vec<u8>> {
@@ -1805,6 +2144,7 @@ fn run_app() -> Result<(), AppError> {
     // Git state detection
     let branch = git_get_branch_name(&repo_root);
     let head_sha = git_get_head_sha(&repo_root);
+    let head_oid = git_get_head_oid(&repo_root);
     let base = git_detect_base_branch(&repo_root);
 
     let staged_avail = git_has_staged_changes(&repo_root)?;
@@ -1876,6 +2216,43 @@ fn run_app() -> Result<(), AppError> {
         }
     }
 
+    let selected_diff_available = match mode {
+        "staged" => staged_avail,
+        "unstaged" => unstaged_avail,
+        "branch" => branch_mode_avail,
+        _ => false,
+    };
+    if args.control_plane && !selected_diff_available {
+        mode = "none";
+        selected_ref.clear();
+    }
+
+    // Staged and unstaged diffs do not use the detected branch base. Treating
+    // that unrelated ref as part of the scope made fingerprints vary across
+    // helper implementations (and when origin/* moved) despite identical
+    // commit candidates.
+    if mode == "staged" || mode == "unstaged" {
+        selected_ref.clear();
+    }
+
+    let scope_identity = ScopeIdentity {
+        source: mode,
+        head: &head_oid,
+        base: &base,
+        selected_ref: &selected_ref,
+    };
+
+    if args.control_plane && mode == "none" {
+        emit_authority_failure(
+            &scope_identity,
+            args.expect_scope.as_deref(),
+            "",
+            "",
+            "no_diff_available",
+        );
+        return Ok(());
+    }
+
     if args.path.is_some() && mode != "none" {
         review_limit_note =
             "file-specific diff for requested path; no other files included".to_string();
@@ -1883,6 +2260,28 @@ fn run_app() -> Result<(), AppError> {
     if args.group.is_some() && mode != "none" {
         review_limit_note =
             "group-specific diff for requested group; no other groups included".to_string();
+    }
+
+    // The fingerprint always covers the complete selected source, even for a
+    // later --path/--group projection. This makes child review results safely
+    // comparable with the authoritative parent manifest.
+    let defer_output_for_authority = args.control_plane || args.expect_scope.is_some();
+    let collection_start_fingerprint = if defer_output_for_authority {
+        diff_fingerprint(mode, &selected_ref, &head_oid, None, None, &repo_root)?
+    } else {
+        String::new()
+    };
+    if let Some(ref expected) = args.expect_scope {
+        if expected != &collection_start_fingerprint {
+            emit_authority_failure(
+                &scope_identity,
+                Some(expected),
+                &collection_start_fingerprint,
+                &collection_start_fingerprint,
+                "expected_scope_mismatch_before_collection",
+            );
+            return Ok(());
+        }
     }
 
     let untracked_names = git_get_untracked_files(&repo_root);
@@ -2195,12 +2594,9 @@ fn run_app() -> Result<(), AppError> {
 
     // Calculate truncation metadata (based on accurate raw byte size)
     let diff_size = global_diff_bytes.len();
-    let diff_truncated = if max_diff_bytes != 0 && diff_size > max_diff_bytes {
+    if args.path.is_none() && max_diff_bytes != 0 && diff_size > max_diff_bytes {
         review_limit_note = "partial diff output; inspect file list and prioritize risky files before making safety claims".to_string();
-        "yes"
-    } else {
-        "no"
-    };
+    }
     let (diff_output_decision, diff_omitted_reason) = if diff_size == 0 {
         ("omitted".to_string(), "no diff available".to_string())
     } else {
@@ -2227,78 +2623,230 @@ fn run_app() -> Result<(), AppError> {
         }
     };
 
-    // Print Context Metadata Header
-    println!("# Pre-Commit Review Diff Context\n");
-    println!("repository: {}", repo_root);
-    println!(
-        "branch: {}",
-        if branch.is_empty() {
-            "detached-or-unknown"
-        } else {
-            &branch
-        }
-    );
-    println!("head: {}", head_sha);
-    println!("detected_base: {}", base);
-    println!("diff_source: {}", source_description);
-    if let Some(ref p) = args.path {
-        println!("requested_path: {}", p);
-    }
-    if let Some(ref g) = args.group {
-        println!("requested_group: {}", g);
-    }
-    if let Some(ref s) = args.source {
-        println!("requested_source: {}", s);
-    }
-    println!("review_limits: {}", review_limit_note);
-    println!("diff_truncated: {}", diff_truncated);
-    println!("inline_diff_bytes: {}", inline_diff_bytes);
-    println!("diff_output: {}", diff_output_decision);
-    if diff_output_decision == "omitted" {
-        println!("diff_omitted_reason: {}", diff_omitted_reason);
-    }
-    println!("diff_loading: use helper-emitted context_command values; do not rebuild review scope with direct git commands");
-    println!("group_target_bytes: {}", group_target_bytes);
-    println!("group_hard_bytes: {}", group_hard_bytes);
-    println!("files_changed: {}", files_changed_str);
-    println!("high_risk_candidates: {}", high_risk_candidates);
-    println!("content_risk_candidates: {}", content_risk_candidates);
-    println!("generated_like_files: {}", generated_like_files);
-    println!("lock_files: {}", lock_files);
-    println!("top_churn_files: {}", top_churn_files);
-    println!(
-        "staged_changes: {}",
-        if staged_avail { "yes" } else { "no" }
-    );
-    println!(
-        "unstaged_changes: {}",
-        if unstaged_avail { "yes" } else { "no" }
-    );
-    println!(
-        "untracked_files: {}",
-        if !untracked_names.is_empty() {
-            "yes"
-        } else {
-            "no"
-        }
-    );
-    println!("unreviewed_changes: {}", unreviewed_note);
-    println!();
-
-    // 6. Prints git status
-    println!("## Status");
-    if let Some(ref p) = args.path {
-        let status_out = run_command_string(&["git", "status", "--short", "--", p], &repo_root)?;
-        print!("{}", status_out);
-    } else if args.group.is_some() {
-        println!("group-specific status is emitted after group resolution");
+    // Path responses are bounded to the requested unit. Scoped responses are
+    // emitted only after the full-scope end check, so cache every Git-derived
+    // projection beforehand to avoid post-check snapshot mixing.
+    let requested_path_raw = args.path.as_deref().map(unquote_git_path);
+    let requested_path_diff_bytes = if let Some(ref raw_path) = requested_path_raw {
+        git_run_diff_bytes(mode, &selected_ref, &[], Some(raw_path), &repo_root)?
     } else {
-        let status_out = run_command_string(&["git", "status", "--short"], &repo_root)?;
-        print!("{}", status_out);
+        Vec::new()
+    };
+    let requested_path_name_status = if let Some(ref raw_path) = requested_path_raw {
+        parse_name_status_z(&git_run_diff_bytes(
+            mode,
+            &selected_ref,
+            &["--name-status", "-z"],
+            Some(raw_path),
+            &repo_root,
+        )?)
+    } else {
+        Vec::new()
+    };
+    let requested_path_numstat = if let Some(ref raw_path) = requested_path_raw {
+        parse_numstat_z(&git_run_diff_bytes(
+            mode,
+            &selected_ref,
+            &["--numstat", "-z"],
+            Some(raw_path),
+            &repo_root,
+        )?)
+    } else {
+        Vec::new()
+    };
+    let scoped_path_status = if args.expect_scope.is_some() {
+        if let Some(ref raw_path) = requested_path_raw {
+            run_command_string(&["git", "status", "--short", "--", raw_path], &repo_root)?
+        } else {
+            String::new()
+        }
+    } else {
+        String::new()
+    };
+    let requested_path_stat = if let Some(ref raw_path) = requested_path_raw {
+        git_run_diff_string(mode, &selected_ref, &["--stat"], Some(raw_path), &repo_root)?
+    } else {
+        String::new()
+    };
+    let path_files_changed = if args.path.is_some() {
+        let additions: usize = requested_path_numstat
+            .iter()
+            .map(|entry| entry.add.parse::<usize>().unwrap_or(0))
+            .sum();
+        let deletions: usize = requested_path_numstat
+            .iter()
+            .map(|entry| entry.del.parse::<usize>().unwrap_or(0))
+            .sum();
+        format!(
+            "{} files, {} insertions(+), {} deletions(-)",
+            requested_path_name_status.len(),
+            additions,
+            deletions
+        )
+    } else {
+        files_changed_str.clone()
+    };
+    let requested_path_display = requested_path_raw.as_deref().map(quote_git_path);
+    let path_candidate = |paths: &[String]| -> String {
+        match (&requested_path_raw, &requested_path_display) {
+            (Some(raw), Some(display)) if paths.contains(raw) => display.clone(),
+            _ => "none".to_string(),
+        }
+    };
+    let path_high_risk_candidates = path_candidate(&high_risk_candidates_vec_raw);
+    let path_content_risk_candidates = path_candidate(&content_risk_vec_raw);
+    let path_generated_like_files = path_candidate(&generated_files_list_raw);
+    let path_lock_files = path_candidate(&lock_files_list_raw);
+    let path_top_churn_files =
+        if let (Some(raw), Some(display)) = (&requested_path_raw, &requested_path_display) {
+            let (add, del) = lookup_numstat(&requested_path_numstat, raw, None);
+            if requested_path_numstat.is_empty() {
+                "none".to_string()
+            } else {
+                format!("{} (+{}/-{})", display, add, del)
+            }
+        } else {
+            top_churn_files.clone()
+        };
+    let header_diff_size = if args.path.is_some() {
+        requested_path_diff_bytes.len()
+    } else {
+        diff_size
+    };
+    let header_diff_truncated = if max_diff_bytes != 0 && header_diff_size > max_diff_bytes {
+        "yes"
+    } else {
+        "no"
+    };
+    if args.path.is_some() && header_diff_truncated == "yes" {
+        review_limit_note =
+            "partial requested file diff output; rerun with a larger bounded limit before claiming file coverage"
+                .to_string();
     }
-    println!();
+    let (header_diff_output, header_diff_omitted_reason) = if args.path.is_some() {
+        if header_diff_size == 0 {
+            ("omitted", "no diff available")
+        } else {
+            ("inline", "none")
+        }
+    } else {
+        (diff_output_decision.as_str(), diff_omitted_reason.as_str())
+    };
 
-    if mode == "none" {
+    let emit_context_header = || -> Result<(), AppError> {
+        println!("# Pre-Commit Review Diff Context\n");
+        println!("repository: {}", repo_root);
+        println!(
+            "branch: {}",
+            if branch.is_empty() {
+                "detached-or-unknown"
+            } else {
+                &branch
+            }
+        );
+        println!("head: {}", head_sha);
+        println!("detected_base: {}", base);
+        println!("diff_source: {}", source_description);
+        if let Some(ref p) = args.path {
+            println!("requested_path: {}", p);
+        }
+        if let Some(ref g) = args.group {
+            println!("requested_group: {}", g);
+        }
+        if let Some(ref s) = args.source {
+            println!("requested_source: {}", s);
+        }
+        if args.expect_scope.is_some() {
+            println!("scope_fingerprint: {}", collection_start_fingerprint);
+        }
+        println!("review_limits: {}", review_limit_note);
+        println!("diff_truncated: {}", header_diff_truncated);
+        println!("inline_diff_bytes: {}", inline_diff_bytes);
+        println!("diff_output: {}", header_diff_output);
+        if header_diff_output == "omitted" {
+            println!("diff_omitted_reason: {}", header_diff_omitted_reason);
+        }
+        println!("diff_loading: use helper-emitted context_command values; do not rebuild review scope with direct git commands");
+        println!("group_target_bytes: {}", group_target_bytes);
+        println!("group_hard_bytes: {}", group_hard_bytes);
+        println!("files_changed: {}", path_files_changed);
+        println!(
+            "high_risk_candidates: {}",
+            if args.path.is_some() {
+                &path_high_risk_candidates
+            } else {
+                &high_risk_candidates
+            }
+        );
+        println!(
+            "content_risk_candidates: {}",
+            if args.path.is_some() {
+                &path_content_risk_candidates
+            } else {
+                &content_risk_candidates
+            }
+        );
+        println!(
+            "generated_like_files: {}",
+            if args.path.is_some() {
+                &path_generated_like_files
+            } else {
+                &generated_like_files
+            }
+        );
+        println!(
+            "lock_files: {}",
+            if args.path.is_some() {
+                &path_lock_files
+            } else {
+                &lock_files
+            }
+        );
+        println!("top_churn_files: {}", path_top_churn_files);
+        println!(
+            "staged_changes: {}",
+            if staged_avail { "yes" } else { "no" }
+        );
+        println!(
+            "unstaged_changes: {}",
+            if unstaged_avail { "yes" } else { "no" }
+        );
+        println!(
+            "untracked_files: {}",
+            if !untracked_names.is_empty() {
+                "yes"
+            } else {
+                "no"
+            }
+        );
+        println!("unreviewed_changes: {}", unreviewed_note);
+        println!();
+
+        println!("## Status");
+        if let Some(ref p) = args.path {
+            if args.expect_scope.is_some() {
+                print!("{}", scoped_path_status);
+            } else {
+                let raw_path = unquote_git_path(p);
+                let status_out =
+                    run_command_string(&["git", "status", "--short", "--", &raw_path], &repo_root)?;
+                print!("{}", status_out);
+            }
+        } else if args.group.is_some() {
+            println!("group-specific status is emitted after group resolution");
+        } else {
+            let status_out = run_command_string(&["git", "status", "--short"], &repo_root)?;
+            print!("{}", status_out);
+        }
+        println!();
+        Ok(())
+    };
+
+    if !defer_output_for_authority {
+        emit_context_header()?;
+    }
+
+    if mode == "none" && !defer_output_for_authority {
         println!("No diff available. Stage your changes or provide a diff to review.");
         return Ok(());
     }
@@ -2310,6 +2858,11 @@ fn run_app() -> Result<(), AppError> {
     let mut group_risk_map: HashMap<String, String> = HashMap::new();
     let mut group_reason_map: HashMap<String, String> = HashMap::new();
     let mut group_commands_map: HashMap<String, Vec<String>> = HashMap::new();
+    // Keep the exact bytes used to size and fingerprint each manifest unit.
+    // Scoped group/path projections must emit this cache after the full-scope
+    // end fingerprint succeeds; re-running git diff afterwards would reopen a
+    // TOCTOU window and could mix a newer index into an authoritative review.
+    let mut unit_diff_cache: HashMap<String, Vec<u8>> = HashMap::new();
 
     for entry in &name_status_entries {
         let path = &entry.path;
@@ -2320,10 +2873,23 @@ fn run_app() -> Result<(), AppError> {
         let (add, del) = lookup_numstat(&numstat_entries, path, old_path);
 
         // Single file diff byte size (calculating raw bytes to prevent UTF-8 loss)
-        let file_diff_bytes_vec =
-            git_run_diff_bytes(mode, &selected_ref, &[], Some(path), &repo_root)?;
+        let path_is_requested = requested_path_raw.as_deref() == Some(path.as_str());
+        let file_diff_bytes_vec = if path_is_requested {
+            requested_path_diff_bytes.clone()
+        } else {
+            git_run_diff_bytes(mode, &selected_ref, &[], Some(path), &repo_root)?
+        };
         let file_diff_bytes = file_diff_bytes_vec.len();
-
+        // Select the raw path while retaining the display-quoted manifest
+        // token as the cross-implementation fingerprint identity.
+        let content_fingerprint = diff_fingerprint_from_bytes(
+            mode,
+            &selected_ref,
+            &head_oid,
+            Some(&display_path),
+            &file_diff_bytes_vec,
+            &repo_root,
+        )?;
         let top_component = group_component_for_path(&display_path);
         let safe_component = safe_group_component(&top_component);
 
@@ -2361,13 +2927,20 @@ fn run_app() -> Result<(), AppError> {
             }
         }
 
-        let quoted_path = shell_quote(&display_path);
+        // Commands operate on the raw path. The manifest keeps Git's quoted
+        // display token as its stable identity, but passing that token back to
+        // Git would look for a filename containing literal quote characters.
+        let quoted_path = shell_quote(path);
         let review_command = match mode {
-            "staged" => format!("git diff --cached -- {}", quoted_path),
-            "unstaged" => format!("git diff -- {}", quoted_path),
+            "staged" => format!("git diff --cached --no-textconv -- {}", quoted_path),
+            "unstaged" => format!("git diff --no-textconv -- {}", quoted_path),
             "branch" => {
                 let ref_expr = format!("{}...HEAD", selected_ref);
-                format!("git diff {} -- {}", shell_quote(&ref_expr), quoted_path)
+                format!(
+                    "git diff --no-textconv {} -- {}",
+                    shell_quote(&ref_expr),
+                    quoted_path
+                )
             }
             _ => "unavailable".to_string(),
         };
@@ -2378,6 +2951,12 @@ fn run_app() -> Result<(), AppError> {
             mode,
             quoted_path
         );
+
+        let requested_path_matches = path_is_requested;
+        let requested_group_matches = args.group.as_deref() == Some(group_id.as_str());
+        if requested_path_matches || requested_group_matches {
+            unit_diff_cache.insert(display_path.clone(), file_diff_bytes_vec);
+        }
 
         // Update group properties
         *group_sizes.entry(group_id.clone()).or_insert(0) += file_diff_bytes;
@@ -2397,6 +2976,7 @@ fn run_app() -> Result<(), AppError> {
             additions: add.parse::<usize>().unwrap_or(0),
             deletions: del.parse::<usize>().unwrap_or(0),
             diff_bytes: file_diff_bytes,
+            content_fingerprint,
             risk_tags,
             group_id,
             review_command,
@@ -2434,6 +3014,50 @@ fn run_app() -> Result<(), AppError> {
     // Sort groups deterministically by group_id
     groups.sort_by(|a, b| a.group_id.cmp(&b.group_id));
 
+    if defer_output_for_authority {
+        let collection_end_fingerprint =
+            diff_fingerprint(mode, &selected_ref, &head_oid, None, None, &repo_root)?;
+        if collection_end_fingerprint != collection_start_fingerprint {
+            emit_authority_failure(
+                &scope_identity,
+                args.expect_scope.as_deref(),
+                &collection_start_fingerprint,
+                &collection_end_fingerprint,
+                "scope_changed_during_collection",
+            );
+            return Ok(());
+        }
+        if let Some(ref expected) = args.expect_scope {
+            if expected != &collection_end_fingerprint {
+                emit_authority_failure(
+                    &scope_identity,
+                    Some(expected),
+                    &collection_start_fingerprint,
+                    &collection_end_fingerprint,
+                    "expected_scope_mismatch_after_collection",
+                );
+                return Ok(());
+            }
+        }
+
+        if args.control_plane {
+            emit_control_plane(
+                &scope_identity,
+                &collection_end_fingerprint,
+                &self_exe,
+                &manifest_units,
+                &groups,
+            );
+            return Ok(());
+        }
+
+        emit_context_header()?;
+        if mode == "none" {
+            println!("No diff available. Stage your changes or provide a diff to review.");
+            return Ok(());
+        }
+    }
+
     // Handle REQUEST_GROUP early exit
     if let Some(ref req_grp) = args.group {
         println!();
@@ -2441,23 +3065,31 @@ fn run_app() -> Result<(), AppError> {
             req_grp,
             &manifest_units,
             &groups,
+            &unit_diff_cache,
             mode,
-            &selected_ref,
             max_diff_bytes,
             inline_diff_bytes,
-            &repo_root,
         )?;
         return Ok(());
     }
 
     // Output stats and file lists for the main review mode
     println!("## Diff Stat");
-    let diff_stat_out = git_run_diff_string(mode, &selected_ref, &["--stat"], None, &repo_root)?;
+    let diff_stat_out = if args.path.is_some() {
+        requested_path_stat
+    } else {
+        git_run_diff_string(mode, &selected_ref, &["--stat"], None, &repo_root)?
+    };
     print!("{}", diff_stat_out);
     println!();
 
     println!("## File List");
-    for entry in &name_status_entries {
+    let output_name_status = if args.path.is_some() {
+        &requested_path_name_status
+    } else {
+        &name_status_entries
+    };
+    for entry in output_name_status {
         let disp_path = quote_git_path(&entry.path);
         if let Some(ref old) = entry.old_path {
             let disp_old = quote_git_path(old);
@@ -2469,7 +3101,12 @@ fn run_app() -> Result<(), AppError> {
     println!();
 
     println!("## Numstat");
-    for entry in &numstat_entries {
+    let output_numstat = if args.path.is_some() {
+        &requested_path_numstat
+    } else {
+        &numstat_entries
+    };
+    for entry in output_numstat {
         let disp_spec = quote_git_path(&entry.path_spec);
         println!("{}\t{}\t{}", entry.add, entry.del, disp_spec);
     }
@@ -2480,15 +3117,22 @@ fn run_app() -> Result<(), AppError> {
         println!("## Requested File Diff");
         println!("path: {}", req_path);
 
-        let unit = manifest_units.iter().find(|u| u.file_path == *req_path);
+        let raw_req_path = unquote_git_path(req_path);
+        let unit = manifest_units
+            .iter()
+            .find(|u| u.file_path == *req_path || unquote_git_path(&u.file_path) == raw_req_path);
         let r_cmd = unit.map(|u| u.review_command.clone()).unwrap_or_else(|| {
-            let quoted_path = shell_quote(req_path);
+            let quoted_path = shell_quote(&raw_req_path);
             match mode {
-                "staged" => format!("git diff --cached -- {}", quoted_path),
-                "unstaged" => format!("git diff -- {}", quoted_path),
+                "staged" => format!("git diff --cached --no-textconv -- {}", quoted_path),
+                "unstaged" => format!("git diff --no-textconv -- {}", quoted_path),
                 "branch" => {
                     let ref_expr = format!("{}...HEAD", selected_ref);
-                    format!("git diff {} -- {}", shell_quote(&ref_expr), quoted_path)
+                    format!(
+                        "git diff --no-textconv {} -- {}",
+                        shell_quote(&ref_expr),
+                        quoted_path
+                    )
                 }
                 _ => "unavailable".to_string(),
             }
@@ -2498,16 +3142,15 @@ fn run_app() -> Result<(), AppError> {
                 "{} --source {} --path {}",
                 shell_quote(&self_exe),
                 mode,
-                shell_quote(req_path)
+                shell_quote(&raw_req_path)
             )
         });
 
         println!("review_command: {}", r_cmd);
         println!("context_command: {}", c_cmd);
 
-        let raw_req_path = unquote_git_path(req_path);
-        let file_diff_bytes =
-            git_run_diff_bytes(mode, &selected_ref, &[], Some(&raw_req_path), &repo_root)?;
+        let cache_key = unit.map(|u| u.file_path.as_str()).unwrap_or(req_path);
+        let file_diff_bytes = unit_diff_cache.get(cache_key).cloned().unwrap_or_default();
         if file_diff_bytes.is_empty() {
             println!();
             println!("No diff available for requested path in the selected diff source.");
@@ -2702,10 +3345,10 @@ fn run_app() -> Result<(), AppError> {
     } else {
         // Print Review Manifest (TSV) - protected with TSV sanitization
         println!("## Review Manifest");
-        println!("unit_id\tpath\tstatus\tadditions\tdeletions\tdiff_bytes\trisk_tags\tgroup_id\treview_command\tcontext_command");
+        println!("unit_id\tpath\tstatus\tadditions\tdeletions\tdiff_bytes\trisk_tags\tgroup_id\treview_command\tcontext_command\tcontent_fingerprint");
         for unit in &manifest_units {
             println!(
-                "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
+                "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
                 sanitize_tsv_field(&unit.unit_id),
                 sanitize_tsv_field(&unit.file_path),
                 sanitize_tsv_field(&unit.status),
@@ -2715,7 +3358,8 @@ fn run_app() -> Result<(), AppError> {
                 sanitize_tsv_field(&unit.risk_tags.join(";")),
                 sanitize_tsv_field(&unit.group_id),
                 sanitize_tsv_field(&unit.review_command),
-                sanitize_tsv_field(&unit.context_command)
+                sanitize_tsv_field(&unit.context_command),
+                sanitize_tsv_field(&unit.content_fingerprint)
             );
         }
         println!();
@@ -3371,11 +4015,10 @@ fn emit_requested_group(
     req_grp: &str,
     manifest_units: &[ManifestUnit],
     groups: &[ReviewGroup],
+    unit_diff_cache: &HashMap<String, Vec<u8>>,
     mode: &str,
-    selected_ref: &str,
     max_diff_bytes: usize,
     inline_diff_bytes: usize,
-    repo_root: &str,
 ) -> Result<(), AppError> {
     let group = match groups.iter().find(|g| g.group_id == req_grp) {
         Some(g) => g,
@@ -3441,9 +4084,7 @@ fn emit_requested_group(
                 Some(u) => u,
                 None => continue,
             };
-            let raw_f = unquote_git_path(f);
-            let f_diff_bytes =
-                git_run_diff_bytes(mode, selected_ref, &[], Some(&raw_f), repo_root)?;
+            let f_diff_bytes = unit_diff_cache.get(f).cloned().unwrap_or_default();
             let f_diff = String::from_utf8_lossy(&f_diff_bytes);
             let hunks = split_diff_into_hunks(&f_diff);
             if hunks.is_empty() {
@@ -3470,9 +4111,7 @@ fn emit_requested_group(
         println!();
         println!("## Split Unit Diff Preview");
         for f in &group.files {
-            let raw_f = unquote_git_path(f);
-            let f_diff_bytes =
-                git_run_diff_bytes(mode, selected_ref, &[], Some(&raw_f), repo_root)?;
+            let f_diff_bytes = unit_diff_cache.get(f).cloned().unwrap_or_default();
             let f_diff = String::from_utf8_lossy(&f_diff_bytes);
             let hunks = split_diff_into_hunks(&f_diff);
             for (h_idx, hunk) in hunks.iter().enumerate() {
@@ -3488,9 +4127,9 @@ fn emit_requested_group(
 
     let mut group_diff = String::new();
     for f in &group.files {
-        let raw_f = unquote_git_path(f);
-        let f_diff_bytes = git_run_diff_bytes(mode, selected_ref, &[], Some(&raw_f), repo_root)?;
-        group_diff.push_str(&String::from_utf8_lossy(&f_diff_bytes));
+        if let Some(f_diff_bytes) = unit_diff_cache.get(f) {
+            group_diff.push_str(&String::from_utf8_lossy(f_diff_bytes));
+        }
     }
 
     if group_diff.is_empty() {
@@ -3560,7 +4199,8 @@ mod tests {
     fn test_shell_quote_special_chars() {
         assert_eq!(shell_quote("hello world"), "hello\\ world");
         assert_eq!(shell_quote("it's"), "it\\'s");
-        assert_eq!(shell_quote("a\tb"), "a\\\tb");
+        assert_eq!(shell_quote("a\tb"), "$'a\\tb'");
+        assert_eq!(shell_quote("a\nb"), "$'a\\nb'");
         assert_eq!(shell_quote("$HOME"), "\\$HOME");
     }
 

@@ -7,9 +7,9 @@
   "required": ["schema_version", "state_kind", "source", "status", "manifest_units", "review_groups", "reviewed_units", "pending_units", "needs_split_units", "group_results", "coverage_gaps", "finding_merge", "dependency_checks", "test_recommendations", "final_verdict", "persistence_rule"],
   "properties": {
     "schema_version": { "type": "integer", "const": 1 },
-    "state_kind": { "type": "string", "const": "review_reducer" },
+    "state_kind": { "type": "string", "const": "reducer_state_snapshot" },
     "source": { "type": "string" },
-    "status": { "type": "string", "enum": ["pending", "in_progress", "complete"] },
+    "status": { "type": "string", "enum": ["pending_group_reviews"] },
     "manifest_units": { "type": "integer", "minimum": 0 },
     "review_groups": { "type": "integer", "minimum": 0 },
     "reviewed_units": { "type": "array" },

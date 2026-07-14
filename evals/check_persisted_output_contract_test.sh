@@ -44,4 +44,14 @@ JSONL
 
 "$checker" "$good_plan_transcript" >/dev/null || fail 'checker should accept explicit plan-only recovery after persisted output'
 
+good_control_transcript="$tmp_dir/good-control.jsonl"
+cat >"$good_control_transcript" <<'JSONL'
+{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"bash /skill/scripts/collect_diff_context.sh"}}]}}
+{"type":"user","message":{"content":[{"type":"tool_result","content":"<persisted-output>\nOutput too large. Full output saved to: /tmp/helper-output.txt"}]}}
+{"type":"assistant","message":{"content":[{"type":"tool_use","name":"Bash","input":{"command":"bash /skill/scripts/collect_diff_context.sh --control-plane"}}]}}
+{"type":"assistant","message":{"content":[{"type":"text","text":"coverage validation passed; full review over the authoritative scope fingerprint."}]}}
+JSONL
+
+"$checker" "$good_control_transcript" >/dev/null || fail 'checker should accept compact control-plane recovery after persisted output'
+
 printf 'persisted output contract tests passed\n'

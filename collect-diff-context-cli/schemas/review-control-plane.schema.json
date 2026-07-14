@@ -1,0 +1,126 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "review-control-plane.schema.json",
+  "title": "ReviewControlPlane",
+  "description": "Bounded, snapshot-pinned control plane for a commit-readiness review.",
+  "type": "object",
+  "required": ["schema_version", "kind", "authoritative", "source", "head", "base", "selected_ref"],
+  "properties": {
+    "schema_version": { "type": "integer", "const": 1 },
+    "kind": { "type": "string", "const": "review_control_plane" },
+    "authoritative": { "type": "boolean" },
+    "source": { "type": "string", "enum": ["staged", "unstaged", "branch", "none"] },
+    "head": { "type": "string", "minLength": 1 },
+    "base": { "type": "string" },
+    "selected_ref": { "type": "string" },
+    "scope_fingerprint": { "$ref": "#/$defs/fingerprint" },
+    "fingerprint_algorithm": { "type": "string", "const": "git-hash-object(binary-full-index-no-textconv)" },
+    "collection": {
+      "type": "object",
+      "required": ["start", "end"],
+      "properties": {
+        "start": { "$ref": "#/$defs/fingerprint" },
+        "end": { "$ref": "#/$defs/fingerprint" }
+      },
+      "additionalProperties": false
+    },
+    "counts": {
+      "type": "object",
+      "required": ["units", "groups", "additions", "deletions", "diff_bytes", "high_risk_units", "split_required_groups"],
+      "properties": {
+        "units": { "type": "integer", "minimum": 0 },
+        "groups": { "type": "integer", "minimum": 0 },
+        "additions": { "type": "integer", "minimum": 0 },
+        "deletions": { "type": "integer", "minimum": 0 },
+        "diff_bytes": { "type": "integer", "minimum": 0 },
+        "high_risk_units": { "type": "integer", "minimum": 0 },
+        "split_required_groups": { "type": "integer", "minimum": 0 }
+      },
+      "additionalProperties": false
+    },
+    "command_templates": {
+      "type": "object",
+      "required": ["helper", "source_args", "refresh_args", "group_args", "path_args"],
+      "properties": {
+        "helper": { "type": "string", "minLength": 1 },
+        "source_args": { "type": "array", "items": { "type": "string" } },
+        "refresh_args": { "type": "array", "items": { "type": "string" } },
+        "group_args": { "type": "array", "items": { "type": "string" } },
+        "path_args": { "type": "array", "items": { "type": "string" } }
+      },
+      "additionalProperties": false
+    },
+    "unit_tuple_fields": { "type": "array", "const": ["path", "status", "additions", "deletions", "diff_bytes", "risk_tags", "group_id", "content_fingerprint"] },
+    "units": { "type": "array", "items": { "$ref": "#/$defs/unitTuple" } },
+    "group_tuple_fields": { "type": "array", "const": ["group_id", "risk", "reason", "diff_bytes", "budget_status", "unit_indexes"] },
+    "groups": { "type": "array", "items": { "$ref": "#/$defs/groupTuple" } },
+    "work_order_tuple_fields": { "type": "array", "const": ["priority", "group_id", "action"] },
+    "work_order": { "type": "array", "items": { "$ref": "#/$defs/workTuple" } },
+    "coverage_contract": {
+      "type": "object",
+      "required": ["unit_id", "initial_status", "completion", "split_rule", "blocking_rule", "finalization"],
+      "properties": {
+        "unit_id": { "type": "string" },
+        "initial_status": { "type": "string", "const": "pending" },
+        "completion": { "type": "string" },
+        "split_rule": { "type": "string" },
+        "blocking_rule": { "type": "string" },
+        "finalization": { "type": "string" }
+      },
+      "additionalProperties": false
+    },
+    "reason": { "type": "string" },
+    "expected_scope_fingerprint": { "anyOf": [{ "$ref": "#/$defs/fingerprint" }, { "type": "null" }] },
+    "collection_start_fingerprint": { "type": "string" },
+    "observed_scope_fingerprint": { "type": "string" },
+    "recovery": { "type": "string" }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "authoritative": { "const": true } }, "required": ["authoritative"] },
+      "then": {
+        "required": ["scope_fingerprint", "fingerprint_algorithm", "collection", "counts", "command_templates", "unit_tuple_fields", "units", "group_tuple_fields", "groups", "work_order_tuple_fields", "work_order", "coverage_contract"]
+      },
+      "else": {
+        "required": ["reason", "expected_scope_fingerprint", "collection_start_fingerprint", "observed_scope_fingerprint", "recovery"]
+      }
+    }
+  ],
+  "$defs": {
+    "fingerprint": { "type": "string", "pattern": "^[0-9a-f]{40}([0-9a-f]{24})?$" },
+    "unitTuple": {
+      "type": "array",
+      "prefixItems": [
+        { "type": "string" }, { "type": "string" }, { "type": "integer", "minimum": 0 },
+        { "type": "integer", "minimum": 0 }, { "type": "integer", "minimum": 0 },
+        { "type": "string" }, { "type": "string" }, { "$ref": "#/$defs/fingerprint" }
+      ],
+      "items": false,
+      "minItems": 8,
+      "maxItems": 8
+    },
+    "groupTuple": {
+      "type": "array",
+      "prefixItems": [
+        { "type": "string" }, { "type": "string", "enum": ["high", "consistency", "medium"] },
+        { "type": "string" }, { "type": "integer", "minimum": 0 },
+        { "type": "string", "enum": ["ok", "over-target", "split-required"] },
+        { "type": "array", "items": { "type": "integer", "minimum": 0 } }
+      ],
+      "items": false,
+      "minItems": 6,
+      "maxItems": 6
+    },
+    "workTuple": {
+      "type": "array",
+      "prefixItems": [
+        { "type": "integer", "minimum": 1, "maximum": 4 }, { "type": "string" },
+        { "type": "string", "enum": ["review", "split"] }
+      ],
+      "items": false,
+      "minItems": 3,
+      "maxItems": 3
+    }
+  },
+  "additionalProperties": false
+}

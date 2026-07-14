@@ -79,6 +79,7 @@ read_persisted_output = any(path_was_recovered(path) for path in persisted_paths
 reran_plan = any(
     marker in all_tool_text
     for marker in (
+        "collect_diff_context.sh --control-plane",
         "collect_diff_context.sh --plan-only",
         "collect_diff_context.sh --include-diff never",
         "collect_diff_context.sh --plan-json",
@@ -96,7 +97,7 @@ coverage_validation = bool(
 
 if not recovered_structured_context:
     print(
-        "persisted helper output was not recovered: read the saved output or rerun collect_diff_context.sh --plan-only/--manifest-jsonl before reviewing",
+        "persisted helper output was not recovered: rerun collect_diff_context.sh --control-plane or read the saved legacy plan/manifest before reviewing",
         file=sys.stderr,
     )
     sys.exit(1)

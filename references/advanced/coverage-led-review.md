@@ -78,22 +78,25 @@ A coverage-led review may call itself a full review only when coverage validatio
 
 Use these inputs in descending authority:
 
-1. `Review Plan JSON`
-2. `Review Manifest JSONL`
-3. `Review Groups JSONL`
-4. human-readable `Review Manifest`
-5. human-readable `Review Groups`
-6. `Split Suggestions`
-7. `Dependency Summary`
-8. `Semantic Context Queries`
+1. authoritative `Review Control Plane JSON`
+2. legacy `Review Plan JSON`
+3. legacy `Review Manifest JSONL`
+4. legacy `Review Groups JSONL`
+5. human-readable `Review Manifest`
+6. human-readable `Review Groups`
+7. `Split Suggestions`
+8. `Dependency Summary`
+9. `Semantic Context Queries`
 
 Rules:
 
-- treat `Review Manifest` as the authoritative list of review units
+- accept the control plane only when `authoritative` is `true`
+- record its `scope_fingerprint`; treat its compact units as the authoritative list of review units for that exact snapshot
 - treat `Review Groups` as the default work plan, not the ground truth of coverage
 - treat `Split Suggestions` as replacement planning for oversized units
 - treat `Dependency Summary` and `Semantic Context Queries` as best-effort context only
 - never let contextual hints mark a unit as reviewed
+- never merge coverage or findings carrying different scope fingerprints
 
 ## Review Units
 
@@ -164,7 +167,8 @@ Rules:
 
 - prefer helper-provided group-level `context_command` when the group fits in budget
 - use file-level commands when a group must be narrowed or split
-- every retrieval command must stay tied to the same diff source
+- every retrieval command must stay tied to the same diff source and include `--expect-scope <scope_fingerprint>`
+- discard any retrieval result that reports a fingerprint mismatch or `authoritative: false`
 - do not widen review scope accidentally when retrieving more context
 - semantic context can inform impact analysis, but cannot satisfy coverage
 
@@ -241,6 +245,10 @@ Also verify:
 - every `needs-split` unit has replacement results
 - no reviewed unit is stale or double-counted
 - no parent unit remains marked reviewed after being replaced by split children
+- every group/path result carries the opening scope fingerprint
+- a fresh final control-plane collection matches the opening fingerprint, manifest units, and work order
+
+If the final collection differs, the old ledger is stale. Do not retain an "unchanged count" based only on filenames or totals. Use per-unit content fingerprints to identify unchanged units, re-review changed units, and finish against one authoritative final snapshot.
 
 ## Dependency and Contract Follow-Up
 
@@ -357,3 +365,4 @@ Before producing the final review, verify:
 6. cross-file dependency or contract follow-up has been completed
 7. high-impact reducer findings passed the finding verification gate or were downgraded
 8. the final verdict matches the actual coverage state
+9. the opening and final authoritative scope fingerprints match

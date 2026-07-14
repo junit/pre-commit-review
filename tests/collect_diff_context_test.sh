@@ -467,7 +467,7 @@ assert_contains "$content_risk_output" '## Review Manifest'
 assert_contains "$content_risk_output" $'unit_id\tpath\tstatus\tadditions\tdeletions\tdiff_bytes\trisk_tags\tgroup_id\treview_command\tcontext_command'
 assert_contains "$content_risk_output" $'file:src/service.py\tsrc/service.py\tA\t2\t0\t'
 assert_contains "$content_risk_output" $'high-risk\thigh-risk-src'
-assert_contains "$content_risk_output" 'git diff --cached -- src/service.py'
+assert_contains "$content_risk_output" 'git diff --cached --no-textconv -- src/service.py'
 assert_contains "$content_risk_output" '## Review Manifest JSONL'
 assert_contains "$content_risk_output" '"unit_id":"file:src/service.py"'
 assert_contains "$content_risk_output" '"risk_tags":["high-risk"]'
@@ -508,7 +508,7 @@ assert_contains "$content_risk_output" $'1\treview\thigh-risk-src\thigh\tok\tfil
 assert_contains "$content_risk_output" '## Group Review Work Packets'
 assert_contains "$content_risk_output" 'group_id: high-risk-src'
 assert_contains "$content_risk_output" 'required_units: file:src/service.py'
-assert_contains "$content_risk_output" 'review_commands: git diff --cached -- src/service.py'
+assert_contains "$content_risk_output" 'review_commands: git diff --cached --no-textconv -- src/service.py'
 assert_contains "$content_risk_output" '--source staged --group high-risk-src'
 assert_contains "$content_risk_output" '--source staged --path src/service.py'
 assert_contains "$content_risk_output" '## Reducer Finalization Template'
@@ -526,7 +526,7 @@ printf 'hello\n' >"$space_path_repo/docs/file with space.md"
 git -C "$space_path_repo" add 'docs/file with space.md'
 space_path_output="$tmp_dir/space-path.out"
 run_helper "$space_path_repo" "$space_path_output"
-assert_contains "$space_path_output" 'review_commands: git diff --cached -- docs/file\ with\ space.md'
+assert_contains "$space_path_output" 'review_commands: git diff --cached --no-textconv -- docs/file\ with\ space.md'
 assert_contains "$space_path_output" 'context_command: '
 assert_contains "$space_path_output" '--source staged --path docs/file\ with\ space.md'
 assert_contains "$space_path_output" 'top-churn: docs/file with space.md (+1/-0)'
@@ -542,7 +542,7 @@ assert_contains "$comma_path_output" $'file:docs/file,with,comma.md\tdocs/file,w
 assert_contains "$comma_path_output" $'module-docs\tmedium\tmodule\t'
 assert_contains "$comma_path_output" '## Review Manifest JSONL'
 assert_contains "$comma_path_output" '"path":"docs/file,with,comma.md"'
-assert_contains "$comma_path_output" '"review_command":"git diff --cached -- docs/file\\,with\\,comma.md"'
+assert_contains "$comma_path_output" '"review_command":"git diff --cached --no-textconv -- docs/file\\,with\\,comma.md"'
 assert_contains "$comma_path_output" '## Review Groups JSONL'
 assert_contains "$comma_path_output" '"files":["docs/file,with,comma.md"]'
 assert_jsonl_section_valid "$comma_path_output" 'Review Manifest JSONL'
@@ -550,7 +550,7 @@ assert_jsonl_section_valid "$comma_path_output" 'Review Groups JSONL'
 assert_json_section_valid "$comma_path_output" 'Review Plan JSON'
 assert_contains "$comma_path_output" 'group_id: module-docs'
 assert_contains "$comma_path_output" 'required_units: file:docs/file,with,comma.md'
-assert_contains "$comma_path_output" 'review_commands: git diff --cached -- docs/file\,with\,comma.md'
+assert_contains "$comma_path_output" 'review_commands: git diff --cached --no-textconv -- docs/file\,with\,comma.md'
 
 comma_risk_repo="$tmp_dir/comma-risk-path"
 mkdir -p "$comma_risk_repo/src" "$comma_risk_repo/snapshots"
@@ -629,7 +629,7 @@ assert_contains "$space_path_specific_output" 'requested_path: docs/file with sp
 assert_contains "$space_path_specific_output" 'requested_source: staged'
 assert_contains "$space_path_specific_output" 'review_limits: file-specific diff for requested path; no other files included'
 assert_contains "$space_path_specific_output" '## Requested File Diff'
-assert_contains "$space_path_specific_output" 'review_command: git diff --cached -- docs/file\ with\ space.md'
+assert_contains "$space_path_specific_output" 'review_command: git diff --cached --no-textconv -- docs/file\ with\ space.md'
 assert_contains "$space_path_specific_output" '+hello'
 if grep -Fq '## Review Manifest' "$space_path_specific_output"; then
   fail 'file-specific context mode must not emit the full review manifest'

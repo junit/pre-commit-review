@@ -19,31 +19,6 @@ echo "Copying legacy shell script from scripts/collect_diff_context.legacy.sh...
 cp "$REPO_ROOT/scripts/collect_diff_context.legacy.sh" "$LEGACY_SH"
 chmod +x "$LEGACY_SH"
 
-# Patch legacy script to fix path quoting bugs so it can be compared fairly
-python3 -c '
-with open("/tmp/collect_diff_context_legacy.sh", "r") as f:
-    code = f.read()
-
-unquote_def = """
-unquote_path() {
-  local p="$1"
-  if [[ "$p" =~ ^\\"(.*)\\"$ ]]; then
-    p="${BASH_REMATCH[1]}"
-    printf -v p "%b" "$p"
-  fi
-  printf "%s" "$p"
-}
-"""
-
-code = code.replace("file_diff_for_path() {", unquote_def + "\nfile_diff_for_path() {")
-code = code.replace("file_diff_for_path() {\n  local path=\"$1\"", "file_diff_for_path() {\n  local path=\"$(unquote_path \"$1\")\"")
-code = code.replace("file_numstat_for_path() {\n  local path=\"$1\"", "file_numstat_for_path() {\n  local path=\"$(unquote_path \"$1\")\"")
-code = code.replace("file_stat_for_path() {\n  local path=\"$1\"", "file_stat_for_path() {\n  local path=\"$(unquote_path \"$1\")\"")
-
-with open("/tmp/collect_diff_context_legacy.sh", "w") as f:
-    f.write(code)
-'
-
 # 2. Build the latest Rust binary locally
 echo "Building Rust binary locally..."
 (cd "$REPO_ROOT/collect-diff-context-cli" && cargo build --release)

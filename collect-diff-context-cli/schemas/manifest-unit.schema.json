@@ -4,7 +4,7 @@
   "title": "ManifestUnit",
   "description": "A single file unit in the review manifest, representing one changed file with its metadata.",
   "type": "object",
-  "required": ["unit_id", "path", "status", "additions", "deletions", "diff_bytes", "risk_tags", "group_id", "review_command", "context_command"],
+  "required": ["unit_id", "path", "status", "additions", "deletions", "diff_bytes", "content_fingerprint", "risk_tags", "group_id", "review_command", "context_command"],
   "properties": {
     "unit_id": { "type": "string", "description": "Unique identifier for this manifest unit" },
     "path": { "type": "string", "description": "File path (display-quoted if special characters present)" },
@@ -12,6 +12,7 @@
     "additions": { "type": "integer", "minimum": 0, "description": "Number of lines added" },
     "deletions": { "type": "integer", "minimum": 0, "description": "Number of lines deleted" },
     "diff_bytes": { "type": "integer", "minimum": 0, "description": "Size of the diff in bytes" },
+    "content_fingerprint": { "type": "string", "pattern": "^[0-9a-f]{40}([0-9a-f]{24})?$", "description": "Repository-native Git object hash of this unit's source-pinned diff" },
     "risk_tags": { "type": "array", "items": { "type": "string" }, "description": "Risk classification tags" },
     "group_id": { "type": "string", "description": "ID of the review group this unit belongs to" },
     "review_command": { "type": "string", "description": "Shell command to review this specific file" },

@@ -47,40 +47,42 @@ Resolve the review source in this order:
 When local repository access is available and the user has not explicitly provided the review material, the first repository command for this workflow is the helper:
 
 ```bash
-scripts/collect_diff_context.sh
+scripts/collect_diff_context.sh --control-plane
 ```
 
 Resolve this path relative to the skill package directory containing this `SKILL.md`. Do not assume `scripts/` exists in the user's project root.
 
-This is a mandatory gateway. Attempt the helper before any direct `git status`, `git diff`, `git diff --cached`, or branch comparison command. Treat the helper output as the source of truth for:
+This is a mandatory gateway. Attempt the helper before any direct `git status`, `git diff`, `git diff --cached`, or branch comparison command. Treat the compact control-plane JSON as the source of truth only when `authoritative` is `true`. Record its `scope_fingerprint`; it identifies the exact selected diff snapshot reviewed by this run. Use the control plane for:
 
 - diff source
 - review boundaries
 - changed file counts
 - staged vs. unstaged notes
 - untracked file warnings
-- review manifest units, when emitted
-- review plan and group ordering, when emitted
-- coverage ledger requirements, when emitted
+- review manifest units
+- review groups and work ordering
+- coverage rules and snapshot identity
 - test selection hints for changed tests, when emitted
 
-Only fall back to direct Git inspection when the helper is unavailable at that resolved path, exits non-zero, cannot be executed in the current host, or the user already provided the review material explicitly. When falling back, keep the source selection order above.
+If the control plane reports `authoritative: false`, stop scope-dependent review work and rerun it. Do not combine units or findings from different fingerprints. Only fall back to direct Git inspection when the helper is unavailable at that resolved path, exits non-zero without structured output, cannot be executed in the current host, or the user already provided the review material explicitly. When falling back, keep the source selection order above and describe the missing snapshot guard as a review limitation.
 
-The helper is plan-first. Its default output may omit the global raw diff when the diff is too large to inline safely. This is intentional. In that case:
+The helper is control-plane-first. The initial `--control-plane` output is bounded metadata and intentionally contains no raw diff. In that case:
 
-- use the helper-emitted `Review Plan JSON`, `Review Manifest JSONL`, `Coverage Ledger Template`, and `context_command` values as the review control plane
-- use helper-mediated `--group` and `--path` commands to load bounded diff content
+- use the emitted compact units, groups, work order, command templates, and coverage contract
+- expand the emitted command templates with the recorded fingerprint; every helper-mediated `--group` and `--path` load must include `--expect-scope <scope_fingerprint>`
 - do not rebuild the review scope with direct `git status`, `git diff --name-only`, `git diff --stat`, or ad hoc path selection
 - use helper-emitted `review_command` values only as a compatibility fallback when a helper-mediated `context_command` cannot be run
 
 If the helper emits `Test Selection Hints`, use them only as read-only guidance for verification planning. They do not prove test safety, do not replace CI, and must not be described as skipped or stripped tests. Built-in hints cover common JVM/Spring/Quarkus/Micronaut, pytest, Node e2e, Go, Rust, container, HTTP-stub, and external-service markers; project-specific `.pre-commit-review/test-hints` rules still take precedence for local conventions. Treat env-dependent tests such as `@SpringBootTest`, Testcontainers, or DB slices as verification that may require CI/local profile support, not as sandbox-safe unit tests. Treat `no-known-env-heavy-marker` as "no known marker matched", not as proof that the test is a pure unit test.
 
-If the host persists helper output because it is too large and only returns a preview:
+If a legacy/default helper invocation is persisted because it is too large and only returns a preview:
 
 - recover the structured control plane before reviewing code
 - either read/extract the saved output sections containing `Review Plan JSON`, `Review Manifest JSONL`, and `Coverage Ledger Template`, or rerun the helper with `--plan-only` / `--include-diff never`
 - do not proceed from the preview alone
 - do not run direct Git commands to reconstruct the file list or priority plan before the structured control plane has been recovered
+
+Before final synthesis, rerun `scripts/collect_diff_context.sh --control-plane` for the same source. The final result is eligible for a verdict only when it is authoritative and its `scope_fingerprint`, manifest units, and work order match the opening control plane. Any mismatch invalidates the old coverage ledger; rerun affected review work against the new snapshot instead of describing old and new units as one complete review.
 
 If only code is provided with no before/after diff:
 
@@ -226,7 +228,7 @@ CRITICAL SECRET PRIVACY RULE: NEVER reproduce, quote, or echo full secret string
 
 ## Output Contract
 
-CRITICAL FORMAT RULE: Start your final output IMMEDIATELY with the review (beginning directly with `# Pre-Commit Review` or `**VERDICT:**`). Do NOT write any conversational preamble, introduction, reasoning preamble, rule explanations, meta-commentary, or `★ Insight` blocks anywhere in your output (before or after the review).
+CRITICAL FORMAT RULE: Start your final output IMMEDIATELY with the selected language template title (for example `# Pre-Commit Review` or `# 提交前审查`) or with `**VERDICT:**`. Do NOT write any conversational preamble, introduction, reasoning preamble, rule explanations, meta-commentary, or `★ Insight` blocks anywhere in your output (before or after the review).
 
 Always preserve the field label `VERDICT` in English.
 
@@ -253,6 +255,7 @@ Rules:
 - Every material candidate concern must have a visible disposition in the final report: priority finding, suggested verification, follow-up/domain confirmation, review limitation, or omission because it is low-confidence speculation that would not help the commit decision.
 - Do not let brevity remove material technical detail. Boundary-condition failures, ignored validation/intent parameters, side-effect contract gaps, and security TOCTOU residuals are not clean-code smells when they can affect runtime behavior, data integrity, or trust boundaries.
 - Verification recommendations must preserve the specific behavioral assertion that makes the concern meaningful. Do not replace a compatibility assertion such as "fallback behavior remains equivalent to the previous implementation for the same input" with a generic logging or "add more tests" suggestion.
+- Render the complete skeleton for the selected mode and language. Do not replace required metadata, sections, finding confidence, risk tables, or the Visual Review matrix with a shorter custom report merely because the review is large.
 
 Before final synthesis, harvest material candidate concerns from changed behavior categories such as externally observable value construction, cross-boundary I/O, side-effect protection, access or isolation scope, execution-context propagation, runtime prerequisites, and compatibility-sensitive fallbacks. Maintain an internal candidate disposition ledger for those harvested candidates. For every material candidate concern, record: affected object, risk class, evidence status, disposition, and final report location. The final report may use normal user-facing sections rather than showing this ledger, but every material candidate that is not disproven or low-confidence speculation must be visible somewhere in the report. If any material candidate lacks a final report location, revise the report before emitting the verdict.
 
@@ -308,6 +311,14 @@ Do not run mutating git operations unless the user explicitly asks.
 
 Do not change files, stage files, commit, push, or switch branches as part of the review unless explicitly requested.
 
+Treat verification as read-only with respect to the reviewed repository:
+
+- capture the opening worktree and index identity before running tests, lint, builds, type checks, code generation, or browser tooling
+- prefer isolated output/cache/config locations and disable auto-fix or auto-generation; a command described as lint or build is not presumed read-only
+- compare worktree and index identity after each command that may generate or rewrite files
+- if verification changes the business repository, stop that verification path, name the changed files, and exclude the contaminated result from safety claims until it is rerun in isolation
+- never silently restore, stage, or delete those changes; ask the user before any cleanup outside the review artifact directory
+
 If material high-risk areas cannot be reviewed:
 
 - surface them clearly under review limitations or unreviewed changes
@@ -334,3 +345,5 @@ Use:
 - Visual template for visual reviews
 
 Use coverage-led reporting only when the review mode truly requires coverage accounting. Do not force coverage-led structure into small routine reviews.
+
+Before emitting the report, perform a format and consistency audit against the loaded template: exactly one top-level `VERDICT`, every required metadata field and section present, Visual matrix present in Visual mode, finding confidence included where required, and all finding/test/limit counts consistent with the body and risk summary. Revise the report if any check fails.
