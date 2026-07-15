@@ -1,8 +1,12 @@
 # pre-commit-review
 
+[![Lint](https://img.shields.io/github/actions/workflow/status/wifibaby4u/pre-commit-review/lint.yml?branch=main&label=lint&logo=github)](https://github.com/wifibaby4u/pre-commit-review/actions/workflows/lint.yml)
+[![License](https://img.shields.io/badge/license-Apache--2.0-blue)](./LICENSE)
+[![Shell](https://img.shields.io/badge/shell-bash-4EAA25?logo=gnubash&logoColor=white)](https://www.shellcheck.net/)
+
 [English](./README.md) | [简体中文](./README.zh-CN.md)
 
-`pre-commit-review` is a reusable skill package for reviewing Git diffs before committing, pushing, or opening a pull request.
+`pre-commit-review` is a reusable skill package for reviewing Git diffs before committing, pushing, or opening a pull request. In plain terms: **a drop-in pre-commit review step you add to your AI coding agent** (Codex, Claude Code, Gemini CLI, Kiro) so it gives you a structured, repeatable quality gate instead of an ad hoc diff summary.
 
 It is designed for agent workflows such as Codex- or Claude-style skill systems, where you want a structured, repeatable pre-commit quality gate instead of an ad hoc diff summary.
 
@@ -12,6 +16,23 @@ It is designed for agent workflows such as Codex- or Claude-style skill systems,
 - Simplified Chinese: `README.zh-CN.md`
 
 Translations should stay functionally aligned. If you update one version, update the others in the same change when possible.
+
+## Table of Contents
+
+- [What It Does](#what-it-does)
+- [Requirements](#requirements)
+- [Example Output](#example-output)
+- [Quick Install](#quick-install)
+- [Why This Repository Exists](#why-this-repository-exists)
+- [Repository Structure](#repository-structure)
+- [How It Works](#how-it-works)
+- [Conversation Prompts](#conversation-prompts)
+- [Other Integration Modes](#other-integration-modes)
+- [Review Output](#review-output)
+- [Safety Characteristics](#safety-characteristics)
+- [Limitations](#limitations)
+- [Contributing](#contributing)
+- [License](#license)
 
 ## What It Does
 
@@ -33,6 +54,79 @@ Translations should stay functionally aligned. If you update one version, update
   - `SAFE_TO_COMMIT_WITH_NOTES`
   - `DO_NOT_COMMIT`
 - Uses a read-only helper script to collect local Git context without mutating the repository
+
+## Requirements
+
+- A supported AI coding agent runtime that can load skills (Codex, Claude Code, Gemini CLI, or Kiro). The skill package ships no runtime of its own.
+- `git` on `PATH` for local diff collection. The review still works without it when you paste a diff or code directly.
+- A Unix-compatible shell to run `install.sh` and the helper. On Windows use Git Bash, MSYS2, or WSL.
+
+## Example Output
+
+A real review ends with a verdict and a one-line conclusion. This is what the skill produces for a one-line README typo fix (Tiny review):
+
+```markdown
+# Pre-Commit Review
+
+**VERDICT:** SAFE_TO_COMMIT
+**Conclusion:** Safe to commit; documentation update in README has no runtime risk.
+**Diff source:** staged diff via `git diff --cached`
+**Review scope:** full review - inspected the single modified hunk in `README.md`
+**Change scale:** 1 file, +2 / -2
+
+- **Change:** Corrected installation commands in the README quickstart
+- **Logic:** No runtime behavior change
+- **Impact scope:** Affects document readers only
+- **Risk:** 🟢 Low - prose update only; no impact on code or build
+- **Suggested verification:** No tests needed
+- **Before commit:** None
+```
+
+For larger diffs the skill adds a risk summary table, regression-risk level, and commit guidance with required/suggested fixes. See [`references/examples/`](./references/examples/) for full default and complex examples.
+
+## Quick Install
+
+From a clone of this repository, install globally for any supported agent:
+
+```bash
+./install.sh --agent codex
+./install.sh --agent claude-code
+./install.sh --agent gemini-cli
+./install.sh --agent kiro-cli
+```
+
+List every supported agent id and its project/global paths:
+
+```bash
+./install.sh --list-agents
+```
+
+Defaults:
+
+- Global installs use the agent-specific global path shown by `--list-agents`
+- Project installs use the agent-specific project path shown by `--list-agents`
+- `--dir PATH` overrides both defaults
+- `AGENT_SKILLS_DIR` overrides the global default for all agents
+- Dedicated overrides are also supported for existing integrations: `CODEX_SKILLS_DIR`, `CLAUDE_SKILLS_DIR`, `GEMINI_SKILLS_DIR`, `KIRO_SKILLS_DIR`, and `CODEX_HOME`
+- Backward-compatible aliases are supported: `claude`, `gemini`, and `kiro`
+
+Useful flags:
+
+- `--copy` copies the minimal runtime skill payload into the target directory and is the default mode
+- `--link` creates a symlink to this repository, which is useful for local development
+- `--project` installs into the agent's project-local skills directory
+- `--dir PATH` overrides the target skills directory
+- `--force` replaces an existing non-managed target
+- `--dry-run` prints what would happen without changing anything
+
+Examples:
+
+```bash
+./install.sh --agent cursor --project
+./install.sh --agent windsurf --link --project
+./install.sh --agent github-copilot --dry-run
+./install.sh kiro --dir .kiro/skills
+```
 
 ## Why This Repository Exists
 
@@ -115,34 +209,13 @@ Defines the skill itself:
 
 ### `scripts/collect_diff_context.sh`
 
-A read-only helper script that gathers local repository context for the review workflow. It:
+A read-only helper script that gathers local repository context for the review workflow. It does three jobs:
 
-- emits a compact `--control-plane` JSON gateway with an authoritative full-scope content fingerprint, per-unit fingerprints, bounded units/groups, work order, and reusable command templates
-- supports `--expect-scope <fingerprint>` on follow-up retrieval so stale group/path output fails closed
-- disables external diff and textconv drivers for both fingerprints and emitted review bytes, keeping snapshot identity and inspected content semantically aligned
-- detects whether the current directory is a Git repository
-- prefers staged changes when present
-- falls back to unstaged changes or branch-vs-base comparison
-- reports diff stats, file lists, and status
-- identifies truncation, path/content high-risk candidates, generated-like files, lock files, and top-churn files
-- emits a Review Manifest and Review Groups for coverage-led commit-readiness workflows
-- records rename, delete, binary, mode-only, and submodule pointer changes as manifest units
-- emits Review Plan JSON for reducer-friendly automation without Markdown table parsing
-- emits Split Suggestions for review groups that exceed the hard budget
-- emits Split Unit Diff Preview blocks for hunk-level review
-- emits a Coverage Ledger Template with pending review units
-- emits Group Review Result templates for reducer-ready group findings
-- emits a Reducer State Snapshot Template for long multi-step reviews
-- emits a Coverage Validation Checklist for reducer preflight
-- emits a Full Review Execution Plan with ordered split/review steps
-- emits Group Review Work Packets for serial or delegated group review
-- emits a Reducer Finalization Template for final synthesis gates
-- emits a best-effort Dependency Summary for cross-file reduction
-- emits bounded Semantic Context Queries from project-provided read-only grep patterns
-- emits Test Selection Hints for changed test files that look environment-dependent, including common JVM/Spring/Quarkus/Micronaut, Maven/Gradle integration naming, JUnit tags, Testcontainers, Docker Compose, WireMock/MockServer, pytest markers, Playwright/Cypress/Node e2e, Go build tags, Rust ignored/integration tests, and database/cache/broker/search service configuration
-- emits a suggested review queue for large or truncated diffs
-- omits the global raw diff from default output when it exceeds the inline budget, while keeping the structured plan visible
-- truncates explicitly requested or inlined diffs safely when needed
+1. **Diff source resolution** — detects whether the cwd is a Git repository, prefers staged changes, falls back to unstaged or branch-vs-base, and reports diff stats, file lists, status, truncation, high-risk candidates, generated-like/lock files, and top-churn files. Rename, delete, binary, mode-only, and submodule pointer changes are recorded as manifest units.
+2. **A bounded control plane** — emits a compact `--control-plane` JSON gateway with an authoritative full-scope content fingerprint, per-unit fingerprints, bounded units/groups, work order, and reusable command templates; supports `--expect-scope <fingerprint>` on follow-up retrieval so stale output fails closed; and disables external diff/textconv drivers so snapshot identity and inspected content stay aligned.
+3. **Coverage-led + test-selection hints** — emits a Review Manifest/Groups and reducer-friendly structured sections (Review Plan JSON, split suggestions, ledgers, work packets, finalization templates), bounded read-only Semantic Context Queries, and Test Selection Hints for changed test files that look environment-dependent, including common JVM/Spring/Quarkus/Micronaut, Maven/Gradle integration naming, JUnit tags, Testcontainers, Docker Compose, WireMock/MockServer, pytest markers, Playwright/Cypress/Node e2e, Go build tags, Rust ignored/integration tests, and database/cache/broker/search service configuration.
+
+The full list of emitted sections (Coverage Ledger Template, Group Review Work Packets, Reducer State Snapshot, etc.) is documented in [`docs/helper-capabilities.md`](./docs/helper-capabilities.md) for integrators building reducer/subagent automation.
 
 It does not fetch, stage, reset, install, or modify files.
 It does not run, rewrite, or skip tests. Test Selection Hints are read-only guidance for choosing focused verification commands and for distinguishing sandbox failures from code failures. A `no-known-env-heavy-marker` hint is not proof that a test is isolated; it only means the helper did not match a known environment-heavy marker.
@@ -243,51 +316,7 @@ Provides lightweight agent metadata for environments that expose skills through 
 
 ### `install.sh`
 
-Installs this skill package into host-specific skills directories for supported AI coding agents.
-
-## Quick Install
-
-From a clone of this repository, install globally for any supported agent:
-
-```bash
-./install.sh --agent codex
-./install.sh --agent claude-code
-./install.sh --agent gemini-cli
-./install.sh --agent kiro-cli
-```
-
-List every supported agent id and its project/global paths:
-
-```bash
-./install.sh --list-agents
-```
-
-Defaults:
-
-- Global installs use the agent-specific global path shown by `--list-agents`
-- Project installs use the agent-specific project path shown by `--list-agents`
-- `--dir PATH` overrides both defaults
-- `AGENT_SKILLS_DIR` overrides the global default for all agents
-- Dedicated overrides are also supported for existing integrations: `CODEX_SKILLS_DIR`, `CLAUDE_SKILLS_DIR`, `GEMINI_SKILLS_DIR`, `KIRO_SKILLS_DIR`, and `CODEX_HOME`
-- Backward-compatible aliases are supported: `claude`, `gemini`, and `kiro`
-
-Useful flags:
-
-- `--copy` copies the minimal runtime skill payload into the target directory and is the default mode
-- `--link` creates a symlink to this repository, which is useful for local development
-- `--project` installs into the agent's project-local skills directory
-- `--dir PATH` overrides the target skills directory
-- `--force` replaces an existing non-managed target
-- `--dry-run` prints what would happen without changing anything
-
-Examples:
-
-```bash
-./install.sh --agent cursor --project
-./install.sh --agent windsurf --link --project
-./install.sh --agent github-copilot --dry-run
-./install.sh kiro --dir .kiro/skills
-```
+Installs this skill package into host-specific skills directories for supported AI coding agents. See [Quick Install](#quick-install) for usage.
 
 ## How It Works
 
@@ -437,25 +466,11 @@ This package is intentionally conservative:
 
 ## Contributing
 
-Contributions are best focused on:
+Contributions are welcome. Good focus areas: review heuristics, safety boundaries, the output template, and diff collection robustness across repository states.
 
-- improving review heuristics
-- tightening safety boundaries
-- refining the output template
-- making diff collection more robust across repository states
+See **[CONTRIBUTING.md](./CONTRIBUTING.md)** for the development setup (shellcheck, the Rust CLI build, and the deterministic test suites) and PR checklist.
 
-If you change script paths or repository layout, update `SKILL.md` accordingly.
-If you update user-facing documentation, keep localized README files synchronized.
-
-### Development
-
-Shell scripts (`scripts/*.sh`, `install.sh`, `tests/*.sh`, `evals/*.sh`) are linted by [shellcheck](https://www.shellcheck.net/) in CI (`.github/workflows/lint.yml`). Install it locally (`brew install shellcheck` on macOS) and run `shellcheck -s bash scripts/*.sh install.sh tests/*.sh evals/*.sh` before submitting changes.
-
-To build the Rust CLI binary locally for the current host, run `cargo build --release --manifest-path collect-diff-context-cli/Cargo.toml`. To refresh bundled release binaries, run `scripts/build_with_docker.sh`, which delegates to `scripts/build_all_binaries.sh` and uses native macOS targets plus Docker/cross compilation for Linux and Windows targets when needed.
-
-The deterministic unit test suite is `bash tests/*_test.sh`. The eval harness also ships deterministic self-tests that do not call a model: `bash evals/eval_contract_test.sh`, `bash evals/output_eval_runner_test.sh`, and `bash evals/output_eval_host_wrappers_test.sh` (or run all eval self-tests via `for f in evals/*_test.sh; do bash "$f"; done`). The model-backed runners (`evals/output_eval_codex_runner.sh`, `evals/output_eval_claude_runner.sh`) require a real Codex or Claude CLI and are not part of CI.
-
-The manual real-host smoke workflow is `.github/workflows/real-host-smoke.yml`. It is intended for a self-hosted runner that already has authenticated `claude` and `codex` CLIs available, and it delegates to `evals/run_real_host_smoke.sh`.
+> Note: `README.md` and `README.zh-CN.md` are contract files — several tests assert specific phrases appear in them. When editing, keep those exact strings intact or update the assertions together.
 
 ## License
 

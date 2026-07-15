@@ -1,8 +1,12 @@
 # pre-commit-review
 
+[![Lint](https://img.shields.io/github/actions/workflow/status/wifibaby4u/pre-commit-review/lint.yml?branch=main&label=lint&logo=github)](https://github.com/wifibaby4u/pre-commit-review/actions/workflows/lint.yml)
+[![License](https://img.shields.io/badge/license-Apache--2.0-blue)](./LICENSE)
+[![Shell](https://img.shields.io/badge/shell-bash-4EAA25?logo=gnubash&logoColor=white)](https://www.shellcheck.net/)
+
 [English](./README.md) | [简体中文](./README.zh-CN.md)
 
-`pre-commit-review` 是一个可复用的 skill 包，用于在提交、推送或创建 Pull Request 之前审查 Git diff。
+`pre-commit-review` 是一个可复用的 skill 包，用于在提交、推送或创建 Pull Request 之前审查 Git diff。通俗地说：**一个可以直接挂到你 AI 编程 agent（Codex、Claude Code、Gemini CLI、Kiro）上的提交前审查步骤**，让它给你一个结构化、可重复的质量门，而不是临时性的 diff 摘要。
 
 它面向 Codex、Claude 等 agent/skill 工作流，目标是提供一个结构化、可重复执行的提交前质量门，而不是临时性的 diff 摘要。
 
@@ -12,6 +16,23 @@
 - 简体中文: `README.zh-CN.md`
 
 不同语言版本应尽量保持功能和信息一致。更新其中一个版本时，最好同时更新其他版本。
+
+## 目录
+
+- [功能概览](#功能概览)
+- [环境要求](#环境要求)
+- [输出示例](#输出示例)
+- [快速安装](#快速安装)
+- [为什么有这个仓库](#为什么有这个仓库)
+- [仓库结构](#仓库结构)
+- [工作方式](#工作方式)
+- [对话提示词](#对话提示词)
+- [其他集成方式](#其他集成方式)
+- [审查输出](#审查输出)
+- [安全特性](#安全特性)
+- [限制](#限制)
+- [贡献](#贡献)
+- [License](#license)
 
 ## 功能概览
 
@@ -33,6 +54,79 @@
   - `SAFE_TO_COMMIT_WITH_NOTES`
   - `DO_NOT_COMMIT`
 - 使用只读辅助脚本收集本地 Git 上下文，不修改仓库内容
+
+## 环境要求
+
+- 一个能加载 skill 的受支持 AI 编程 agent 运行时（Codex、Claude Code、Gemini CLI 或 Kiro）。skill 包本身不附带运行时。
+- 本地 diff 收集需要 `PATH` 中存在 `git`。当你直接粘贴 diff 或代码时，无需 git 也能审查。
+- 运行 `install.sh` 和辅助脚本需要 Unix 兼容 shell。Windows 上请使用 Git Bash、MSYS2 或 WSL。
+
+## 输出示例
+
+一次真实审查会以结论（verdict）和一句话总结收尾。下面是 skill 对一行 README 拼写修复（Tiny 审查）的产出：
+
+```markdown
+# Pre-Commit Review
+
+**VERDICT:** SAFE_TO_COMMIT
+**Conclusion:** Safe to commit; documentation update in README has no runtime risk.
+**Diff source:** staged diff via `git diff --cached`
+**Review scope:** full review - inspected the single modified hunk in `README.md`
+**Change scale:** 1 file, +2 / -2
+
+- **Change:** Corrected installation commands in the README quickstart
+- **Logic:** No runtime behavior change
+- **Impact scope:** Affects document readers only
+- **Risk:** 🟢 Low - prose update only; no impact on code or build
+- **Suggested verification:** No tests needed
+- **Before commit:** None
+```
+
+对于更大的 diff，skill 还会增加风险总结表、回归风险等级，以及包含必需/建议修复项的提交指引。完整默认与复杂示例见 [`references/examples/`](./references/examples/)。
+
+## 快速安装
+
+在克隆后的仓库目录中，可以为任意受支持 agent 执行全局安装：
+
+```bash
+./install.sh --agent codex
+./install.sh --agent claude-code
+./install.sh --agent gemini-cli
+./install.sh --agent kiro-cli
+```
+
+列出所有受支持的 agent id 及其 project/global 路径：
+
+```bash
+./install.sh --list-agents
+```
+
+默认目录：
+
+- 全局安装使用 `--list-agents` 中对应 agent 的 global path
+- 项目安装使用 `--list-agents` 中对应 agent 的 project path
+- `--dir PATH` 会覆盖上述默认路径
+- `AGENT_SKILLS_DIR` 会覆盖所有 agent 的全局默认路径
+- 也支持已有集成的专用覆盖变量：`CODEX_SKILLS_DIR`、`CLAUDE_SKILLS_DIR`、`GEMINI_SKILLS_DIR`、`KIRO_SKILLS_DIR`、`CODEX_HOME`
+- 继续支持兼容别名：`claude`、`gemini`、`kiro`
+
+常用参数：
+
+- `--copy` 只把最小运行时 skill payload 复制到目标目录，默认就是这个模式
+- `--link` 把当前仓库以符号链接形式安装过去，适合本地开发
+- `--project` 安装到该 agent 的项目级 skills 目录
+- `--dir PATH` 手动指定目标 skills 目录
+- `--force` 覆盖一个并非由当前安装器管理的同名目标
+- `--dry-run` 只打印将执行的动作，不真正修改文件
+
+示例：
+
+```bash
+./install.sh --agent cursor --project
+./install.sh --agent windsurf --link --project
+./install.sh --agent github-copilot --dry-run
+./install.sh kiro --dir .kiro/skills
+```
 
 ## 为什么有这个仓库
 
@@ -115,34 +209,13 @@
 
 ### `scripts/collect_diff_context.sh`
 
-这是一个只读辅助脚本，用于为审查流程收集本地仓库上下文。它会：
+这是一个只读辅助脚本，用于为审查流程收集本地仓库上下文。它做三件事：
 
-- 通过 `--control-plane` 输出紧凑 JSON gateway，包含完整 scope 内容指纹、逐单元指纹、有界 units/groups、work order 与可复用命令模板
-- 后续补取支持 `--expect-scope <fingerprint>`，快照过期时 fail closed，不返回混合版本内容
-- 指纹和实际审查字节都会禁用外部 diff/textconv driver，确保快照身份与模型检查到的内容保持同一语义
-- 判断当前目录是否是 Git 仓库
-- 在存在 staged 变更时优先使用 staged diff
-- 在没有 staged 时回退到 unstaged 或 branch-vs-base 比较
-- 输出 diff 统计、文件列表和状态信息
-- 标识截断状态、基于路径和内容的高风险候选文件、疑似生成文件、lockfile 和高 churn 文件
-- 输出 Review Manifest 和 Review Groups，用于 coverage-led commit-readiness 流程
-- 将 rename、delete、binary、mode-only 和 submodule 指针更新记录为 manifest units
-- 输出 Review Plan JSON，便于 reducer 自动化消费，避免解析 Markdown 表
-- 对超过硬预算的 review group 输出 Split Suggestions
-- 输出 Split Unit Diff Preview，用于 hunk 级审查
-- 输出 Coverage Ledger Template，列出待审查单元
-- 输出 Group Review Result 模板，便于 reducer 合并 group findings
-- 输出 Reducer State Snapshot Template，用于长流程多轮审查
-- 输出 Coverage Validation Checklist，用于 reducer preflight
-- 输出 Full Review Execution Plan，提供有序 split/review 步骤
-- 输出 Group Review Work Packets，供串行或委派 group review 使用
-- 输出 Reducer Finalization Template，用于最终综合门禁
-- 输出 best-effort Dependency Summary，用于跨文件综合
-- 根据项目提供的只读 grep 模式输出有界 Semantic Context Queries
-- 对变更中的测试文件输出 Test Selection Hints，用于识别常见 JVM/Spring/Quarkus/Micronaut、Maven/Gradle 集成测试命名、JUnit tags、Testcontainers、Docker Compose、WireMock/MockServer、pytest markers、Playwright/Cypress/Node e2e、Go build tags、Rust ignored/integration tests，以及数据库/缓存/消息/搜索服务配置等环境依赖测试
-- 为大体积或被截断的 diff 输出建议审查队列
-- 当全局 raw diff 超过 inline 预算时，在默认输出中省略 diff，确保结构化计划始终可见
-- 在显式请求或被内联的 diff 过大时安全截断输出
+1. **diff 来源解析** —— 判断当前目录是否是 Git 仓库，存在 staged 时优先使用 staged，否则回退到 unstaged 或 branch-vs-base；输出 diff 统计、文件列表、状态、截断状态、基于路径/内容的高风险候选、疑似生成文件、lockfile 和高 churn 文件。rename、delete、binary、mode-only 和 submodule 指针更新都会记录为 manifest units。
+2. **有界 control plane** —— 通过 `--control-plane` 输出紧凑 JSON gateway，包含完整 scope 内容指纹、逐单元指纹、有界 units/groups、work order 与可复用命令模板；后续补取支持 `--expect-scope <fingerprint>`，快照过期时 fail closed；指纹和实际审查字节都会禁用外部 diff/textconv driver，确保快照身份与模型检查到的内容保持同一语义。
+3. **coverage-led 与测试选择提示** —— 输出 Review Manifest/Groups 以及 reducer 友好的结构化段落（Review Plan JSON、split 建议、ledgers、work packets、finalization 模板）、有界只读 Semantic Context Queries，以及对变更中测试文件的 Test Selection Hints，用于识别常见 JVM/Spring/Quarkus/Micronaut、Maven/Gradle 集成测试命名、JUnit tags、Testcontainers、Docker Compose、WireMock/MockServer、pytest markers、Playwright/Cypress/Node e2e、Go build tags、Rust ignored/integration tests，以及数据库/缓存/消息/搜索服务配置等环境依赖测试。
+
+完整输出段落清单（Coverage Ledger Template、Group Review Work Packets、Reducer State Snapshot 等）见 [`docs/helper-capabilities.md`](./docs/helper-capabilities.md)，供构建 reducer/subagent 自动化的集成者参考。
 
 它不会执行 fetch、stage、reset、install，也不会修改任何文件。
 它不会运行、改写或跳过测试。Test Selection Hints 只是只读提示，用于选择更聚焦的验证命令，并区分沙箱环境失败和代码失败。`no-known-env-heavy-marker` 并不证明测试是隔离单测，只表示 helper 没匹配到已知的重环境标记。
@@ -243,51 +316,7 @@ Reducer 和 subagent 自动化应优先使用 authoritative `Review Control Plan
 
 ### `install.sh`
 
-把这个 skill 包安装到受支持 AI 编程 agent 的 skills 目录。
-
-## 快速安装
-
-在克隆后的仓库目录中，可以为任意受支持 agent 执行全局安装：
-
-```bash
-./install.sh --agent codex
-./install.sh --agent claude-code
-./install.sh --agent gemini-cli
-./install.sh --agent kiro-cli
-```
-
-列出所有受支持的 agent id 及其 project/global 路径：
-
-```bash
-./install.sh --list-agents
-```
-
-默认目录：
-
-- 全局安装使用 `--list-agents` 中对应 agent 的 global path
-- 项目安装使用 `--list-agents` 中对应 agent 的 project path
-- `--dir PATH` 会覆盖上述默认路径
-- `AGENT_SKILLS_DIR` 会覆盖所有 agent 的全局默认路径
-- 也支持已有集成的专用覆盖变量：`CODEX_SKILLS_DIR`、`CLAUDE_SKILLS_DIR`、`GEMINI_SKILLS_DIR`、`KIRO_SKILLS_DIR`、`CODEX_HOME`
-- 继续支持兼容别名：`claude`、`gemini`、`kiro`
-
-常用参数：
-
-- `--copy` 只把最小运行时 skill payload 复制到目标目录，默认就是这个模式
-- `--link` 把当前仓库以符号链接形式安装过去，适合本地开发
-- `--project` 安装到该 agent 的项目级 skills 目录
-- `--dir PATH` 手动指定目标 skills 目录
-- `--force` 覆盖一个并非由当前安装器管理的同名目标
-- `--dry-run` 只打印将执行的动作，不真正修改文件
-
-示例：
-
-```bash
-./install.sh --agent cursor --project
-./install.sh --agent windsurf --link --project
-./install.sh --agent github-copilot --dry-run
-./install.sh kiro --dir .kiro/skills
-```
+把这个 skill 包安装到受支持 AI 编程 agent 的 skills 目录。用法见[快速安装](#快速安装)。
 
 ## 工作方式
 
@@ -437,25 +466,11 @@ your-skills/
 
 ## 贡献
 
-更适合的贡献方向包括：
+欢迎贡献。好的方向包括：改进审查启发式规则、收紧安全边界、优化输出模板、增强脚本在不同仓库状态下的健壮性。
 
-- 改进审查启发式规则
-- 收紧安全边界
-- 优化输出模板
-- 增强脚本在不同仓库状态下的健壮性
+开发环境搭建（shellcheck、Rust CLI 编译、确定性测试套件）与 PR 检查清单见 **[CONTRIBUTING.md](./CONTRIBUTING.md)**。
 
-如果你修改了脚本路径或仓库结构，请同步更新 `SKILL.md`。
-如果你修改了对外文档，请尽量保持各本地化 README 版本同步。
-
-### 开发
-
-Shell 脚本（`scripts/*.sh`、`install.sh`、`tests/*.sh`、`evals/*.sh`）在 CI（`.github/workflows/lint.yml`）中由 [shellcheck](https://www.shellcheck.net/) 检查。提交前请在本地安装（macOS 可用 `brew install shellcheck`）并运行 `shellcheck -s bash scripts/*.sh install.sh tests/*.sh evals/*.sh`。
-
-要为当前宿主本地编译 Rust CLI 二进制，运行 `cargo build --release --manifest-path collect-diff-context-cli/Cargo.toml`。要刷新随 skill 分发的 release 二进制，运行 `scripts/build_with_docker.sh`；它会委托 `scripts/build_all_binaries.sh`，在需要时使用 macOS 原生 target 与 Docker/cross 编译 Linux、Windows target。
-
-确定性单元测试套件为 `bash tests/*_test.sh`。eval harness 也附带不调用模型的确定性自测：`bash evals/eval_contract_test.sh`、`bash evals/output_eval_runner_test.sh` 和 `bash evals/output_eval_host_wrappers_test.sh`（也可通过 `for f in evals/*_test.sh; do bash "$f"; done` 执行所有 eval 自测）。基于模型的 runner（`evals/output_eval_codex_runner.sh`、`evals/output_eval_claude_runner.sh`）需要真实的 Codex 或 Claude CLI，不属于 CI。
-
-手动触发的 real-host smoke workflow 位于 `.github/workflows/real-host-smoke.yml`。它面向已经安装并完成认证的 `claude` 与 `codex` CLI 的 self-hosted runner，并委托 `evals/run_real_host_smoke.sh` 执行。
+> 注意：`README.md` 与 `README.zh-CN.md` 是契约文件——多个测试会断言其中必须出现某些短语。修改时请保持这些精确字符串不变，或同时更新对应的断言。
 
 ## License
 
