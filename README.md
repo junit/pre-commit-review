@@ -6,9 +6,7 @@
 
 [English](./README.md) | [简体中文](./README.zh-CN.md)
 
-`pre-commit-review` is a reusable skill package for reviewing Git diffs before committing, pushing, or opening a pull request. In plain terms: **a drop-in pre-commit review step you add to your AI coding agent** (Codex, Claude Code, Gemini CLI, Kiro) so it gives you a structured, repeatable quality gate instead of an ad hoc diff summary.
-
-It is designed for agent workflows such as Codex- or Claude-style skill systems, where you want a structured, repeatable pre-commit quality gate instead of an ad hoc diff summary.
+`pre-commit-review` is a reusable skill package for reviewing Git diffs before committing, pushing, or opening a pull request. In plain terms: **a pre-commit review step you add to your AI coding agent** (Codex, Claude Code, Gemini CLI, or Kiro). An AI "skill" is just a set of instructions the agent loads on demand — once installed, your agent runs this review whenever you ask it to check changes before a commit, giving you a structured verdict instead of an ad hoc diff summary.
 
 ## Available Languages
 
@@ -19,70 +17,123 @@ Translations should stay functionally aligned. If you update one version, update
 
 ## Table of Contents
 
-- [What It Does](#what-it-does)
-- [Requirements](#requirements)
+**For users — install it and use it:**
+
+- [What It Catches](#what-it-catches)
 - [Example Output](#example-output)
+- [Requirements](#requirements)
 - [Quick Install](#quick-install)
-- [Why This Repository Exists](#why-this-repository-exists)
-- [Repository Structure](#repository-structure)
-- [How It Works](#how-it-works)
-- [Conversation Prompts](#conversation-prompts)
-- [Other Integration Modes](#other-integration-modes)
-- [Review Output](#review-output)
+- [How to Trigger a Review](#how-to-trigger-a-review)
 - [Safety Characteristics](#safety-characteristics)
 - [Limitations](#limitations)
+
+**For developers & integrators — adapt or extend it:**
+
+- [Why This Repository Exists](#why-this-repository-exists)
+- [Repository Structure](#repository-structure)
+- [How It Works Internally](#how-it-works-internally)
+- [Other Integration Modes](#other-integration-modes)
+- [Review Output Format](#review-output-format)
 - [Contributing](#contributing)
 - [License](#license)
 
-## What It Does
+## What It Catches
 
-- Reviews the most relevant diff source in priority order:
-  - user-provided diff
-  - staged changes
-  - unstaged changes
-  - branch vs. base branch
-- Produces a consistent review format focused on:
-  - what changed
-  - code quality issues
-  - intent
-  - logic shifts
-  - blast radius
-  - regression risk
-  - performance & cost impact (only on hot paths, queries, loops, or network/IO calls)
-- Returns a clear verdict:
-  - `SAFE_TO_COMMIT`
-  - `SAFE_TO_COMMIT_WITH_NOTES`
-  - `DO_NOT_COMMIT`
-- Uses a read-only helper script to collect local Git context without mutating the repository
+The review looks at your changes and reports bugs, security risks, and missing tests before you commit. For each issue it finds, you get the file and line, why it matters, a concrete fix, and how to verify it.
+
+It reviews whatever diff is most relevant, in this order:
+
+1. A diff or patch you pasted in
+2. Your staged changes
+3. Your unstaged changes (if nothing is staged)
+4. Your current branch vs. its base branch
+5. Raw code you pasted with no diff history (treated as a partial review)
+6. Nothing available — it asks you to stage changes or paste a diff
+
+It then gives one of three verdicts:
+
+- `SAFE_TO_COMMIT` — nothing blocking; commit now
+- `SAFE_TO_COMMIT_WITH_NOTES` — commit now, but address the follow-up notes
+- `DO_NOT_COMMIT` — a blocking issue was found; fix it first
+
+It focuses on what matters for a commit decision: correctness, security, data-handling, regressions, and — only where it counts — performance on hot paths, queries, loops, or network/IO calls. It never modifies your repository; a read-only helper gathers the Git context.
+
+## Example Output
+
+This is a complete default review for an additive schema change. It shows the full structure the skill produces — a header with the verdict, an executive summary, priority findings, commit guidance, a change overview, a risk-summary table, impact scope, and a regression-risk level:
+
+```markdown
+# Pre-Commit Review
+
+**VERDICT:** SAFE_TO_COMMIT_WITH_NOTES
+**Conclusion:** Safe to commit the language column migration, but suggest writing unit tests for the new `getLocale` method in this commit.
+**Tally:** 0 blockers · 1 non-blocking warning · 1 test-gap · 0 review-limits
+**Diff source:** staged diff via helper script (`scripts/collect_diff_context.sh`)
+**Review scope:** full review - all hunks in `schema.prisma` and `userRepo.ts` inspected
+**Change scale:** 2 files, +24 / -3; no lockfiles or large generated files
+**Risk level:** 🟡 Medium - database schema change touches data integrity, but it is an additive column with a default value
+**Unreviewed changes:** none
+
+## Executive Summary
+
+This change adds an optional `preferred_locale` column (defaulting to 'en-US') to the `users` table. No blocking issues were found. The main residual risk is the consistency of default fallback logic during retrieval; suggest adding unit tests before committing.
+
+## Priority Findings
+
+1. ⚠️ `src/repo/userRepo.ts:22` - missing unit tests for the new `getLocale` method
+   - Evidence: diff adds database retrieval logic, but no test changes are present under test directory
+   - Impact: future changes to fallback logic could bypass regression testing
+   - Fix: add tests in `userRepo.test.ts` covering both NULL and populated language retrieval
+   - Verification: run `pnpm test userRepo` to verify success
+   - Confidence: High
+
+## Commit Guidance
+
+- **Required before commit:** None
+- **Suggested before commit:** Add unit tests for `getLocale`
+- **Follow-up items:** None
+- **Suggested verification:** `pnpm test userRepo` to check query logic
+- **Suggested documentation:** Include migration down SQL script in the PR description
+
+## What Changed
+
+- **Modified:** data access - added retrieval logic in `userRepo.getLocale`
+- **New:** Prisma schema column `preferred_locale`
+- **Deleted:** none
+- **Behavioral changes:** query defaults to 'en-US' if preferred_locale is not set
+
+## Risk Summary
+
+| Dimension | Conclusion | Basis |
+|---|---|---|
+| Correctness | Pass | simple query logic without exceptions |
+| Security & Privacy | No obvious risk | no sensitive data exposed |
+| Data & Migration | Risky | large tables might encounter migration locks; confirm production PG version ≥11 |
+| Performance & Scalability | Pass | single-row index query; no hot path impact |
+| Compatibility | No breakage | additive column; backward compatible |
+| Observability & Rollback | Sufficient | migration includes automated rollback script |
+| Test Coverage | Gaps | database query logic lacks unit tests |
+
+## Impact Scope
+
+- **Direct impact:** `userRepo` and database schema
+- **Indirect impact:** none
+- **Domain confirmation needed:** none
+
+## Regression Risk
+
+**Level:** 🟡 Medium
+**Reason:** database schema migration, mitigated by automated rollback scripts
+**Minimal verification loop:** run migration and rollback on staging
+```
+
+For a blocking issue the verdict is `DO_NOT_COMMIT` with a `🔒`-marked blocker in Priority Findings. For large diffs the skill adds coverage-led sections. See [`references/examples/`](./references/examples/) for visual and coverage-led examples.
 
 ## Requirements
 
 - A supported AI coding agent runtime that can load skills (Codex, Claude Code, Gemini CLI, or Kiro). The skill package ships no runtime of its own.
 - `git` on `PATH` for local diff collection. The review still works without it when you paste a diff or code directly.
 - A Unix-compatible shell to run `install.sh` and the helper. On Windows use Git Bash, MSYS2, or WSL.
-
-## Example Output
-
-A real review ends with a verdict and a one-line conclusion. This is what the skill produces for a one-line README typo fix (Tiny review):
-
-```markdown
-# Pre-Commit Review
-
-**VERDICT:** SAFE_TO_COMMIT
-**Conclusion:** Safe to commit; documentation update in README has no runtime risk.
-**Diff source:** staged diff via `git diff --cached`
-**Review scope:** full review - inspected the single modified hunk in `README.md`
-**Change scale:** 1 file, +2 / -2
-
-- **Change:** Corrected installation commands in the README quickstart
-- **Logic:** No runtime behavior change
-- **Impact scope:** Affects document readers only
-- **Risk:** 🟢 Low - prose update only; no impact on code or build
-- **Suggested verification:** No tests needed
-- **Before commit:** None
-```
-
-For larger diffs the skill adds a risk summary table, regression-risk level, and commit guidance with required/suggested fixes. See [`references/examples/`](./references/examples/) for full default and complex examples.
 
 ## Quick Install
 
@@ -127,6 +178,67 @@ Examples:
 ./install.sh --agent github-copilot --dry-run
 ./install.sh kiro --dir .kiro/skills
 ```
+
+## How to Trigger a Review
+
+Depending on your review scenario, you can trigger and guide the AI using these prompt examples in your conversation. Below are the 5 primary scenarios, their purposes, and typical prompts:
+
+1. **Staged/Unstaged Changes Review (Routine Pre-Commit Check)**
+   * **Scenario**: Developers modify code locally and want to assess if the changes are safe before running `git commit`.
+   * **Purpose**: Inspect the diff for high-risk issues such as syntax errors, deadlocks, sensitive credential leaks, and missing unit tests.
+   * **Prompts**:
+     * *“Help me perform a pre-commit review.”*
+     * *“Check my staged changes to see if they are safe to commit.”*
+     * *“Review my unstaged changes for potential issues or credential leaks.”*
+     * *“Check the current modifications for credential leaks or missing tests.”*
+2. **Branch vs. Base Merge Review (PR Gateway)**
+   * **Scenario**: A branch is developed and ready to be merged into a target branch (e.g., `main`, `develop`) via Pull Request, requiring a review of the cumulative differences.
+   * **Purpose**: Perform a static code review on branch changes relative to a specific base ref (e.g. `develop`) as a pre-merging gate.
+   * **Prompts**:
+     * *“Please review my current branch changes against the `develop` branch (PR review).”*
+     * *“Review cumulative differences between the current branch and `main` to see if it is safe to merge.”*
+     * *“Run a branch-level merge review against base branch origin/develop.”*
+3. **User-Provided Patch/Diff Review (Text-only Diff)**
+   * **Scenario**: The agent lacks local Git repository access (e.g., in restricted sandboxes), or you want to review a patch file by copy-pasting the diff text directly.
+   * **Purpose**: Evaluate the quality and risks of a pasted patch.
+   * **Prompts**:
+     * *“I have a git diff patch, please perform a pre-commit review on it: [paste diff here]”*
+     * *“Analyze this patch for regression risks: `[paste diff here]`”*
+4. **Static Code Review (Single File/No Diff)**
+   * **Scenario**: You paste raw source code directly without any before/after diff history, requesting an audit.
+   * **Purpose**: Run a static pre-commit style audit. Note that the review will be marked as a "partial review" since no historical diff context is present.
+   * **Prompts**:
+     * *“I wrote some new code and want a static pre-commit security review: [paste code here]”*
+     * *“Review this single file as a pre-commit readiness audit: `[paste code here]`”*
+5. **Complex/Large Diff Review (Coverage-Led)**
+   * **Scenario**: Large or highly fragmented changes (e.g., major refactoring or version upgrades) where direct end-to-end diff review is unreliable or truncated.
+   * **Purpose**: Automatically split changes into manageable groups using `collect_diff_context.sh`, track coverage with a ledger, and synthesize results via a reducer to ensure no modified line goes unreviewed.
+   * **Prompts**:
+     * *“This branch has a huge diff, please perform a coverage-led review.”*
+     * *“Please start a coverage-led pre-commit review, split the changes into groups, and review them step-by-step.”*
+     * *“Analyze the large amount of changes on the current branch, generate a Review Plan, and audit them group by group.”*
+
+## Safety Characteristics
+
+This package is intentionally conservative:
+
+- it avoids pretending to see local changes when no repository is available
+- it distinguishes staged and unstaged review scope, and flags when unstaged changes touch files also staged
+- it warns about untracked files not present in `git diff`
+- it never reproduces secret values; flagged credentials are shown as a redacted preview with a rotate suggestion
+- it treats large or truncated diffs as a reason to split work and retrieve smaller context, not as permission to skip material units
+- it reserves partial triage for advisory fallback and blocks commit-readiness when high-risk units are unreviewed
+- it supports coverage-led commit-readiness by requiring every manifest unit to be accounted for before claiming full scope
+- it keeps long-review reducer state compact and explicit instead of relying on implicit conversation memory
+- it treats semantic context queries as bounded read-only hints, not arbitrary shell commands or coverage substitutes
+
+## Limitations
+
+- This repository does not include the runtime that loads or executes the skill.
+- The included installer covers common Codex, Claude Code, and Gemini CLI locations, but some local setups may still require `--dir` overrides.
+- The helper script expects a working `git` executable in the environment.
+- On Windows, the helper script and installer require a Unix-compatible environment (such as Git Bash, MSYS2, or WSL) to run correctly.
+- The current repository itself may be used outside Git, but local diff collection only works inside a Git repository.
 
 ## Why This Repository Exists
 
@@ -318,7 +430,9 @@ Provides lightweight agent metadata for environments that expose skills through 
 
 Installs this skill package into host-specific skills directories for supported AI coding agents. See [Quick Install](#quick-install) for usage.
 
-## How It Works
+## How It Works Internally
+
+This section is for developers who want to understand the resolution logic or extend it. End users can skip to [How to Trigger a Review](#how-to-trigger-a-review).
 
 The skill resolves review input in this order:
 
@@ -347,45 +461,6 @@ The helper is the source of truth for:
 - untracked file warnings
 
 Only fall back to direct Git inspection when the helper is unavailable at that resolved path, exits non-zero, cannot be executed in the current host, or the user already provided the review material explicitly.
-
-## Conversation Prompts
-
-Depending on your review scenario, you can trigger and guide the AI using these prompt examples in your conversation. Below are the 5 primary scenarios, their purposes, and typical prompts:
-
-1. **Staged/Unstaged Changes Review (Routine Pre-Commit Check)**
-   * **Scenario**: Developers modify code locally and want to assess if the changes are safe before running `git commit`.
-   * **Purpose**: Inspect the diff for high-risk issues such as syntax errors, deadlocks, sensitive credential leaks, and missing unit tests.
-   * **Prompts**:
-     * *“Help me perform a pre-commit review.”*
-     * *“Check my staged changes to see if they are safe to commit.”*
-     * *“Review my unstaged changes for potential issues or credential leaks.”*
-     * *“Check the current modifications for credential leaks or missing tests.”*
-2. **Branch vs. Base Merge Review (PR Gateway)**
-   * **Scenario**: A branch is developed and ready to be merged into a target branch (e.g., `main`, `develop`) via Pull Request, requiring a review of the cumulative differences.
-   * **Purpose**: Perform a static code review on branch changes relative to a specific base ref (e.g. `develop`) as a pre-merging gate.
-   * **Prompts**:
-     * *“Please review my current branch changes against the `develop` branch (PR review).”*
-     * *“Review cumulative differences between the current branch and `main` to see if it is safe to merge.”*
-     * *“Run a branch-level merge review against base branch origin/develop.”*
-3. **User-Provided Patch/Diff Review (Text-only Diff)**
-   * **Scenario**: The agent lacks local Git repository access (e.g., in restricted sandboxes), or you want to review a patch file by copy-pasting the diff text directly.
-   * **Purpose**: Evaluate the quality and risks of a pasted patch.
-   * **Prompts**:
-     * *“I have a git diff patch, please perform a pre-commit review on it: [paste diff here]”*
-     * *“Analyze this patch for regression risks: `[paste diff here]`”*
-4. **Static Code Review (Single File/No Diff)**
-   * **Scenario**: You paste raw source code directly without any before/after diff history, requesting an audit.
-   * **Purpose**: Run a static pre-commit style audit. Note that the review will be marked as a "partial review" since no historical diff context is present.
-   * **Prompts**:
-     * *“I wrote some new code and want a static pre-commit security review: [paste code here]”*
-     * *“Review this single file as a pre-commit readiness audit: `[paste code here]`”*
-5. **Complex/Large Diff Review (Coverage-Led)**
-   * **Scenario**: Large or highly fragmented changes (e.g., major refactoring or version upgrades) where direct end-to-end diff review is unreliable or truncated.
-   * **Purpose**: Automatically split changes into manageable groups using `collect_diff_context.sh`, track coverage with a ledger, and synthesize results via a reducer to ensure no modified line goes unreviewed.
-   * **Prompts**:
-     * *“This branch has a huge diff, please perform a coverage-led review.”*
-     * *“Please start a coverage-led pre-commit review, split the changes into groups, and review them step-by-step.”*
-     * *“Analyze the large amount of changes on the current branch, generate a Review Plan, and audit them group by group.”*
 
 ## Other Integration Modes
 
@@ -417,9 +492,9 @@ If you already maintain a larger skills repository, copy this directory in as on
 
 The helper script is referenced by the skill instructions, so the directory structure should remain intact unless you also update those references.
 
-## Review Output
+## Review Output Format
 
-The expected output is an action-first, fast-scanning pre-commit review with:
+The expected output is a review that leads with the commit decision and keeps detail minimal:
 
 - a verdict plus a one-line conclusion
 - diff source
@@ -434,35 +509,13 @@ The default review should answer three questions first:
 - what must be fixed before commit
 - what should be tested next
 
-Only include deeper intent analysis, before/after logic detail, or extra supporting notes when they materially improve the review.
+Only include deeper intent analysis, before/after logic detail, or extra notes when they actually help the commit decision.
 
 Final verdicts mean:
 
 - `SAFE_TO_COMMIT`: reviewed scope looks safe to commit now
 - `SAFE_TO_COMMIT_WITH_NOTES`: safe to commit now, but follow-up notes or review limits exist
 - `DO_NOT_COMMIT`: blocking issue found; do not commit as-is
-
-## Safety Characteristics
-
-This package is intentionally conservative:
-
-- it avoids pretending to see local changes when no repository is available
-- it distinguishes staged and unstaged review scope, and flags when unstaged changes touch files also staged
-- it warns about untracked files not present in `git diff`
-- it never reproduces secret values; flagged credentials are shown as a redacted preview with a rotate suggestion
-- it treats large or truncated diffs as a reason to split work and retrieve smaller context, not as permission to skip material units
-- it reserves partial triage for advisory fallback and blocks commit-readiness when high-risk units are unreviewed
-- it supports coverage-led commit-readiness by requiring every manifest unit to be accounted for before claiming full scope
-- it keeps long-review reducer state compact and explicit instead of relying on implicit conversation memory
-- it treats semantic context queries as bounded read-only hints, not arbitrary shell commands or coverage substitutes
-
-## Limitations
-
-- This repository does not include the runtime that loads or executes the skill.
-- The included installer covers common Codex, Claude Code, and Gemini CLI locations, but some local setups may still require `--dir` overrides.
-- The helper script expects a working `git` executable in the environment.
-- On Windows, the helper script and installer require a Unix-compatible environment (such as Git Bash, MSYS2, or WSL) to run correctly.
-- The current repository itself may be used outside Git, but local diff collection only works inside a Git repository.
 
 ## Contributing
 
