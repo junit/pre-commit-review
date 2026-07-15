@@ -321,23 +321,42 @@ Only fall back to direct Git inspection when the helper is unavailable at that r
 
 ## Conversation Prompts
 
-Depending on your review scenario, you can trigger and guide the AI using these prompt examples in your conversation:
+Depending on your review scenario, you can trigger and guide the AI using these prompt examples in your conversation. Below are the 5 primary scenarios, their purposes, and typical prompts:
 
 1. **Staged/Unstaged Changes Review (Routine Pre-Commit Check)**
-   * *“Help me perform a pre-commit review.”*
-   * *“Check my staged changes to see if they are safe to commit.”*
-   * *“Review my unstaged changes for potential issues or credential leaks.”*
+   * **Scenario**: Developers modify code locally and want to assess if the changes are safe before running `git commit`.
+   * **Purpose**: Inspect the diff for high-risk issues such as syntax errors, deadlocks, sensitive credential leaks, and missing unit tests.
+   * **Prompts**:
+     * *“Help me perform a pre-commit review.”*
+     * *“Check my staged changes to see if they are safe to commit.”*
+     * *“Review my unstaged changes for potential issues or credential leaks.”*
+     * *“Check the current modifications for credential leaks or missing tests.”*
 2. **Branch vs. Base Merge Review (PR Gateway)**
-   * *“Please review my current branch changes against the `develop` branch (PR review).”*
-   * *“Review cumulative differences between the current branch and `main` to see if it is safe to merge.”*
+   * **Scenario**: A branch is developed and ready to be merged into a target branch (e.g., `main`, `develop`) via Pull Request, requiring a review of the cumulative differences.
+   * **Purpose**: Perform a static code review on branch changes relative to a specific base ref (e.g. `develop`) as a pre-merging gate.
+   * **Prompts**:
+     * *“Please review my current branch changes against the `develop` branch (PR review).”*
+     * *“Review cumulative differences between the current branch and `main` to see if it is safe to merge.”*
+     * *“Run a branch-level merge review against base branch origin/develop.”*
 3. **User-Provided Patch/Diff Review (Text-only Diff)**
-   * *“I have a git diff patch, please perform a pre-commit review on it: [paste diff here]”*
-   * *“Analyze this patch for regression risks: `[paste diff here]`”*
+   * **Scenario**: The agent lacks local Git repository access (e.g., in restricted sandboxes), or you want to review a patch file by copy-pasting the diff text directly.
+   * **Purpose**: Evaluate the quality and risks of a pasted patch.
+   * **Prompts**:
+     * *“I have a git diff patch, please perform a pre-commit review on it: [paste diff here]”*
+     * *“Analyze this patch for regression risks: `[paste diff here]`”*
 4. **Static Code Review (Single File/No Diff)**
-   * *“I wrote some new code and want a static pre-commit security review: [paste code here]”*
+   * **Scenario**: You paste raw source code directly without any before/after diff history, requesting an audit.
+   * **Purpose**: Run a static pre-commit style audit. Note that the review will be marked as a "partial review" since no historical diff context is present.
+   * **Prompts**:
+     * *“I wrote some new code and want a static pre-commit security review: [paste code here]”*
+     * *“Review this single file as a pre-commit readiness audit: `[paste code here]`”*
 5. **Complex/Large Diff Review (Coverage-Led)**
-   * *“This branch has a huge diff, please perform a coverage-led review.”*
-   * *“Please start a coverage-led pre-commit review, split the changes into groups, and review them step-by-step.”*
+   * **Scenario**: Large or highly fragmented changes (e.g., major refactoring or version upgrades) where direct end-to-end diff review is unreliable or truncated.
+   * **Purpose**: Automatically split changes into manageable groups using `collect_diff_context.sh`, track coverage with a ledger, and synthesize results via a reducer to ensure no modified line goes unreviewed.
+   * **Prompts**:
+     * *“This branch has a huge diff, please perform a coverage-led review.”*
+     * *“Please start a coverage-led pre-commit review, split the changes into groups, and review them step-by-step.”*
+     * *“Analyze the large amount of changes on the current branch, generate a Review Plan, and audit them group by group.”*
 
 ## Other Integration Modes
 
