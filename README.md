@@ -319,6 +319,26 @@ The helper is the source of truth for:
 
 Only fall back to direct Git inspection when the helper is unavailable at that resolved path, exits non-zero, cannot be executed in the current host, or the user already provided the review material explicitly.
 
+## Conversation Prompts
+
+Depending on your review scenario, you can trigger and guide the AI using these prompt examples in your conversation:
+
+1. **Staged/Unstaged Changes Review (Routine Pre-Commit Check)**
+   * *“Help me perform a pre-commit review.”*
+   * *“Check my staged changes to see if they are safe to commit.”*
+   * *“Review my unstaged changes for potential issues or credential leaks.”*
+2. **Branch vs. Base Merge Review (PR Gateway)**
+   * *“Please review my current branch changes against the `develop` branch (PR review).”*
+   * *“Review cumulative differences between the current branch and `main` to see if it is safe to merge.”*
+3. **User-Provided Patch/Diff Review (Text-only Diff)**
+   * *“I have a git diff patch, please perform a pre-commit review on it: [paste diff here]”*
+   * *“Analyze this patch for regression risks: `[paste diff here]`”*
+4. **Static Code Review (Single File/No Diff)**
+   * *“I wrote some new code and want a static pre-commit security review: [paste code here]”*
+5. **Complex/Large Diff Review (Coverage-Led)**
+   * *“This branch has a huge diff, please perform a coverage-led review.”*
+   * *“Please start a coverage-led pre-commit review, split the changes into groups, and review them step-by-step.”*
+
 ## Other Integration Modes
 
 ### Use as a standalone repository
