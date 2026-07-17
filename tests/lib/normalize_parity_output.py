@@ -3,6 +3,27 @@ import json
 import sys
 
 
+def strip_secret_scan_sections(lines):
+    stripped = []
+    index = 0
+    while index < len(lines):
+        if lines[index].strip() != "## Secret Scan":
+            stripped.append(lines[index])
+            index += 1
+            continue
+
+        index += 1
+        while index < len(lines):
+            line = lines[index]
+            if line.strip() == "":
+                index += 1
+                break
+            if line.lstrip().startswith("#"):
+                break
+            index += 1
+    return stripped
+
+
 def normalize_json_buffer(json_buffer):
     text = "".join(json_buffer).strip()
     if not text:
@@ -44,7 +65,7 @@ def normalize_json_buffer(json_buffer):
 
 
 def main():
-    lines = sys.stdin.readlines()
+    lines = strip_secret_scan_sections(sys.stdin.readlines())
     output = []
     in_json = False
     json_buffer = []

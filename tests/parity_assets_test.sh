@@ -48,6 +48,26 @@ cat >"$sample_input" <<'EOF'
 ## Plain Section
 alpha
 
+## Secret Scan
+scanner: gitleaks
+status: redacted
+redactions: 1
+redaction_mode: full-regex-match
+rule_id	scan_input_start_line	scan_input_end_line
+gitlab-pat	4	4
+### Next Hunk
+preserved
+
+## Secret Scan
+scanner: gitleaks
+status: unavailable
+reason: scanner-unavailable
+redaction_applied: no
+review_continued: yes
+redactions: 0
+redaction_mode: full-regex-match
+### Final Hunk
+also-preserved
 
 EOF
 
@@ -65,6 +85,14 @@ first = text.index('"group_id": "module-a"')
 second = text.index('"group_id": "module-z"')
 if first > second:
     raise SystemExit("JSONL payload was not normalized into deterministic order")
+if "## Secret Scan" in text or "gitlab-pat" in text:
+    raise SystemExit("Rust-only secret scan metadata was not removed")
+if "### Next Hunk\npreserved" not in text:
+    raise SystemExit("content after secret scan metadata was removed")
+if "review_continued: yes" in text:
+    raise SystemExit("optional scan downgrade metadata was not removed")
+if "### Final Hunk\nalso-preserved" not in text:
+    raise SystemExit("content after optional scan downgrade metadata was removed")
 PY
 
 printf 'parity assets tests passed\n'

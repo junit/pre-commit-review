@@ -24,5 +24,8 @@ __pycache__/
 target/
 *.rs.bk
 
+# Release-staged third-party binaries
+scripts/bin/gitleaks-*
+
 # superpowers
 docs/superpowers/

@@ -133,6 +133,7 @@ For a blocking issue the verdict is `DO_NOT_COMMIT` with a `🔒`-marked blocker
 
 - A supported AI coding agent runtime that can load skills (Codex, Claude Code, Gemini CLI, or Kiro). The skill package ships no runtime of its own.
 - `git` on `PATH` for local diff collection. The review still works without it when you paste a diff or code directly.
+- Network access is optional. From a source clone, `install.sh` attempts to download the pinned Gitleaks `8.30.1` binary and verify both the release archive and extracted executable SHA256. Self-contained release packages already include the verified executable. If download is disabled, unavailable, or fails, installation and review still work without local secret redaction. Implicit `PATH` discovery is not allowed.
 - A Unix-compatible shell to run `install.sh` and the helper. On Windows use Git Bash, MSYS2, or WSL.
 
 ## Quick Install
@@ -145,6 +146,8 @@ From a clone of this repository, install globally for any supported agent:
 ./install.sh --agent gemini-cli
 ./install.sh --agent kiro-cli
 ```
+
+These commands attempt to provision the pinned current-platform Gitleaks binary during installation. This is an installer action initiated by the user; the Agent review workflow never downloads tools. Provisioning failure is reported as a warning and does not prevent installation or review.
 
 List every supported agent id and its project/global paths:
 
@@ -169,6 +172,8 @@ Useful flags:
 - `--dir PATH` overrides the target skills directory
 - `--force` replaces an existing non-managed target
 - `--dry-run` prints what would happen without changing anything
+- `--no-download` skips the optional Gitleaks download; review remains available without secret redaction
+- `--doctor` diagnoses scanner source, version, bundled SHA256, trusted configuration, and stdin/JSON capability without installing a skill; it exits non-zero when redaction is unavailable but does not imply that review is blocked
 
 Examples:
 
@@ -283,6 +288,8 @@ This repository is not an application or framework. It is a small, portable skil
     ├── output/
     ├── taxonomy/
     ├── eval_contract_test.sh
+    ├── compare_output_eval_quality.sh
+    ├── compare_output_eval_quality_test.sh
     ├── readme_surface_test.sh
     ├── readme_host_entrypoints_test.sh
     ├── output-eval.json
@@ -321,15 +328,16 @@ Defines the skill itself:
 
 ### `scripts/collect_diff_context.sh`
 
-A read-only helper script that gathers local repository context for the review workflow. It does three jobs:
+A read-only helper script that gathers local repository context for the review workflow. It does four jobs:
 
 1. **Diff source resolution** — detects whether the cwd is a Git repository, prefers staged changes, falls back to unstaged or branch-vs-base, and reports diff stats, file lists, status, truncation, high-risk candidates, generated-like/lock files, and top-churn files. Rename, delete, binary, mode-only, and submodule pointer changes are recorded as manifest units.
 2. **A bounded control plane** — emits a compact `--control-plane` JSON gateway with an authoritative full-scope content fingerprint, per-unit fingerprints, bounded units/groups, work order, and reusable command templates; supports `--expect-scope <fingerprint>` on follow-up retrieval so stale output fails closed; and disables external diff/textconv drivers so snapshot identity and inspected content stay aligned.
 3. **Coverage-led + test-selection hints** — emits a Review Manifest/Groups and reducer-friendly structured sections (Review Plan JSON, split suggestions, ledgers, work packets, finalization templates), bounded read-only Semantic Context Queries, and Test Selection Hints for changed test files that look environment-dependent, including common JVM/Spring/Quarkus/Micronaut, Maven/Gradle integration naming, JUnit tags, Testcontainers, Docker Compose, WireMock/MockServer, pytest markers, Playwright/Cypress/Node e2e, Go build tags, Rust ignored/integration tests, and database/cache/broker/search service configuration.
+4. **Optional local secret redaction** — when a trusted Gitleaks installation is available, scans and redacts each full selected diff before applying its output byte limit, replaces detected match ranges with `[redacted:<rule-id>]`, rescans the sanitized view, and sanitizes captured wrapper stdout/stderr. This ordering prevents a detected credential crossing the truncation boundary from leaking as an unmatched prefix. If the scanner is disabled, unavailable, times out, or returns no finding, review continues with the original output. If Gitleaks returns a finding but local span mapping or verification fails, the helper reports `status: redaction-failed` rather than calling the scanner unavailable; this path also continues with the original output and never withholds the review material.
 
 The full list of emitted sections (Coverage Ledger Template, Group Review Work Packets, Reducer State Snapshot, etc.) is documented in [`docs/helper-capabilities.md`](./docs/helper-capabilities.md) for integrators building reducer/subagent automation.
 
-It does not fetch, stage, reset, install, or modify files.
+The review entrypoint does not fetch, stage, reset, install, or modify files. During an explicit user-initiated installation, `install.sh` invokes `scripts/fetch_gitleaks.sh` when the current-platform binary is not already bundled. The fetcher downloads only repository-pinned upstream assets and verifies pinned SHA256 values for both the archive and extracted executable. Download progress is shown automatically on an interactive terminal; use `PRE_COMMIT_REVIEW_FETCH_PROGRESS=always` when output is captured, or `never` to suppress it. `--dry-run` never downloads, and `--no-download` skips this optional installer behavior. Run `./install.sh --doctor` to diagnose whether local redaction is available.
 It does not run, rewrite, or skip tests. Test Selection Hints are read-only guidance for choosing focused verification commands and for distinguishing sandbox failures from code failures. A `no-known-env-heavy-marker` hint is not proof that a test is isolated; it only means the helper did not match a known environment-heavy marker.
 
 The review workflow starts with `scripts/collect_diff_context.sh --control-plane`. This bounded gateway emits no raw diff and is authoritative only when its collection-start and collection-end fingerprints match. The legacy default output remains plan-first and may omit the global raw diff. `PRE_COMMIT_REVIEW_INLINE_DIFF_BYTES` (default `60000`) controls when that default output inlines the global diff. `PRE_COMMIT_REVIEW_MAX_DIFF_BYTES` (default `200000`) controls truncation for a diff that is actually emitted; use `0` only when printing the full diff is safe.
@@ -346,14 +354,21 @@ Review group budgets default to 120KB target and 160KB hard limit. Override them
 ### Rollout and Multi-Implementation Controls
 The entrypoint wrapper `scripts/collect_diff_context.sh` supports multiple execution modes for transition and safety:
 - `PRE_COMMIT_REVIEW_HELPER_IMPL`: Specifies the helper implementation mode.
-  - `rust` (default): Executes the compiled Rust CLI binary. If it fails, prints a warning to `stderr` and gracefully falls back to the legacy script `collect_diff_context.legacy.sh`.
+  - `rust` (default): Executes the compiled Rust CLI binary. Collection failures may fall back to the legacy script. Secret-scan failures do not trigger a special fallback or block output; the selected implementation continues without redaction and reports the downgrade.
   - `legacy` or `shell`: Forces execution of the legacy Shell script.
   - `shadow`: Runs both the legacy Shell script and the Rust binary, compares their stdout, warns on mismatches, and returns the legacy script's stdout to ensure safety.
 - `PRE_COMMIT_REVIEW_SHADOW_MODE`: If set to `1`, forces Shadow Mode comparison even when `PRE_COMMIT_REVIEW_HELPER_IMPL` is explicitly set to `legacy` or `shell`.
 - `PRE_COMMIT_REVIEW_SHADOW_DIFF_LOG`: Optional path for writing shadow mismatch diffs. By default, shadow mode does not write diff content to `/tmp`.
 - `PRE_COMMIT_REVIEW_DISABLE_FALLBACK`: If set to `1`, disables the legacy script fallback, strictly propagating Rust CLI process failures.
+- `PRE_COMMIT_REVIEW_SECRET_SCAN`: Controls optional local redaction: `auto` (default) uses a verified scanner when available; `off` skips scanning and continues review unredacted.
+- `PRE_COMMIT_REVIEW_GITLEAKS_BIN`: Explicit trusted absolute scanner path for development, tests, or controlled offline environments. It must match the pinned version and pass the stdin/JSON capability test. Setting it is an explicit trust decision; otherwise only the SHA256-verified bundled binary is accepted, and `PATH` is never searched.
+- `PRE_COMMIT_REVIEW_GITLEAKS_CONFIG`: Explicit trusted scanner config path for development/tests. Do not point this at configuration from the repository being reviewed.
+- `PRE_COMMIT_REVIEW_GITLEAKS_TIMEOUT_MS`: Per-process Gitleaks deadline in milliseconds. The default is `30000`; accepted overrides are `50` through `120000`. A timeout kills and reaps the scanner, reports `scanner-timeout`, and continues review without redaction.
+- `PRE_COMMIT_REVIEW_FETCH_PROGRESS`: Controls Gitleaks download progress: `auto` (default), `always`, or `never`.
 
-Use `scripts/collect_diff_context.sh --plan-only` or `--include-diff never` to recover only the structured control plane when a host persisted the original helper output. Use `--include-diff always` only when you explicitly want the global raw diff, still bounded by `PRE_COMMIT_REVIEW_MAX_DIFF_BYTES`.
+Every implementation mode uses the same best-effort stream sanitizer. When scanning succeeds, shadow mismatch logs are based on sanitized stdout/stderr. `status: unavailable` means the scanner could not run or finish; `status: redaction-failed` means it returned a finding but the helper could not apply or verify that replacement. Both states continue review without withholding output and explicitly report that redaction was not applied.
+
+Use `scripts/collect_diff_context.sh --plan-only` or `--include-diff never` to recover only the structured control plane when a host persisted the original helper output. Use `--include-diff always` only when you explicitly want the global diff view, still bounded by `PRE_COMMIT_REVIEW_MAX_DIFF_BYTES`; verify `## Secret Scan` before assuming that view was redacted.
 
 Use `scripts/collect_diff_context.sh --source <staged|unstaged|branch> --group <group_id> --expect-scope <fingerprint>` to retrieve one in-budget review group's diff after opening the control plane. Use `--path <path>` with the same fingerprint for file-level follow-up when a group needs narrower context or has been split. Rerun `--control-plane` before the verdict; snapshot drift invalidates the old ledger instead of being merged into a false complete review. `split-required` groups must be reviewed through bounded replacements instead of as one group.
 
@@ -390,17 +405,33 @@ Execution entrypoints are layered too:
 
 - `output_eval_runner.sh` prepares real local fixtures for any one eval file, can optionally invoke an external model runner, and grades saved responses against expected verdicts and required phrases
 - `--eval-file` lets `output_eval_runner.sh` target one layered output eval JSON such as `evals/output/visual-output-eval.json`.
+- `--skill-dir` selects the skill checkout linked into host fixtures, so baseline and current responses can be generated from the same eval cases without changing the harness checkout
 - `run_layered_output_evals.sh` runs the layered output eval matrix end-to-end across the routine, advanced, visual, and localization eval files
 - `run_marker_eval_checks.sh` validates marker-taxonomy coverage and summarizes blocking vs non-blocking case counts
 - `output_eval_codex_case.sh` and `output_eval_claude_case.sh` run a single eval case per host
 - `output_eval_codex_runner.sh` and `output_eval_claude_runner.sh` are host-specific thin wrappers that link this checkout into the fixture's project-local skill directory (`.agents/skills` for Codex, `.claude/skills` for Claude Code) and delegate to `output_eval_runner.sh` with host-appropriate non-interactive commands
 - `output_eval_runner_test.sh` is the deterministic self-test for fixture preparation and grading logic
+- `compare_output_eval_quality.sh` grades saved baseline and current responses against the same layered eval cases, emits an `output-eval-quality-diff/v1` JSON report, and fails on regressions or incomplete response sets without invoking a model. Secret-attention cases additionally report non-secret finding recall and fail through `secret_attention_regressions` when a credential finding causes authorization, migration, or compatibility recall to fall.
+- `compare_output_eval_quality_test.sh` deterministically covers regression, improvement, no-regression, and incomplete comparison outcomes
 - `output_eval_host_wrappers_test.sh` verifies the wrappers with mock Codex and Claude binaries so host command templates regress without spending model calls
 - `run_helper_gateway_probe.sh` runs a real-host stage that instruments the bundled helper and selected direct Git commands, then fails if a host inspects Git diff source before attempting `scripts/collect_diff_context.sh`
 - `check_persisted_output_contract.sh` scans host transcripts for persisted helper output and fails if the saved plan/manifest was never recovered before a full-review claim
 - `readme_surface_test.sh` keeps the README-facing public surface aligned with the documented contract gates and entrypoint inventory
 - `readme_host_entrypoints_test.sh` pins the tiered `Host Entrypoints` section so the README keeps exposing the host-lane surface by `Primary`, `Analysis`, `Stage`, and `Internal / Repo-wide`
 - `eval_contract_test.sh` is the repo-wide gate for trigger evals, layered output evals, marker taxonomy assets, and host-lane contract surfaces
+
+Generate the baseline and current response directories with the same eval files, host, model, and runner settings, then compare them without another model call:
+
+```bash
+./evals/compare_output_eval_quality.sh \
+  --baseline-responses /path/to/baseline-responses \
+  --current-responses /path/to/current-responses \
+  --report-json /path/to/output-quality-diff.json
+```
+
+The `advanced-independent-findings-enumeration-en` case uses a neutral review prompt and contains one credential plus three independent non-secret findings. For a meaningful stochastic A/B result, run that case 5–10 times per checkout with matched host/model settings and require full current non-secret recall with no per-run decline.
+
+The controlled scanner-off/scanner-on pilot and its limitations are recorded in [`docs/gitleaks-quality-evaluation.md`](./docs/gitleaks-quality-evaluation.md).
 
 ### Host Entrypoints
 
@@ -412,8 +443,8 @@ For the host-lane workflow, use these scripts by tier:
 - Use these when you want one stable entrypoint for real authenticated host smoke runs and artifact collection
 - `Primary / Output Matrix`: `evals/run_layered_output_evals.sh`, `evals/run_marker_eval_checks.sh`
 - Use these to run the layered output-eval surface and marker-taxonomy checks without hand-selecting individual eval assets
-- `Analysis`: `evals/analyze_host_readiness_diff.sh`
-- Use this to compare cross-host readiness outputs without rerunning each stage
+- `Analysis`: `evals/analyze_host_readiness_diff.sh`, `evals/compare_output_eval_quality.sh`
+- Use these to compare cross-host readiness reports or saved before/after output-eval responses without rerunning stages or invoking a model during comparison
 - `Stage`: `evals/check_host_availability.sh`, `evals/run_helper_gateway_probe.sh`, `evals/check_persisted_output_contract.sh`, `evals/run_layered_host_evals.sh`, `evals/host_contract_subset.sh`
 - Use these when debugging or running one host-lane boundary directly
 - `Internal / Repo-wide`: `evals/eval_contract_test.sh`, host `*_test.sh`, `evals/host_failure_taxonomy.sh`

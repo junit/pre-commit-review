@@ -11,8 +11,11 @@ advanced_output_eval_file="$repo_root/evals/output/advanced-output-eval.json"
 visual_output_eval_file="$repo_root/evals/output/visual-output-eval.json"
 localization_output_eval_file="$repo_root/evals/output/localization-output-eval.json"
 marker_eval_file="$repo_root/evals/taxonomy/marker-eval.json"
+output_eval_runner="$repo_root/evals/output_eval_runner.sh"
 layered_output_runner="$repo_root/evals/run_layered_output_evals.sh"
 layered_output_runner_test="$repo_root/evals/run_layered_output_evals_test.sh"
+output_quality_comparator="$repo_root/evals/compare_output_eval_quality.sh"
+output_quality_comparator_test="$repo_root/evals/compare_output_eval_quality_test.sh"
 marker_eval_checker="$repo_root/evals/run_marker_eval_checks.sh"
 marker_eval_checker_test="$repo_root/evals/run_marker_eval_checks_test.sh"
 layered_host_runner="$repo_root/evals/run_layered_host_evals.sh"
@@ -55,7 +58,7 @@ assert_contains() {
   local needle="$2"
   local message="$3"
 
-  grep -Fq "$needle" "$file" || fail "$message"
+  grep -Fq -- "$needle" "$file" || fail "$message"
 }
 
 [ -f "$trigger_eval_file" ] || fail 'missing evals/trigger-eval.json'
@@ -65,8 +68,11 @@ assert_contains() {
 [ -f "$visual_output_eval_file" ] || fail 'missing evals/output/visual-output-eval.json'
 [ -f "$localization_output_eval_file" ] || fail 'missing evals/output/localization-output-eval.json'
 [ -f "$marker_eval_file" ] || fail 'missing evals/taxonomy/marker-eval.json'
+[ -f "$output_eval_runner" ] || fail 'missing evals/output_eval_runner.sh'
 [ -f "$layered_output_runner" ] || fail 'missing evals/run_layered_output_evals.sh'
 [ -f "$layered_output_runner_test" ] || fail 'missing evals/run_layered_output_evals_test.sh'
+[ -f "$output_quality_comparator" ] || fail 'missing evals/compare_output_eval_quality.sh'
+[ -f "$output_quality_comparator_test" ] || fail 'missing evals/compare_output_eval_quality_test.sh'
 [ -f "$marker_eval_checker" ] || fail 'missing evals/run_marker_eval_checks.sh'
 [ -f "$marker_eval_checker_test" ] || fail 'missing evals/run_marker_eval_checks_test.sh'
 [ -f "$layered_host_runner" ] || fail 'missing evals/run_layered_host_evals.sh'
@@ -234,8 +240,12 @@ assert_jq "$advanced_output_eval_file" \
   'advanced framework behavior case must require framework behavior evidence without blocking on call-site shape alone'
 
 assert_jq "$advanced_output_eval_file" \
-  'any(.cases[]; .id == "advanced-independent-findings-enumeration-en" and (.expected.must_include | index("serviceToken") != null) and (.expected.must_include | index("grantAdmin") != null) and (.expected.must_include | index("drop column email") != null) and (.expected.must_include | index("getUserProfile") != null))' \
+  'any(.cases[]; .id == "advanced-independent-findings-enumeration-en" and (.expected.must_include | index("redacted") != null) and (.expected.must_include | index("rotate") != null) and (.expected.must_include | index("grantAdmin") != null) and (.expected.must_include | index("email") != null) and (.expected.must_include | index("getUserProfile") != null))' \
   'advanced independent finding enumeration case must require all independent risk objects'
+
+assert_jq "$advanced_output_eval_file" \
+  'any(.cases[]; .id == "advanced-independent-findings-enumeration-en" and .prompt == "Review all staged changes before commit." and .expected.quality_dimensions.secret_attention.require_current_full_recall == true and .expected.quality_dimensions.secret_attention.allow_recall_drop == false and (.expected.quality_dimensions.secret_attention.non_secret_findings | map(.id) == ["missing-authorization", "destructive-migration", "breaking-profile-api"]))' \
+  'advanced independent finding enumeration case must measure secret-attention recall without prompting the answer'
 
 assert_jq "$visual_output_eval_file" \
   '.cases | type == "array" and length >= 5' \
@@ -284,5 +294,15 @@ assert_contains "$real_host_smoke_workflow" 'workflow_dispatch:' \
   'real-host-smoke.yml must be manually dispatchable'
 assert_contains "$real_host_smoke_workflow" 'run_real_host_smoke.sh' \
   'real-host-smoke.yml must invoke evals/run_real_host_smoke.sh'
+assert_contains "$output_quality_comparator" 'output-eval-quality-diff/v1' \
+  'output quality comparator must emit the versioned comparison schema'
+assert_contains "$output_quality_comparator" '--baseline-responses' \
+  'output quality comparator must require baseline responses'
+assert_contains "$output_quality_comparator" '--current-responses' \
+  'output quality comparator must require current responses'
+assert_contains "$output_quality_comparator" 'secret_attention_regressions' \
+  'output quality comparator must report non-secret recall regressions'
+assert_contains "$output_eval_runner" '--skill-dir' \
+  'output eval runner must support selecting baseline and current skill checkouts'
 
 printf 'eval contract tests passed\n'

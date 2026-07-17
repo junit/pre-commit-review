@@ -25,6 +25,8 @@ grep -Fq -- '--eval-file FILE' "$tmp_dir/help.out" \
   || fail 'runner help must advertise --eval-file'
 grep -Fq 'layered eval file such as evals/output/visual-output-eval.json' "$tmp_dir/help.out" \
   || fail 'runner help must explain layered eval-file usage'
+grep -Fq -- '--skill-dir DIR' "$tmp_dir/help.out" \
+  || fail 'runner help must advertise A/B skill checkout selection'
 
 bash "$runner" --fixtures-dir "$fixtures_dir" --responses-dir "$responses_dir" --manifest "$manifest_file" >"$tmp_dir/prepare.out"
 
@@ -158,5 +160,50 @@ bash "$runner" \
   || fail 'runner did not prepare framework behavior source fixture'
 grep -Fq 'PREPARED framework-behavior-source' "$tmp_dir/advanced-framework.out" \
   || fail 'runner did not report framework behavior source preparation'
+
+attention_fixtures_dir="$tmp_dir/attention-fixtures"
+attention_responses_dir="$tmp_dir/attention-responses"
+mkdir -p "$attention_responses_dir"
+cat >"$attention_responses_dir/advanced-independent-findings-enumeration-en.md" <<'EOF'
+**VERDICT:** DO_NOT_COMMIT
+The credential is redacted; rotate it.
+grantAdmin lacks authorization.
+email remains mentioned by getUserProfile, which is a breaking change for downstream clients.
+EOF
+
+if bash "$runner" \
+  --eval-file "$advanced_cases_file" \
+  --case independent-findings-enumeration \
+  --fixtures-dir "$attention_fixtures_dir" \
+  --responses-dir "$attention_responses_dir" >"$tmp_dir/attention-missing.out" 2>&1; then
+  fail 'runner accepted a response that omitted the destructive migration finding'
+fi
+grep -Fq 'missing non-secret finding for independent-findings-enumeration: destructive-migration' \
+  "$tmp_dir/attention-missing.out" \
+  || fail 'runner did not report the missing non-secret finding dimension'
+
+printf '%s\n' 'The migration will drop persisted email data.' \
+  >>"$attention_responses_dir/advanced-independent-findings-enumeration-en.md"
+bash "$runner" \
+  --eval-file "$advanced_cases_file" \
+  --case independent-findings-enumeration \
+  --fixtures-dir "$attention_fixtures_dir" \
+  --responses-dir "$attention_responses_dir" >"$tmp_dir/attention-complete.out"
+grep -Fq 'PASS independent-findings-enumeration' "$tmp_dir/attention-complete.out" \
+  || fail 'runner did not accept complete non-secret finding recall'
+
+custom_skill_dir="$tmp_dir/custom-skill"
+custom_skill_fixtures="$tmp_dir/custom-skill-fixtures"
+mkdir -p "$custom_skill_dir"
+bash "$runner" \
+  --eval-file "$routine_cases_file" \
+  --case tiny-docs \
+  --skill-dir "$custom_skill_dir" \
+  --fixtures-dir "$custom_skill_fixtures" \
+  --responses-dir "$tmp_dir/custom-skill-responses" >"$tmp_dir/custom-skill.out"
+
+jq -e --arg expected "$custom_skill_dir" '.skill_dir == $expected' \
+  "$custom_skill_fixtures/routine-tiny-docs-en/metadata.json" >/dev/null \
+  || fail 'runner did not persist the selected A/B skill directory'
 
 printf 'output eval runner tests passed\n'

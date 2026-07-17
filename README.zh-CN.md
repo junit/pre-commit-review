@@ -133,6 +133,7 @@
 
 - 一个能加载 skill 的受支持 AI 编程 agent 运行时（Codex、Claude Code、Gemini CLI 或 Kiro）。skill 包本身不附带运行时。
 - 本地 diff 收集需要 `PATH` 中存在 `git`。当你直接粘贴 diff 或代码时，无需 git 也能审查。
+- 网络访问是可选的。从源码 clone 安装时，`install.sh` 会尝试下载当前平台固定的 Gitleaks `8.30.1`，并同时校验 release archive 与解压后 executable 的 SHA256。自包含 release 包已经附带验证过的二进制。下载被关闭、不可用或失败时，skill 仍会完成安装并继续审查，只是不提供本地密钥打码；不会隐式搜索 `PATH`。
 - 运行 `install.sh` 和辅助脚本需要 Unix 兼容 shell。Windows 上请使用 Git Bash、MSYS2 或 WSL。
 
 ## 快速安装
@@ -145,6 +146,8 @@
 ./install.sh --agent gemini-cli
 ./install.sh --agent kiro-cli
 ```
+
+以上命令会在安装阶段尝试准备当前平台的固定版本 Gitleaks。这是用户显式触发的安装器行为；Agent 审查流程本身绝不会下载工具。准备失败会产生告警，但不会阻止安装或审查。
 
 列出所有受支持的 agent id 及其 project/global 路径：
 
@@ -169,6 +172,8 @@
 - `--dir PATH` 手动指定目标 skills 目录
 - `--force` 覆盖一个并非由当前安装器管理的同名目标
 - `--dry-run` 只打印将执行的动作，不真正修改文件
+- `--no-download` 跳过可选的 Gitleaks 下载；没有密钥打码时审查仍可继续
+- `--doctor` 在不安装 skill 的情况下诊断 scanner 来源、版本、bundled SHA256、可信配置和 stdin/JSON 能力；打码不可用时会非零退出，但不代表审查被阻塞
 
 示例：
 
@@ -283,6 +288,8 @@
     ├── output/
     ├── taxonomy/
     ├── eval_contract_test.sh
+    ├── compare_output_eval_quality.sh
+    ├── compare_output_eval_quality_test.sh
     ├── readme_surface_test.sh
     ├── readme_host_entrypoints_test.sh
     ├── output-eval.json
@@ -321,18 +328,19 @@
 
 ### `scripts/collect_diff_context.sh`
 
-这是一个只读辅助脚本，用于为审查流程收集本地仓库上下文。它做三件事：
+这是一个只读辅助脚本，用于为审查流程收集本地仓库上下文。它做四件事：
 
 1. **diff 来源解析** —— 判断当前目录是否是 Git 仓库，存在 staged 时优先使用 staged，否则回退到 unstaged 或 branch-vs-base；输出 diff 统计、文件列表、状态、截断状态、基于路径/内容的高风险候选、疑似生成文件、lockfile 和高 churn 文件。rename、delete、binary、mode-only 和 submodule 指针更新都会记录为 manifest units。
 2. **有界 control plane** —— 通过 `--control-plane` 输出紧凑 JSON gateway，包含完整 scope 内容指纹、逐单元指纹、有界 units/groups、work order 与可复用命令模板；后续补取支持 `--expect-scope <fingerprint>`，快照过期时 fail closed；指纹和实际审查字节都会禁用外部 diff/textconv driver，确保快照身份与模型检查到的内容保持同一语义。
 3. **coverage-led 与测试选择提示** —— 输出 Review Manifest/Groups 以及 reducer 友好的结构化段落（Review Plan JSON、split 建议、ledgers、work packets、finalization 模板）、有界只读 Semantic Context Queries，以及对变更中测试文件的 Test Selection Hints，用于识别常见 JVM/Spring/Quarkus/Micronaut、Maven/Gradle 集成测试命名、JUnit tags、Testcontainers、Docker Compose、WireMock/MockServer、pytest markers、Playwright/Cypress/Node e2e、Go build tags、Rust ignored/integration tests，以及数据库/缓存/消息/搜索服务配置等环境依赖测试。
+4. **可选的本地密钥打码** —— 可信 Gitleaks 可用时，先扫描和打码完整的所选 diff，再应用输出字节上限，将命中范围替换为 `[redacted:<rule-id>]` 后复扫，并对 wrapper 捕获的完整 stdout/stderr 做打码。这个顺序能防止已检测到的密钥跨越截断边界时以无法匹配的前缀泄露。scanner 被关闭、不可用、超时或没有返回命中时，审查继续使用原始输出。若 Gitleaks 已返回命中，但本地坐标映射或复核失败，helper 会明确报告 `status: redaction-failed`，而不是把它说成 scanner 不可用；此路径同样继续输出原始内容，不暂扣审查材料。
 
 完整输出段落清单（Coverage Ledger Template、Group Review Work Packets、Reducer State Snapshot 等）见 [`docs/helper-capabilities.md`](./docs/helper-capabilities.md)，供构建 reducer/subagent 自动化的集成者参考。
 
-它不会执行 fetch、stage、reset、install，也不会修改任何文件。
+审查入口不会执行 fetch、stage、reset、install，也不会修改任何文件。用户显式执行安装时，如果当前平台二进制尚未 bundled，`install.sh` 会调用 `scripts/fetch_gitleaks.sh`；该脚本只下载仓库固定的上游 release asset，并同时校验 archive 与解压后 executable 的固定 SHA256。交互式终端默认显示下载进度；输出被宿主捕获时可设置 `PRE_COMMIT_REVIEW_FETCH_PROGRESS=always` 强制显示，或设为 `never` 关闭。`--dry-run` 不会下载，`--no-download` 会跳过这项可选安装行为，Agent 审查期间也绝不会联网安装 Gitleaks。可运行 `./install.sh --doctor` 诊断本地打码是否可用。
 它不会运行、改写或跳过测试。Test Selection Hints 只是只读提示，用于选择更聚焦的验证命令，并区分沙箱环境失败和代码失败。`no-known-env-heavy-marker` 并不证明测试是隔离单测，只表示 helper 没匹配到已知的重环境标记。
 
-审查流程首先运行 `scripts/collect_diff_context.sh --control-plane`。这个有界 gateway 不输出 raw diff，且只有 collection-start 与 collection-end 指纹一致时才标记为 authoritative。兼容用的默认输出仍是 plan-first，并可能省略全局 raw diff。`PRE_COMMIT_REVIEW_INLINE_DIFF_BYTES`（默认 `60000`）控制该默认输出何时内联全局 diff。`PRE_COMMIT_REVIEW_MAX_DIFF_BYTES`（默认 `200000`）只控制已经被选择输出的 diff 如何截断；只有在确认完整 diff 输出安全时才设为 `0`。
+审查流程首先运行 `scripts/collect_diff_context.sh --control-plane`。这个有界 gateway 不输出 raw diff，且只有 collection-start 与 collection-end 指纹一致时才标记为 authoritative。兼容用的默认输出仍是 plan-first，并可能省略全局 raw diff。`PRE_COMMIT_REVIEW_INLINE_DIFF_BYTES`（默认 `60000`）控制该默认输出何时内联全局 diff。`PRE_COMMIT_REVIEW_MAX_DIFF_BYTES`（默认 `200000`）只控制已经被选择输出的 diff 如何截断；只有在确认完整的已打码 diff 输出安全时才设为 `0`。
 
 即使所选模型标称支持 200K 以上上下文，默认预算仍然有意保持保守。CLI 宿主可能在内容进入模型之前就把大型工具 stdout 持久化或只返回 preview；大段 raw diff 还会增加延迟和多轮 token 成本，并削弱审查焦点。请把默认值视为跨宿主稳定基线，而不是模型上下文上限。
 
@@ -346,14 +354,21 @@ Review group 预算默认目标值为 120KB，硬上限为 160KB。可通过 `PR
 ### 灰度发布与多实现控制（Rollout & Multi-Implementation Controls）
 入口包装脚本 `scripts/collect_diff_context.sh` 支持多种运行模式，以确保版本过渡期的安全：
 - `PRE_COMMIT_REVIEW_HELPER_IMPL`: 指定底层调用的辅助脚本实现模式。
-  - `rust` (默认值): 优先执行编译后的 Rust CLI 二进制程序。如果执行失败，会在 `stderr` 打印警告，并**自动无缝降级执行**旧版 Shell 脚本 `collect_diff_context.legacy.sh`。
+  - `rust` (默认值): 优先执行编译后的 Rust CLI 二进制程序。收集错误可以降级到旧版 Shell 脚本。密钥扫描错误不会触发特殊 fallback，也不会阻塞输出；所选实现会在报告降级状态后继续输出未打码内容。
   - `legacy` 或 `shell`: 强制直接运行旧版 Shell 脚本。
   - `shadow`: 双路执行模式。同时运行旧版 Shell 脚本和 Rust 二进制程序，比对它们的标准输出，并在不一致时告警。此模式下返回旧版 Shell 的结果以保障生产安全。
 - `PRE_COMMIT_REVIEW_SHADOW_MODE`: 设为 `1` 时会强制开启上述 `shadow` 双路比对模式，即使 `PRE_COMMIT_REVIEW_HELPER_IMPL` 被显式设为 `legacy` 或 `shell` 也一样。
 - `PRE_COMMIT_REVIEW_SHADOW_DIFF_LOG`: 可选的 shadow mismatch diff 日志路径。默认 shadow mode 不会把 diff 内容写入 `/tmp`。
 - `PRE_COMMIT_REVIEW_DISABLE_FALLBACK`: 设为 `1` 时禁用 Rust 失败降级机制，直接透传 Rust 程序的异常和退出码（用于测试与 CI）。
+- `PRE_COMMIT_REVIEW_SECRET_SCAN`: 控制可选本地打码：`auto`（默认）在可信 scanner 可用时启用；`off` 跳过扫描并继续输出未打码审查内容。
+- `PRE_COMMIT_REVIEW_GITLEAKS_BIN`: 在开发、测试或受控离线环境中显式指定可信 scanner 绝对路径。它必须匹配固定版本并通过 stdin/JSON 能力测试。设置该变量代表用户主动信任此外部程序；否则只接受通过 SHA256 验证的 bundled binary，且绝不搜索 `PATH`。
+- `PRE_COMMIT_REVIEW_GITLEAKS_CONFIG`: 开发/测试时显式指定可信 scanner 配置。不要指向被审查仓库提供的配置。
+- `PRE_COMMIT_REVIEW_GITLEAKS_TIMEOUT_MS`: 单个 Gitleaks 进程的毫秒级超时。默认值为 `30000`，允许覆盖为 `50` 到 `120000`。超时后 helper 会终止并回收 scanner，报告 `scanner-timeout`，然后在未打码状态下继续审查。
+- `PRE_COMMIT_REVIEW_FETCH_PROGRESS`: 控制 Gitleaks 下载进度：`auto`（默认）、`always` 或 `never`。
 
-当宿主把 helper 输出持久化、只返回 preview 时，可用 `scripts/collect_diff_context.sh --plan-only` 或 `--include-diff never` 重新获取结构化控制面。只有明确需要全局 raw diff 时才使用 `--include-diff always`；它仍受 `PRE_COMMIT_REVIEW_MAX_DIFF_BYTES` 限制。
+所有实现模式都使用同一个尽力而为的流打码器。扫描成功时，shadow mismatch 日志基于已打码的 stdout/stderr。`status: unavailable` 表示 scanner 无法运行或未能完成；`status: redaction-failed` 表示 scanner 已返回命中，但 helper 未能应用或复核替换。两种状态都不会暂扣输出，并会明确说明没有完成打码。
+
+当宿主把 helper 输出持久化、只返回 preview 时，可用 `scripts/collect_diff_context.sh --plan-only` 或 `--include-diff never` 重新获取结构化控制面。只有明确需要全局 diff 时才使用 `--include-diff always`；输出仍受 `PRE_COMMIT_REVIEW_MAX_DIFF_BYTES` 限制，在假定内容已打码前必须检查 `## Secret Scan` 状态。
 
 打开控制面后，可用 `scripts/collect_diff_context.sh --source <staged|unstaged|branch> --group <group_id> --expect-scope <fingerprint>` 只输出一个未超硬预算 review group 的 diff。需要更窄上下文或 group 已拆分时，用带同一 fingerprint 的 `--path <path>` 补取。最终 verdict 前必须重跑 `--control-plane`；快照漂移会使旧 ledger 失效，不能把两个版本拼成一次“完整审查”。`split-required` group 必须通过有界 replacement 审查，不能作为一个整体 group 审查。
 
@@ -390,17 +405,33 @@ Reducer 和 subagent 自动化应优先使用 authoritative `Review Control Plan
 
 - `output_eval_runner.sh` 针对任意单个 eval 文件准备真实本地 fixture，可选调用外部模型 runner，并按期望 verdict 与必含短语对保存响应评分
 - `--eval-file` 可让 `output_eval_runner.sh` 指向任意单个分层 output eval JSON，例如 `evals/output/visual-output-eval.json`。
+- `--skill-dir` 用于选择链接到宿主 fixture 的 skill checkout，从而用同一套 eval case 分别生成引入前和引入后的响应，而无需切换 harness checkout
 - `run_layered_output_evals.sh` 端到端执行 layered output eval 矩阵，覆盖 routine、advanced、visual 和 localization 四套 eval 文件
 - `run_marker_eval_checks.sh` 校验 marker taxonomy 覆盖，并汇总 blocking / non-blocking case 数量
 - `output_eval_codex_case.sh` 和 `output_eval_claude_case.sh` 每个宿主执行单个 eval case
 - `output_eval_codex_runner.sh` 和 `output_eval_claude_runner.sh` 是宿主专用薄封装，会把当前仓库链接到 fixture 的 project-local skill 目录（Codex 用 `.agents/skills`，Claude Code 用 `.claude/skills`），再用适合各自宿主的非交互命令委托给 `output_eval_runner.sh`
 - `output_eval_runner_test.sh` 是 fixture 准备与评分逻辑的确定性自测
+- `compare_output_eval_quality.sh` 会用同一套分层 eval case 对已保存的引入前/引入后响应评分，输出 `output-eval-quality-diff/v1` JSON 报告；发现回归或响应集不完整时失败，比较过程不调用模型。密钥注意力 case 会额外统计非密钥 finding 召回；当凭据问题导致授权、迁移或兼容性问题召回下降时，通过 `secret_attention_regressions` 单独失败。
+- `compare_output_eval_quality_test.sh` 确定性覆盖回归、改进、无回归与响应不完整四类结果
 - `output_eval_host_wrappers_test.sh` 用 mock Codex/Claude 二进制验证这些 wrapper，确保宿主命令模板回归时不消耗真实模型调用
 - `run_helper_gateway_probe.sh` 是一个 real-host stage，会对 bundled helper 与选定的直接 Git 命令做日志探针；如果 host 在尝试 `scripts/collect_diff_context.sh` 之前就检查 Git diff 来源，则判定失败
 - `check_persisted_output_contract.sh` 会扫描宿主 transcript；如果 helper 大输出被持久化后，模型在声称完整审查前没有恢复保存的 plan/manifest，则判定失败
 - `readme_surface_test.sh` 守护 README 面向外部暴露的 public surface，确保文档里的 contract gate 与入口清单保持一致
 - `readme_host_entrypoints_test.sh` 固化分层 `Host Entrypoints` 文档，确保 README 持续以 `Primary`、`Analysis`、`Stage` 和 `Internal / Repo-wide` 暴露 host lane surface
 - `eval_contract_test.sh` 是 repo 级门禁，统一守护 trigger eval、layered output eval、marker taxonomy 资产以及 host lane contract surface
+
+先使用相同的 eval 文件、宿主、模型与 runner 设置分别生成引入前和引入后的响应目录，再执行不触发额外模型调用的比较：
+
+```bash
+./evals/compare_output_eval_quality.sh \
+  --baseline-responses /path/to/baseline-responses \
+  --current-responses /path/to/current-responses \
+  --report-json /path/to/output-quality-diff.json
+```
+
+`advanced-independent-findings-enumeration-en` 使用中性的审查请求，fixture 同时包含一个凭据问题和三个相互独立的非密钥问题。为了得到有意义的随机性 A/B 结果，应在相同宿主与模型配置下对每个 checkout 重复运行 5～10 次，并要求当前版本的非密钥问题全部召回且每次均不低于基线。
+
+scanner 关闭/开启的受控 pilot、结果及其样本量限制记录在 [`docs/gitleaks-quality-evaluation.md`](./docs/gitleaks-quality-evaluation.md)。
 
 ### Host Entrypoints
 
@@ -412,8 +443,8 @@ Reducer 和 subagent 自动化应优先使用 authoritative `Review Control Plan
 - 当你需要一个稳定入口去跑真实、已认证 host 的 smoke 验证并收集产物时，使用这两个入口
 - `Primary / Output Matrix`: `evals/run_layered_output_evals.sh`、`evals/run_marker_eval_checks.sh`
 - 用于执行分层 output eval surface 与 marker taxonomy 检查，无需手工逐个挑选 eval 资产
-- `Analysis`: `evals/analyze_host_readiness_diff.sh`
-- 用于对比 cross-host readiness 输出，而不必重新跑每个阶段
+- `Analysis`: `evals/analyze_host_readiness_diff.sh`、`evals/compare_output_eval_quality.sh`
+- 用于对比 cross-host readiness 报告，或比较已保存的引入前/引入后 output-eval 响应；比较阶段无需重跑各 stage，也不会调用模型
 - `Stage`: `evals/check_host_availability.sh`、`evals/run_helper_gateway_probe.sh`、`evals/check_persisted_output_contract.sh`、`evals/run_layered_host_evals.sh`、`evals/host_contract_subset.sh`
 - 当你只想调试或单独运行某一层 host 边界时使用
 - `Internal / Repo-wide`: `evals/eval_contract_test.sh`、host `*_test.sh`、`evals/host_failure_taxonomy.sh`
