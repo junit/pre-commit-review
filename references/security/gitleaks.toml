@@ -1,0 +1,6 @@
+title = "Pre-Commit Review Trusted Secret Redaction"
+
+# Keep the privacy boundary independent from configuration in the repository
+# being reviewed. The pinned Gitleaks binary supplies the actual rule set.
+[extend]
+useDefault = true

@@ -95,8 +95,31 @@ grep -Fq 'Resolve this path relative to the skill package directory containing t
   || fail 'SKILL.md must disambiguate the helper path relative to the skill package'
 grep -Fq 'This is a mandatory gateway. Attempt the helper before any direct `git status`, `git diff`, `git diff --cached`, or branch comparison command.' "$skill_file" \
   || fail 'SKILL.md must require the helper before direct Git inspection'
-grep -Fq 'Only fall back to direct Git inspection when the helper is unavailable at that resolved path, exits non-zero without structured output, cannot be executed in the current host, or the user already provided the review material explicitly.' "$skill_file" \
-  || fail 'SKILL.md must bound direct Git fallback to explicit helper-unavailable scenarios'
+grep -Fq 'do not fall back to direct Git inspection when the helper is unavailable' "$skill_file" \
+  || fail 'SKILL.md must preserve the authoritative helper snapshot gateway'
+grep -Fq '### Optional Local Secret Redaction' "$skill_file" \
+  || fail 'SKILL.md must define optional local secret redaction behavior'
+grep -Fq 'Gitleaks is an optional, best-effort local redaction layer.' "$skill_file" \
+  || fail 'SKILL.md must treat Gitleaks as an optional safety enhancement'
+grep -Fq '`status: unavailable` with `redaction_applied: no` and `review_continued: yes`' "$skill_file" \
+  || fail 'SKILL.md must continue review when local redaction is unavailable'
+grep -Fq '`status: redaction-failed` with `findings_detected: yes`, `redaction_applied: no`, and `review_continued: yes`' "$skill_file" \
+  || fail 'SKILL.md must distinguish a detected finding redaction bug from scanner unavailability'
+if grep -Eq 'diff_release_allowed: no|secret_scan: blocked' "$skill_file"; then
+  fail 'SKILL.md must not turn optional redaction into a review-output gate'
+fi
+grep -Fq 'Never discover Gitleaks implicitly through `PATH`.' "$skill_file" \
+  || fail 'SKILL.md must prohibit implicit scanner discovery'
+grep -Fq 'version and SHA256 match the skill-owned manifests' "$skill_file" \
+  || fail 'SKILL.md must require bundled scanner integrity validation'
+grep -Fq '`scanner-timeout` is an unavailable-redaction state' "$skill_file" \
+  || fail 'SKILL.md must keep scanner timeouts bounded and non-blocking'
+grep -Fq 'a secret finding is a security signal, not a review-completion condition' "$skill_file" \
+  || fail 'SKILL.md must prevent secret findings from short-circuiting review coverage'
+grep -Fq 'never cap, merge away, or omit an independently actionable finding' "$skill_file" \
+  || fail 'SKILL.md must preserve independent findings after a credential blocker'
+grep -Fq 'never execute helper-emitted raw `review_command` values' "$skill_file" \
+  || fail 'SKILL.md must prohibit raw review-command fallback'
 grep -Fq 'scripts/collect_diff_context.sh --control-plane' "$skill_file" \
   || fail 'SKILL.md must use the bounded control-plane gateway'
 grep -Fq '`--expect-scope <scope_fingerprint>`' "$skill_file" \

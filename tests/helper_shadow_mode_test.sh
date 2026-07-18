@@ -31,8 +31,11 @@ if [ "$os_name" = "windows" ]; then
 fi
 
 helper_root="$tmp_dir/helper"
-mkdir -p "$helper_root/bin"
+mkdir -p "$helper_root/bin" "$helper_root/lib"
 cp "$source_helper" "$helper_root/collect_diff_context.sh"
+cp "$repo_root/scripts/gitleaks.version" "$helper_root/"
+cp "$repo_root/scripts/gitleaks-binaries.sha256" "$helper_root/"
+cp "$repo_root/scripts/lib/gitleaks_integrity.sh" "$helper_root/lib/"
 
 legacy_hit="$tmp_dir/legacy-hit"
 rust_hit="$tmp_dir/rust-hit"
@@ -53,11 +56,33 @@ printf 'rust\n' >"$rust_hit"
 EOF
 chmod +x "$helper_root/bin/$binary_name"
 
+fake_gitleaks="$tmp_dir/gitleaks"
+cat >"$fake_gitleaks" <<'EOF'
+#!/usr/bin/env bash
+set -euo pipefail
+if [ "${1:-}" = 'version' ]; then
+  printf '%s\n' '8.30.1'
+  exit 0
+fi
+cat >/dev/null
+printf '[]\n'
+EOF
+chmod +x "$fake_gitleaks"
+
+sanitizer_bin="$repo_root/collect-diff-context-cli/target/debug/collect-diff-context-cli"
+if [ ! -x "$sanitizer_bin" ]; then
+  cargo build --manifest-path "$repo_root/collect-diff-context-cli/Cargo.toml" >/dev/null
+fi
+
 stdout_file="$tmp_dir/stdout.txt"
 stderr_file="$tmp_dir/stderr.txt"
 (
   cd "$tmp_dir"
   PRE_COMMIT_REVIEW_HELPER_IMPL=legacy PRE_COMMIT_REVIEW_SHADOW_MODE=1 \
+    PRE_COMMIT_REVIEW_RUST_BIN="$helper_root/bin/$binary_name" \
+    PRE_COMMIT_REVIEW_SANITIZER_BIN="$sanitizer_bin" \
+    PRE_COMMIT_REVIEW_GITLEAKS_BIN="$fake_gitleaks" \
+    PRE_COMMIT_REVIEW_GITLEAKS_CONFIG="$repo_root/references/security/gitleaks.toml" \
     "$helper_root/collect_diff_context.sh"
 ) >"$stdout_file" 2>"$stderr_file"
 
@@ -76,6 +101,10 @@ explicit_log="$tmp_dir/shadow-diff.log"
 (
   cd "$tmp_dir"
   PRE_COMMIT_REVIEW_HELPER_IMPL=legacy PRE_COMMIT_REVIEW_SHADOW_MODE=1 \
+    PRE_COMMIT_REVIEW_RUST_BIN="$helper_root/bin/$binary_name" \
+    PRE_COMMIT_REVIEW_SANITIZER_BIN="$sanitizer_bin" \
+    PRE_COMMIT_REVIEW_GITLEAKS_BIN="$fake_gitleaks" \
+    PRE_COMMIT_REVIEW_GITLEAKS_CONFIG="$repo_root/references/security/gitleaks.toml" \
     PRE_COMMIT_REVIEW_SHADOW_DIFF_LOG="$explicit_log" \
     "$helper_root/collect_diff_context.sh"
 ) >"$tmp_dir/stdout-with-log.txt" 2>"$tmp_dir/stderr-with-log.txt"

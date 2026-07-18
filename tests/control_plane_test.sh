@@ -52,6 +52,26 @@ for impl in rust legacy; do
   fi
 done
 
+for impl in rust legacy; do
+  output="$tmp_dir/$impl-scan-disabled.out"
+  error_output="$tmp_dir/$impl-scan-disabled.err"
+  (
+    cd "$fixture"
+    PRE_COMMIT_REVIEW_HELPER_IMPL="$impl" PRE_COMMIT_REVIEW_DISABLE_FALLBACK=1 \
+      PRE_COMMIT_REVIEW_SECRET_SCAN=off \
+      "$helper" --source staged --control-plane
+  ) >"$output" 2>"$error_output"
+  python3 "$validator" --control-plane-output "$output" >/dev/null \
+    || fail "$impl disabled-scan control plane did not remain valid"
+  if grep -Fq 'status: disabled' "$output"; then
+    fail "$impl appended optional scan metadata to machine-readable stdout"
+  fi
+  grep -Fq 'status: disabled' "$error_output" \
+    || fail "$impl did not report disabled redaction on stderr"
+  grep -Fq 'review_continued: yes' "$error_output" \
+    || fail "$impl did not report continued review on stderr"
+done
+
 python3 - "$tmp_dir/rust.out" "$tmp_dir/legacy.out" <<'PY' || fail 'Rust and legacy semantic control planes differ'
 import json
 import sys

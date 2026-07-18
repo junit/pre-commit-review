@@ -1,9 +1,11 @@
+mod secret_scan;
+
 use regex::Regex;
 use serde::Serialize;
 use std::collections::{HashMap, HashSet};
 use std::env;
 use std::fs::{self, File};
-use std::io::{BufRead, BufReader, Write};
+use std::io::{BufRead, BufReader, Read, Write};
 use std::path::{Path, PathBuf};
 use std::process::{Command, Stdio};
 use std::sync::OnceLock;
@@ -26,6 +28,7 @@ enum AppError {
         cmd: String,
         cwd: String,
     },
+    SecretScan(secret_scan::SecretScanError),
     IoError(std::io::Error),
     InvalidArgument(String),
 }
@@ -41,6 +44,7 @@ impl std::fmt::Display for AppError {
                 "Git executable missing or invalid cwd: {}\nAttempted cmd: {}\nCwd: {}",
                 details, cmd, cwd
             ),
+            AppError::SecretScan(error) => write!(f, "Secret scan error: {}", error),
             AppError::IoError(e) => write!(f, "I/O error: {}", e),
             AppError::InvalidArgument(s) => write!(f, "Invalid argument: {}", s),
         }
@@ -1952,8 +1956,94 @@ fn fail_no_repo() {
     std::process::exit(0);
 }
 
-fn emit_diff_limited(diff: &str, max_bytes: usize, inline_diff_bytes: usize) {
+fn bounded_diff_view(diff: &str, max_bytes: usize) -> String {
+    if max_bytes == 0 || diff.len() <= max_bytes {
+        return diff.to_string();
+    }
+
+    let mut bounded = String::with_capacity(max_bytes + 160);
+    let mut byte_count = 0;
+    for character in diff.chars() {
+        let char_len = character.len_utf8();
+        if byte_count + char_len > max_bytes {
+            break;
+        }
+        bounded.push(character);
+        byte_count += char_len;
+    }
+    bounded.push_str(&format!(
+        "\n[diff truncated after {} bytes; inspect high-risk files with helper-emitted context commands before making safety claims]",
+        max_bytes
+    ));
+    bounded
+}
+
+fn emit_secret_scan_summary(output: &secret_scan::SanitizedOutput) {
+    println!();
+    println!("## Secret Scan");
+    println!("scanner: gitleaks");
+    match output.status {
+        secret_scan::SecretScanStatus::Clean => println!("status: clean"),
+        secret_scan::SecretScanStatus::Redacted => println!("status: redacted"),
+        secret_scan::SecretScanStatus::Disabled => {
+            println!("status: disabled");
+            println!("redaction_applied: no");
+            println!("review_continued: yes");
+        }
+        secret_scan::SecretScanStatus::Unavailable(reason) => {
+            println!("status: unavailable");
+            println!("reason: {}", reason);
+            println!("redaction_applied: no");
+            println!("review_continued: yes");
+        }
+        secret_scan::SecretScanStatus::RedactionFailed(reason) => {
+            println!("status: redaction-failed");
+            println!("reason: {}", reason);
+            println!("findings_detected: yes");
+            println!("redaction_applied: no");
+            println!("review_continued: yes");
+        }
+    }
+    println!("redactions: {}", output.redactions.len());
+    println!("redaction_mode: full-regex-match");
+    if !output.redactions.is_empty() {
+        println!("rule_id\tscan_input_start_line\tscan_input_end_line");
+        for redaction in &output.redactions {
+            println!(
+                "{}\t{}\t{}",
+                sanitize_tsv_field(&redaction.rule_id),
+                redaction.start_line,
+                redaction.end_line
+            );
+        }
+    }
+}
+
+fn sanitize_diff_for_output(diff: &str) -> secret_scan::SanitizedOutput {
+    secret_scan::sanitize_for_model_optional(diff)
+}
+
+fn emit_sanitized_split_previews(parent_group: &str, path: &str, diff: &str) {
+    let sanitized = sanitize_diff_for_output(diff);
+    let hunks = split_diff_into_hunks(&sanitized.content);
+    for (h_idx, hunk) in hunks.iter().enumerate() {
+        println!("unit_id: hunk:{}:{}", path, h_idx + 1);
+        println!("parent_group_id: {}", parent_group);
+        println!("```diff");
+        print!("{}", hunk.content);
+        println!("```");
+    }
+    emit_secret_scan_summary(&sanitized);
+}
+
+fn emit_diff_limited(
+    diff: &str,
+    max_bytes: usize,
+    inline_diff_bytes: usize,
+) -> Result<(), AppError> {
     let size = diff.len();
+    let sanitized = sanitize_diff_for_output(diff);
+    let bounded = bounded_diff_view(&sanitized.content, max_bytes);
     println!("diff_bytes: {}", size);
     println!("max_diff_bytes: {}", max_bytes);
     println!("inline_diff_bytes: {}", inline_diff_bytes);
@@ -1961,21 +2051,10 @@ fn emit_diff_limited(diff: &str, max_bytes: usize, inline_diff_bytes: usize) {
     println!();
     println!("## Diff");
     println!("```diff");
-    if max_bytes == 0 || size <= max_bytes {
-        print!("{}", diff);
-    } else {
-        let mut byte_count = 0;
-        for c in diff.chars() {
-            let char_len = c.len_utf8();
-            if byte_count + char_len > max_bytes {
-                break;
-            }
-            print!("{}", c);
-            byte_count += char_len;
-        }
-        println!("\n[diff truncated after {} bytes; inspect high-risk files with helper-emitted context commands before making safety claims]", max_bytes);
-    }
+    print!("{}", bounded);
     println!("```");
+    emit_secret_scan_summary(&sanitized);
+    Ok(())
 }
 
 fn emit_diff_omitted(diff_size: usize, max_bytes: usize, inline_diff_bytes: usize, reason: &str) {
@@ -3161,7 +3240,7 @@ fn run_app() -> Result<(), AppError> {
             &String::from_utf8_lossy(&file_diff_bytes),
             max_diff_bytes,
             inline_diff_bytes,
-        );
+        )?;
         return Ok(());
     }
 
@@ -3563,14 +3642,7 @@ fn run_app() -> Result<(), AppError> {
                 let f_diff_bytes =
                     git_run_diff_bytes(mode, &selected_ref, &[], Some(&raw_path), &repo_root)?;
                 let f_diff = String::from_utf8_lossy(&f_diff_bytes);
-                let hunks = split_diff_into_hunks(&f_diff);
-                for (h_idx, hunk) in hunks.iter().enumerate() {
-                    println!("unit_id: hunk:{}:{}", path, h_idx + 1);
-                    println!("parent_group_id: {}", parent_group);
-                    println!("```diff");
-                    print!("{}", hunk.content);
-                    println!("```");
-                }
+                emit_sanitized_split_previews(parent_group, path, &f_diff);
             }
         } else {
             println!("none");
@@ -3997,7 +4069,7 @@ fn run_app() -> Result<(), AppError> {
 
     // Limit/emit the actual global diff only when the gateway budget allows it.
     if diff_output_decision == "inline" {
-        emit_diff_limited(&global_diff, max_diff_bytes, inline_diff_bytes);
+        emit_diff_limited(&global_diff, max_diff_bytes, inline_diff_bytes)?;
     } else {
         emit_diff_omitted(
             diff_size,
@@ -4113,14 +4185,7 @@ fn emit_requested_group(
         for f in &group.files {
             let f_diff_bytes = unit_diff_cache.get(f).cloned().unwrap_or_default();
             let f_diff = String::from_utf8_lossy(&f_diff_bytes);
-            let hunks = split_diff_into_hunks(&f_diff);
-            for (h_idx, hunk) in hunks.iter().enumerate() {
-                println!("unit_id: hunk:{}:{}", f, h_idx + 1);
-                println!("parent_group_id: {}", group.group_id);
-                println!("```diff");
-                print!("{}", hunk.content);
-                println!("```");
-            }
+            emit_sanitized_split_previews(&group.group_id, f, &f_diff);
         }
         return Ok(());
     }
@@ -4138,12 +4203,89 @@ fn emit_requested_group(
         return Ok(());
     }
 
-    emit_diff_limited(&group_diff, max_diff_bytes, inline_diff_bytes);
+    emit_diff_limited(&group_diff, max_diff_bytes, inline_diff_bytes)?;
+    Ok(())
+}
+
+fn run_sanitize_stdin() -> Result<(), AppError> {
+    let mut input = String::new();
+    std::io::stdin()
+        .read_to_string(&mut input)
+        .map_err(AppError::IoError)?;
+    let sanitized = match secret_scan::sanitize_for_model(&input) {
+        Ok(sanitized) => sanitized,
+        Err(error) => {
+            if let Some(report_path) = env::var_os("PRE_COMMIT_REVIEW_SANITIZE_REPORT") {
+                let stream = env::var("PRE_COMMIT_REVIEW_SANITIZE_STREAM")
+                    .unwrap_or_else(|_| "output".to_string());
+                let redaction_failed = error.is_redaction_failure();
+                let mut report = String::from("# Pre-Commit Review Secret Scan\n");
+                report.push_str("protocol: pcr-sanitizer-v1\n");
+                report.push_str(&format!("stream: {}\n", sanitize_tsv_field(&stream)));
+                report.push_str(&format!(
+                    "status: {}\n",
+                    if redaction_failed {
+                        "redaction-failed"
+                    } else {
+                        "unavailable"
+                    }
+                ));
+                report.push_str(&format!("reason: {}\n", error.reason_code()));
+                report.push_str(&format!(
+                    "findings_detected: {}\n",
+                    if redaction_failed { "yes" } else { "unknown" }
+                ));
+                report.push_str("redaction_applied: no\n");
+                report.push_str("review_continued: yes\n");
+                report.push_str("redactions: 0\n");
+                fs::write(report_path, report).map_err(AppError::IoError)?;
+            }
+            return Err(AppError::SecretScan(error));
+        }
+    };
+
+    if let Some(report_path) = env::var_os("PRE_COMMIT_REVIEW_SANITIZE_REPORT") {
+        let stream =
+            env::var("PRE_COMMIT_REVIEW_SANITIZE_STREAM").unwrap_or_else(|_| "output".to_string());
+        let mut report = String::from("# Pre-Commit Review Secret Scan\n");
+        report.push_str("protocol: pcr-sanitizer-v1\n");
+        report.push_str(&format!("stream: {}\n", sanitize_tsv_field(&stream)));
+        report.push_str(&format!(
+            "status: {}\n",
+            if sanitized.redactions.is_empty() {
+                "clean"
+            } else {
+                "redacted"
+            }
+        ));
+        report.push_str(&format!("redactions: {}\n", sanitized.redactions.len()));
+        if !sanitized.redactions.is_empty() {
+            report.push_str("rule_id\tscan_input_start_line\tscan_input_end_line\n");
+            for redaction in &sanitized.redactions {
+                report.push_str(&format!(
+                    "{}\t{}\t{}\n",
+                    sanitize_tsv_field(&redaction.rule_id),
+                    redaction.start_line,
+                    redaction.end_line
+                ));
+            }
+        }
+        fs::write(report_path, report).map_err(AppError::IoError)?;
+    }
+
+    print!("{}", sanitized.content);
     Ok(())
 }
 
 fn main() {
-    match run_app() {
+    let args = env::args().collect::<Vec<_>>();
+    let result = if args.len() == 2 && args[1] == "--sanitize-stdin" {
+        run_sanitize_stdin()
+    } else {
+        run_app()
+    };
+
+    match result {
         Ok(_) => {}
         Err(e) => match e {
             AppError::InvalidArgument(msg) => {
@@ -4167,6 +4309,10 @@ fn main() {
                     details, cmd, cwd
                 );
                 std::process::exit(127);
+            }
+            AppError::SecretScan(error) => {
+                eprintln!("collect_diff_context: secret scan failed: {}", error);
+                std::process::exit(3);
             }
         },
     }

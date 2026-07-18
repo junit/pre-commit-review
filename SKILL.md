@@ -64,14 +64,33 @@ This is a mandatory gateway. Attempt the helper before any direct `git status`, 
 - coverage rules and snapshot identity
 - test selection hints for changed tests, when emitted
 
-If the control plane reports `authoritative: false`, stop scope-dependent review work and rerun it. Do not combine units or findings from different fingerprints. Only fall back to direct Git inspection when the helper is unavailable at that resolved path, exits non-zero without structured output, cannot be executed in the current host, or the user already provided the review material explicitly. When falling back, keep the source selection order above and describe the missing snapshot guard as a review limitation.
+If the control plane reports `authoritative: false`, stop scope-dependent review work and rerun it. Do not combine units or findings from different fingerprints. For repository-sourced review material, do not fall back to direct Git inspection when the helper is unavailable, exits non-zero without structured output, or cannot run in the current host: direct Git output bypasses the authoritative scope, fingerprint, and bounded-retrieval contract. Ask the user to restore the helper or provide the review material. User-provided review material remains governed by the input rules below.
 
 The helper is control-plane-first. The initial `--control-plane` output is bounded metadata and intentionally contains no raw diff. In that case:
 
 - use the emitted compact units, groups, work order, command templates, and coverage contract
 - expand the emitted command templates with the recorded fingerprint; every helper-mediated `--group` and `--path` load must include `--expect-scope <scope_fingerprint>`
 - do not rebuild the review scope with direct `git status`, `git diff --name-only`, `git diff --stat`, or ad hoc path selection
-- use helper-emitted `review_command` values only as a compatibility fallback when a helper-mediated `context_command` cannot be run
+- never execute helper-emitted raw `review_command` values; if a helper-mediated `context_command` cannot run, stop that review path rather than bypassing the authoritative snapshot gateway
+
+### Optional Local Secret Redaction
+
+Gitleaks is an optional, best-effort local redaction layer. It applies to repository-sourced helper output and improves model-input safety when available, but its absence, disablement, or failure must not block or shorten the code review. The trusted scanner configuration lives in the skill package, not in the repository being reviewed. Repository `.gitleaks.toml`, `.gitleaksignore`, and `gitleaks:allow` directives must not weaken the scanner configuration.
+
+When present, the default scanner must be the platform-specific bundled executable whose version and SHA256 match the skill-owned manifests. Never discover Gitleaks implicitly through `PATH`. `PRE_COMMIT_REVIEW_GITLEAKS_BIN` is reserved for an absolute path explicitly trusted by the user; it still must match the pinned version and pass an empty-stdin JSON capability check before use. Version, capability, and content scans have a bounded deadline; `scanner-timeout` is an unavailable-redaction state and must never block the review.
+
+When helper output contains `## Secret Scan`:
+
+- `status: clean` means no Gitleaks finding remained in that emitted view; it is not proof that the repository contains no secrets
+- `status: redacted` means one or more Gitleaks match ranges were replaced locally before model delivery; never attempt to reconstruct, reveal, or fetch the replaced value through another command
+- `status: unavailable` with `redaction_applied: no` and `review_continued: yes` means scanning could not run or complete; continue reviewing the emitted content, state that local secret redaction was unavailable, and do not claim that the model input was scanned or safe from secret exposure
+- `status: redaction-failed` with `findings_detected: yes`, `redaction_applied: no`, and `review_continued: yes` means Gitleaks returned at least one finding but the helper could not map or verify the replacement; continue reviewing the emitted content, report this as a redaction implementation failure rather than scanner unavailability, and do not claim that the detected value was protected from model exposure
+- `status: disabled` with `redaction_applied: no` and `review_continued: yes` means the user disabled scanning; continue reviewing and state that local secret redaction was disabled
+- use only the emitted rule id, scan-input location, diff prefix, and surrounding sanitized code as review evidence
+- an added redaction is a blocking potential credential finding; state that the value is redacted and the owner should rotate it if it is real
+- a removed-only redaction does not make the removal unsafe by itself, but still note that the exposed value is redacted and the owner should rotate it if it was ever real
+- a secret finding is a security signal, not a review-completion condition: do not select or render the final verdict until the normal review scope is complete, and continue enumerating independent authorization, data, compatibility, reliability, and test risks after any credential blocker is found
+- never cap, merge away, or omit an independently actionable finding merely because a secret already makes the verdict blocking; for coverage-accounted reviews, every manifest unit must still reach a terminal coverage state before finalization
 
 If the helper emits `Test Selection Hints`, use them only as read-only guidance for verification planning. They do not prove test safety, do not replace CI, and must not be described as skipped or stripped tests. Built-in hints cover common JVM/Spring/Quarkus/Micronaut, pytest, Node e2e, Go, Rust, container, HTTP-stub, and external-service markers; project-specific `.pre-commit-review/test-hints` rules still take precedence for local conventions. Treat env-dependent tests such as `@SpringBootTest`, Testcontainers, or DB slices as verification that may require CI/local profile support, not as sandbox-safe unit tests. Treat `no-known-env-heavy-marker` as "no known marker matched", not as proof that the test is a pure unit test.
 

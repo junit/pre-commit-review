@@ -67,10 +67,29 @@ jobs:
             ~/.cargo/git/db/
             collect-diff-context-cli/target/
           key: ${{ runner.os }}-cargo-${{ hashFiles('collect-diff-context-cli/Cargo.lock') }}
+      - name: Fetch pinned Gitleaks binary
+        run: ./scripts/fetch_gitleaks.sh --platform linux-amd64
+      - name: Verify Gitleaks trust chain
+        run: ./install.sh --doctor
+      - name: Build current helper source
+        run: |
+          cargo build --release --manifest-path collect-diff-context-cli/Cargo.toml
+          echo "PRE_COMMIT_REVIEW_RUST_BIN=$GITHUB_WORKSPACE/collect-diff-context-cli/target/release/collect-diff-context-cli" >> "$GITHUB_ENV"
       - name: Run collect_diff_context_test.sh
         run: ./tests/collect_diff_context_test.sh
       - name: Run parity_golden_test.sh
         run: ./tests/parity_golden_test.sh
+      - name: Run secret_gate_test.sh
+        run: ./tests/secret_gate_test.sh
+      - name: Run gitleaks_distribution_test.sh
+        run: ./tests/gitleaks_distribution_test.sh
+      - name: Run install_gitleaks_test.sh
+        run: ./tests/install_gitleaks_test.sh
+      - name: Run output quality comparison self-test
+        run: |
+          ./evals/output_eval_runner_test.sh
+          ./evals/compare_output_eval_quality_test.sh
+          ./evals/eval_contract_test.sh
       - name: Validate JSON schemas
         run: |
           pip install jsonschema

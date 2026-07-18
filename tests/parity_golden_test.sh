@@ -59,7 +59,8 @@ compare_output() {
     "$RUST_BIN" > output_rust_raw.txt 2> stderr_rust.txt || true
   fi
   
-  # Normalize platform/absolute-path specifics to ensure exact golden comparisons
+  # Normalize platform/absolute-path specifics and omit Rust-only secret-scan
+  # metadata. Optional secret redaction behavior has separate regression tests.
   for prefix in output_legacy output_rust; do
     local raw_file="${prefix}_raw.txt"
     local norm_file="${prefix}.txt"

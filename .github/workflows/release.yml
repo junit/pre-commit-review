@@ -20,19 +20,23 @@ jobs:
           - os: ubuntu-latest
             target: x86_64-unknown-linux-musl
             artifact_name: collect_diff_context-linux-amd64
+            gitleaks_platform: linux-amd64
             use_musl: true
 
           - os: macos-latest
             target: aarch64-apple-darwin
             artifact_name: collect_diff_context-darwin-arm64
+            gitleaks_platform: darwin-arm64
 
           - os: macos-13
             target: x86_64-apple-darwin
             artifact_name: collect_diff_context-darwin-amd64
+            gitleaks_platform: darwin-amd64
 
           - os: windows-latest
             target: x86_64-pc-windows-msvc
             artifact_name: collect_diff_context-windows-amd64.exe
+            gitleaks_platform: windows-amd64
 
     steps:
       - name: Checkout repository
@@ -61,11 +65,15 @@ jobs:
             cp collect-diff-context-cli/target/${{ matrix.target }}/release/collect-diff-context-cli dist/${{ matrix.artifact_name }}
           fi
 
+      - name: Fetch pinned Gitleaks binary
+        shell: bash
+        run: ./scripts/fetch_gitleaks.sh --platform "${{ matrix.gitleaks_platform }}" --dest dist
+
       - name: Upload Build Artifact
         uses: actions/upload-artifact@v4
         with:
           name: ${{ matrix.artifact_name }}
-          path: dist/${{ matrix.artifact_name }}
+          path: dist/*
 
   create-release:
     name: Create GitHub Release
@@ -81,13 +89,27 @@ jobs:
         with:
           path: artifacts
 
+      - name: Build self-contained skill package
+        shell: bash
+        run: |
+          mkdir -p dist/pre-commit-review
+          cp SKILL.md LICENSE dist/pre-commit-review/
+          cp -R agents references scripts THIRD_PARTY_LICENSES dist/pre-commit-review/
+          find artifacts -type f -name 'collect_diff_context-*' -exec cp {} dist/pre-commit-review/scripts/bin/ \;
+          find artifacts -type f -name 'gitleaks-*' -exec cp {} dist/pre-commit-review/scripts/bin/ \;
+          chmod +x dist/pre-commit-review/scripts/collect_diff_context.sh
+          chmod +x dist/pre-commit-review/scripts/check_gitleaks.sh
+          chmod +x dist/pre-commit-review/scripts/bin/collect_diff_context-* || true
+          chmod +x dist/pre-commit-review/scripts/bin/gitleaks-* || true
+          dist/pre-commit-review/scripts/check_gitleaks.sh
+          tar -czf dist/pre-commit-review-runtime.tar.gz -C dist pre-commit-review
+
       - name: Create Release
         uses: softprops/action-gh-release@v2
         with:
           files: |
-            artifacts/collect_diff_context-linux-amd64/collect_diff_context-linux-amd64
-            artifacts/collect_diff_context-darwin-arm64/collect_diff_context-darwin-arm64
-            artifacts/collect_diff_context-darwin-amd64/collect_diff_context-darwin-amd64
-            artifacts/collect_diff_context-windows-amd64.exe/collect_diff_context-windows-amd64.exe
+            artifacts/**/collect_diff_context-*
+            artifacts/**/gitleaks-*
+            dist/pre-commit-review-runtime.tar.gz
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

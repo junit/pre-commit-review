@@ -13,6 +13,7 @@ fixtures_dir=''
 case_filter=''
 keep_fixtures='no'
 manifest_file=''
+skill_dir="$repo_root"
 
 usage() {
   cat <<'USAGE'
@@ -37,6 +38,8 @@ Options:
   --eval-file FILE     Eval JSON file to prepare and grade. Defaults to evals/output-eval.json
                        Use a layered eval file such as evals/output/visual-output-eval.json
                        to run one output matrix directly.
+  --skill-dir DIR      Skill checkout linked by host runners. Defaults to this repository.
+                       Use the same eval file with different skill checkouts for A/B runs.
   --case SCENARIO      Run one scenario only
   --manifest FILE      Write a JSON manifest describing the prepared fixtures
   --keep-fixtures      Do not remove the auto-created temporary fixtures directory
@@ -87,7 +90,7 @@ write_metadata_file() {
     --arg workdir "$workdir" \
     --arg prompt_file "$prompt_file" \
     --arg response_file "$response_file" \
-    --arg skill_dir "$repo_root" \
+    --arg skill_dir "$skill_dir" \
     --argjson env "$env_json" \
     '
     {
@@ -397,13 +400,41 @@ grade_case() {
   rm -f "$must_not_include_file"
   [ "$forbidden_present" -eq 0 ] || fail "scenario $scenario failed must_not_include check: forbidden value reproduced"
 
+  local require_attention_recall attention_findings_file attention_missing=0
+  local finding_json finding_id term finding_matched
+  require_attention_recall="$(jq -r '.expected.quality_dimensions.secret_attention.require_current_full_recall // false' <<<"$case_json")"
+  if [ "$require_attention_recall" = 'true' ]; then
+    attention_findings_file="$(mktemp)"
+    jq -c '.expected.quality_dimensions.secret_attention.non_secret_findings[]?' \
+      <<<"$case_json" >"$attention_findings_file"
+    while IFS= read -r finding_json; do
+      [ -n "$finding_json" ] || continue
+      finding_id="$(jq -r '.id' <<<"$finding_json")"
+      finding_matched='yes'
+      while IFS= read -r term; do
+        [ -n "$term" ] || continue
+        if ! grep -Fiq -- "$term" "$response_file"; then
+          finding_matched='no'
+          break
+        fi
+      done < <(jq -r '.must_include[]' <<<"$finding_json")
+      if [ "$finding_matched" != 'yes' ]; then
+        printf 'missing non-secret finding for %s: %s\n' "$scenario" "$finding_id" >&2
+        attention_missing=1
+      fi
+    done <"$attention_findings_file"
+    rm -f "$attention_findings_file"
+    [ "$attention_missing" -eq 0 ] \
+      || fail "scenario $scenario failed secret-attention recall checks"
+  fi
+
   printf 'PASS %s\n' "$scenario"
 }
 
 run_case() {
   local case_json="$1"
   local case_dir="$2"
-  local metadata_file response_file workdir case_id scenario locale prompt_file
+  local metadata_file response_file workdir case_id scenario locale prompt_file case_skill_dir
   local env_exports_tmp runner_status=0
 
   metadata_file="$case_dir/metadata.json"
@@ -413,6 +444,7 @@ run_case() {
   scenario="$(jq -r '.scenario' "$metadata_file")"
   locale="$(jq -r '.locale' "$metadata_file")"
   prompt_file="$(jq -r '.prompt_file' "$metadata_file")"
+  case_skill_dir="$(jq -r '.skill_dir' "$metadata_file")"
   env_exports_tmp="$(mktemp)"
 
   jq -r '
@@ -429,7 +461,7 @@ run_case() {
     export PRE_COMMIT_REVIEW_EVAL_PROMPT_FILE="$prompt_file"
     export PRE_COMMIT_REVIEW_EVAL_METADATA_FILE="$metadata_file"
     export PRE_COMMIT_REVIEW_EVAL_RESPONSE_FILE="$response_file"
-    export PRE_COMMIT_REVIEW_EVAL_SKILL_DIR="$repo_root"
+    export PRE_COMMIT_REVIEW_EVAL_SKILL_DIR="$case_skill_dir"
     while IFS= read -r assignment; do
       [ -n "$assignment" ] || continue
       eval "export $assignment"
@@ -465,6 +497,11 @@ while [ "$#" -gt 0 ]; do
       [ "$#" -gt 0 ] || fail '--eval-file requires a value'
       output_eval_file="$1"
       ;;
+    --skill-dir)
+      shift
+      [ "$#" -gt 0 ] || fail '--skill-dir requires a value'
+      skill_dir="$1"
+      ;;
     --case)
       shift
       [ "$#" -gt 0 ] || fail '--case requires a value'
@@ -493,6 +530,7 @@ require_command git
 require_command jq
 
 [ -f "$output_eval_file" ] || fail "missing output eval cases: $output_eval_file"
+[ -d "$skill_dir" ] || fail "skill directory does not exist: $skill_dir"
 
 cleanup_fixtures='no'
 if [ -z "$fixtures_dir" ]; then

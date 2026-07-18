@@ -56,6 +56,9 @@ else
   cp "${CLI_DIR}/target/x86_64-pc-windows-gnu/release/collect-diff-context-cli.exe" "${BIN_DIR}/collect_diff_context-windows-amd64.exe"
 fi
 
+echo "Fetching pinned Gitleaks release binaries..."
+"${SCRIPT_DIR}/fetch_gitleaks.sh" --all --dest "${BIN_DIR}"
+
 echo "======================================================"
 echo " All platform binaries successfully built!"
 echo " Binaries updated in scripts/bin/ :"
