@@ -154,7 +154,10 @@ required_scenarios='[
   "full-review-split-reducer",
   "no-git-repo",
   "chinese-request",
-  "pasted-diff"
+  "pasted-diff",
+  "static-analysis-evidence",
+  "controlled-static-analysis",
+  "controlled-static-analysis-unauthorized"
 ]'
 
 jq -e --argjson required "$required_scenarios" \
@@ -218,6 +221,18 @@ assert_jq "$advanced_output_eval_file" \
 assert_jq "$advanced_output_eval_file" \
   '(.cases | map(.scenario)) as $seen | ($seen | index("auth-execution-point") != null) and ($seen | index("negative-search-cross-module") != null) and ($seen | index("framework-behavior-source") != null)' \
   'advanced-output-eval.json must cover finding verification discipline scenarios'
+
+assert_jq "$advanced_output_eval_file" \
+  'any(.cases[]; .scenario == "static-analysis-evidence" and .expected.verdict == "DO_NOT_COMMIT" and (.expected.must_include | index("SEC-EVAL") != null))' \
+  'advanced-output-eval.json must cover snapshot-bound static-analysis evidence'
+
+assert_jq "$advanced_output_eval_file" \
+  'any(.cases[]; .scenario == "controlled-static-analysis" and .expected.verdict == "DO_NOT_COMMIT" and (.expected.must_include | index("SEC-CONTROLLED-EVAL") != null) and (.expected.must_include | index("execution_id") != null))' \
+  'advanced-output-eval.json must cover authorized controlled static-analysis execution and provenance'
+
+assert_jq "$advanced_output_eval_file" \
+  'any(.cases[]; .scenario == "controlled-static-analysis-unauthorized" and .expected.verdict == "SAFE_TO_COMMIT_WITH_NOTES" and (.expected.must_include | index("SHA256") != null) and (.expected.must_not_include | index("SEC-SHOULD-NOT-RUN") != null))' \
+  'advanced-output-eval.json must refuse controlled execution without an exact profile hash'
 
 assert_jq "$advanced_output_eval_file" \
   '(.cases | map(.scenario)) as $seen | $seen | index("independent-findings-enumeration") != null' \

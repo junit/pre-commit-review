@@ -1,0 +1,136 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "static-analysis-execution.schema.json",
+  "title": "StaticAnalysisExecution",
+  "description": "Auditable provenance for one controlled static-analysis process and its linked evidence reports.",
+  "type": "object",
+  "required": ["schema_version", "kind", "authoritative", "execution_id", "scope", "profile", "tool", "executable", "snapshot", "isolation", "execution", "evidence"],
+  "properties": {
+    "schema_version": { "type": "integer", "const": 1 },
+    "kind": { "type": "string", "const": "static_analysis_execution" },
+    "authoritative": { "type": "boolean", "const": true },
+    "execution_id": { "$ref": "#/$defs/compact_id" },
+    "scope": {
+      "type": "object",
+      "required": ["source", "head", "fingerprint"],
+      "properties": {
+        "source": { "type": "string", "enum": ["staged", "unstaged", "branch"] },
+        "head": { "type": "string", "minLength": 1 },
+        "fingerprint": { "$ref": "#/$defs/fingerprint" }
+      },
+      "additionalProperties": false
+    },
+    "profile": {
+      "type": "object",
+      "required": ["profile_id", "sha256", "name", "output_format", "success_exit_codes", "limits", "repository_configuration", "network_access"],
+      "properties": {
+        "profile_id": { "$ref": "#/$defs/compact_id" },
+        "sha256": { "$ref": "#/$defs/sha256" },
+        "name": { "type": "string", "minLength": 1, "maxLength": 200 },
+        "output_format": { "type": "string", "enum": ["sarif", "normalized-json"] },
+        "success_exit_codes": {
+          "type": "array",
+          "minItems": 1,
+          "maxItems": 16,
+          "uniqueItems": true,
+          "items": { "type": "integer", "minimum": 0, "maximum": 255 }
+        },
+        "limits": {
+          "type": "object",
+          "required": ["timeout_seconds", "max_output_bytes", "max_snapshot_bytes", "max_snapshot_files"],
+          "properties": {
+            "timeout_seconds": { "type": "integer", "minimum": 1, "maximum": 600 },
+            "max_output_bytes": { "type": "integer", "minimum": 1024, "maximum": 10000000 },
+            "max_snapshot_bytes": { "type": "integer", "minimum": 1048576, "maximum": 2147483648 },
+            "max_snapshot_files": { "type": "integer", "minimum": 1, "maximum": 200000 }
+          },
+          "additionalProperties": false
+        },
+        "repository_configuration": { "type": "string", "enum": ["disabled", "explicitly-trusted"] },
+        "network_access": { "type": "string", "const": "offline-required" }
+      },
+      "additionalProperties": false
+    },
+    "tool": {
+      "type": "object",
+      "required": ["name", "version"],
+      "properties": {
+        "name": { "type": "string", "minLength": 1, "maxLength": 200 },
+        "version": { "type": "string", "minLength": 1, "maxLength": 100 }
+      },
+      "additionalProperties": false
+    },
+    "executable": {
+      "type": "object",
+      "required": ["name", "sha256", "path_policy"],
+      "properties": {
+        "name": { "type": "string", "minLength": 1, "maxLength": 255 },
+        "sha256": { "$ref": "#/$defs/sha256" },
+        "path_policy": { "type": "string", "const": "absolute-explicit-outside-repository" }
+      },
+      "additionalProperties": false
+    },
+    "snapshot": {
+      "type": "object",
+      "required": ["kind", "sha256", "files", "bytes"],
+      "properties": {
+        "kind": { "type": "string", "const": "temporary-tracked-files" },
+        "sha256": { "$ref": "#/$defs/sha256" },
+        "files": { "type": "integer", "minimum": 0 },
+        "bytes": { "type": "integer", "minimum": 0 }
+      },
+      "additionalProperties": false
+    },
+    "isolation": {
+      "type": "object",
+      "required": ["shell", "vcs_metadata", "environment", "source_tree", "original_repository_path", "network"],
+      "properties": {
+        "shell": { "type": "boolean", "const": false },
+        "vcs_metadata": { "type": "boolean", "const": false },
+        "environment": { "type": "string", "const": "allowlist" },
+        "source_tree": { "type": "string", "const": "read-only-temporary-snapshot" },
+        "original_repository_path": { "type": "string", "const": "not-exposed" },
+        "network": { "type": "string", "const": "best-effort-offline-profile-required" }
+      },
+      "additionalProperties": false
+    },
+    "execution": {
+      "type": "object",
+      "required": ["status", "exit_code", "duration_ms", "stdout_bytes", "stdout_sha256", "stderr_bytes", "stderr_sha256", "result_accepted", "failure_reason"],
+      "properties": {
+        "status": { "type": "string", "enum": ["completed", "failed", "timeout", "output-limit", "invalid-output"] },
+        "exit_code": { "type": ["integer", "null"] },
+        "duration_ms": { "type": "integer", "minimum": 0 },
+        "stdout_bytes": { "type": "integer", "minimum": 0 },
+        "stdout_sha256": { "$ref": "#/$defs/sha256" },
+        "stderr_bytes": { "type": "integer", "minimum": 0 },
+        "stderr_sha256": { "$ref": "#/$defs/sha256" },
+        "result_accepted": { "type": "boolean" },
+        "failure_reason": {
+          "type": ["string", "null"],
+          "enum": [null, "non-success-exit", "timeout", "output-limit", "invalid-output"]
+        }
+      },
+      "additionalProperties": false
+    },
+    "evidence": {
+      "type": "object",
+      "required": ["report_ids"],
+      "properties": {
+        "report_ids": {
+          "type": "array",
+          "minItems": 1,
+          "uniqueItems": true,
+          "items": { "$ref": "#/$defs/compact_id" }
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "$defs": {
+    "compact_id": { "type": "string", "pattern": "^[0-9a-f]{16}$" },
+    "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "fingerprint": { "type": "string", "pattern": "^[0-9a-f]{40}([0-9a-f]{24})?$" }
+  },
+  "additionalProperties": false
+}

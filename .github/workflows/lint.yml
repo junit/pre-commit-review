@@ -85,12 +85,18 @@ jobs:
         run: ./tests/gitleaks_distribution_test.sh
       - name: Run install_gitleaks_test.sh
         run: ./tests/install_gitleaks_test.sh
+      - name: Install Python schema validator
+        run: python3 -m pip install jsonschema
+      - name: Run static-analysis evidence integration
+        run: ./tests/static_analysis_evidence_test.sh
+      - name: Run controlled static-analysis execution integration
+        run: ./tests/static_analysis_execution_test.sh
+      - name: Run controlled static-analysis source modes
+        run: ./tests/static_analysis_execution_modes_test.sh
       - name: Run output quality comparison self-test
         run: |
           ./evals/output_eval_runner_test.sh
           ./evals/compare_output_eval_quality_test.sh
           ./evals/eval_contract_test.sh
       - name: Validate JSON schemas
-        run: |
-          pip install jsonschema
-          python3 scripts/validate_schemas.py
+        run: python3 scripts/validate_schemas.py

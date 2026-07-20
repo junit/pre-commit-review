@@ -1,0 +1,65 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "static-analysis-input.schema.json",
+  "title": "StaticAnalysisInput",
+  "description": "Normalized, explicitly supplied static-analysis results before scope mapping.",
+  "type": "object",
+  "required": ["schema_version", "kind", "scope_fingerprint", "tool", "status", "findings"],
+  "properties": {
+    "schema_version": { "type": "integer", "const": 1 },
+    "kind": { "type": "string", "const": "static_analysis_input" },
+    "scope_fingerprint": { "$ref": "#/$defs/fingerprint" },
+    "tool": {
+      "type": "object",
+      "required": ["name"],
+      "properties": {
+        "name": { "type": "string", "minLength": 1 },
+        "version": { "type": ["string", "null"] }
+      },
+      "additionalProperties": false
+    },
+    "status": {
+      "type": "string",
+      "enum": ["completed", "failed", "timeout", "unavailable"]
+    },
+    "findings": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/finding" }
+    }
+  },
+  "$defs": {
+    "fingerprint": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}([0-9a-f]{24})?$"
+    },
+    "finding": {
+      "type": "object",
+      "required": ["rule_id", "message", "path", "severity", "category", "confidence"],
+      "properties": {
+        "rule_id": { "type": "string", "minLength": 1 },
+        "message": { "type": "string", "minLength": 1 },
+        "path": { "type": "string", "minLength": 1 },
+        "start_line": { "type": ["integer", "null"], "minimum": 1 },
+        "end_line": { "type": ["integer", "null"], "minimum": 1 },
+        "severity": {
+          "type": "string",
+          "enum": ["critical", "error", "warning", "note", "none", "unknown"]
+        },
+        "category": {
+          "type": "string",
+          "enum": ["security", "privacy", "build", "correctness", "data", "compatibility", "reliability", "performance", "maintainability", "unknown"]
+        },
+        "confidence": {
+          "type": "string",
+          "enum": ["very-high", "high", "medium", "low", "unknown"]
+        },
+        "baseline_state": {
+          "type": "string",
+          "enum": ["new", "existing", "unknown"]
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

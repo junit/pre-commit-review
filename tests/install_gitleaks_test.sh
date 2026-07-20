@@ -38,6 +38,9 @@ mkdir -p "$fixture_root"
 cp "$repo_root/install.sh" "$repo_root/SKILL.md" "$repo_root/LICENSE" "$fixture_root/"
 cp -R "$repo_root/agents" "$repo_root/references" "$repo_root/scripts" \
   "$repo_root/THIRD_PARTY_LICENSES" "$fixture_root/"
+mkdir -p "$fixture_root/collect-diff-context-cli"
+cp -R "$repo_root/collect-diff-context-cli/schemas" \
+  "$fixture_root/collect-diff-context-cli/"
 rm -f "$fixture_root/scripts/bin"/gitleaks-*
 
 asset_dir="$tmp_dir/assets"

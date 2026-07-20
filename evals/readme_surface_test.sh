@@ -29,6 +29,14 @@ assert_readme_surface() {
     || fail "missing README host entrypoints surface in $file"
   grep -Fq "$evals_heading" "$file" \
     || fail "missing evals heading in $file"
+  grep -Fq 'collect_static_evidence.sh' "$file" \
+    || fail "missing static evidence collector surface in $file"
+  grep -Fq 'static-analysis-evidence.md' "$file" \
+    || fail "missing static analysis evidence documentation surface in $file"
+  grep -Fq 'run_static_analysis.sh' "$file" \
+    || fail "missing controlled static-analysis runner surface in $file"
+  grep -Fq 'static-analysis-execution.md' "$file" \
+    || fail "missing controlled static-analysis documentation surface in $file"
 }
 
 assert_readme_surface "$readme_en" '## Repository Structure' '### `evals/`'

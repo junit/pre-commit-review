@@ -1,0 +1,121 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "static-analysis-evidence.schema.json",
+  "title": "StaticAnalysisEvidence",
+  "description": "Snapshot-bound static-analysis evidence normalized for commit-readiness reduction.",
+  "type": "object",
+  "required": ["schema_version", "kind", "authoritative", "scope", "reports", "counts", "findings", "truncated", "decision_contract"],
+  "properties": {
+    "schema_version": { "type": "integer", "const": 1 },
+    "kind": { "type": "string", "const": "static_analysis_evidence" },
+    "authoritative": { "type": "boolean", "const": true },
+    "scope": {
+      "type": "object",
+      "required": ["source", "head", "fingerprint"],
+      "properties": {
+        "source": { "type": "string", "enum": ["staged", "unstaged", "branch"] },
+        "head": { "type": "string", "minLength": 1 },
+        "fingerprint": { "$ref": "#/$defs/fingerprint" }
+      },
+      "additionalProperties": false
+    },
+    "reports": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "#/$defs/report" }
+    },
+    "counts": {
+      "type": "object",
+      "required": ["reports", "input_findings", "deduplicated_findings", "mapped_to_units", "added_line", "blocking_candidates", "priority_candidates", "notes", "outside_scope"],
+      "properties": {
+        "reports": { "type": "integer", "minimum": 1 },
+        "input_findings": { "type": "integer", "minimum": 0 },
+        "deduplicated_findings": { "type": "integer", "minimum": 0 },
+        "mapped_to_units": { "type": "integer", "minimum": 0 },
+        "added_line": { "type": "integer", "minimum": 0 },
+        "blocking_candidates": { "type": "integer", "minimum": 0 },
+        "priority_candidates": { "type": "integer", "minimum": 0 },
+        "notes": { "type": "integer", "minimum": 0 },
+        "outside_scope": { "type": "integer", "minimum": 0 }
+      },
+      "additionalProperties": false
+    },
+    "findings": {
+      "type": "array",
+      "items": { "$ref": "#/$defs/finding" }
+    },
+    "truncated": { "type": "boolean" },
+    "decision_contract": {
+      "type": "object",
+      "required": ["blocking", "non_blocking", "verification", "finalization"],
+      "properties": {
+        "blocking": { "type": "string", "minLength": 1 },
+        "non_blocking": { "type": "string", "minLength": 1 },
+        "verification": { "type": "string", "minLength": 1 },
+        "finalization": { "type": "string", "minLength": 1 }
+      },
+      "additionalProperties": false
+    }
+  },
+  "$defs": {
+    "fingerprint": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}([0-9a-f]{24})?$"
+    },
+    "report": {
+      "type": "object",
+        "required": ["report_id", "format", "tool", "status", "trust", "scope_binding", "execution_id", "finding_count"],
+      "properties": {
+        "report_id": { "type": "string", "pattern": "^[0-9a-f]{16}$" },
+        "format": { "type": "string", "enum": ["normalized-json", "sarif"] },
+        "tool": {
+          "type": "object",
+          "required": ["name", "version"],
+          "properties": {
+            "name": { "type": "string", "minLength": 1 },
+            "version": { "type": ["string", "null"] }
+          },
+          "additionalProperties": false
+        },
+        "status": { "type": "string", "enum": ["completed", "failed", "timeout", "unavailable"] },
+        "trust": { "type": "string", "enum": ["explicit-input", "controlled-execution"] },
+        "scope_binding": { "type": "string", "enum": ["embedded", "explicit-assertion", "controlled-execution"] },
+        "execution_id": { "type": ["string", "null"], "pattern": "^[0-9a-f]{16}$" },
+        "finding_count": { "type": "integer", "minimum": 0 }
+      },
+      "additionalProperties": false
+    },
+    "finding": {
+      "type": "object",
+      "required": ["finding_id", "report_ids", "tool", "rule_id", "message", "path", "start_line", "end_line", "severity", "category", "confidence", "baseline_state", "manifest_unit_id", "line_scope", "disposition", "blocking_candidate"],
+      "properties": {
+        "finding_id": { "type": "string", "pattern": "^[0-9a-f]{16}$" },
+        "report_ids": { "type": "array", "minItems": 1, "items": { "type": "string", "pattern": "^[0-9a-f]{16}$" } },
+        "tool": {
+          "type": "object",
+          "required": ["name", "version"],
+          "properties": {
+            "name": { "type": "string", "minLength": 1 },
+            "version": { "type": ["string", "null"] }
+          },
+          "additionalProperties": false
+        },
+        "rule_id": { "type": "string", "minLength": 1 },
+        "message": { "type": "string", "minLength": 1, "maxLength": 1000 },
+        "path": { "type": "string", "minLength": 1 },
+        "start_line": { "type": ["integer", "null"], "minimum": 1 },
+        "end_line": { "type": ["integer", "null"], "minimum": 1 },
+        "severity": { "type": "string", "enum": ["critical", "error", "warning", "note", "none", "unknown"] },
+        "category": { "type": "string", "enum": ["security", "privacy", "build", "correctness", "data", "compatibility", "reliability", "performance", "maintainability", "unknown"] },
+        "confidence": { "type": "string", "enum": ["very-high", "high", "medium", "low", "unknown"] },
+        "baseline_state": { "type": "string", "enum": ["new", "existing", "unknown"] },
+        "manifest_unit_id": { "type": ["string", "null"] },
+        "line_scope": { "type": "string", "enum": ["added", "unchanged", "outside-scope", "unknown"] },
+        "disposition": { "type": "string", "enum": ["blocking-candidate", "priority-candidate", "note", "outside-scope"] },
+        "blocking_candidate": { "type": "boolean" }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

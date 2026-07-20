@@ -434,6 +434,8 @@ copy_payload() {
   cp -R "$source_dir/agents" "$staging_dir/"
   cp -R "$source_dir/references" "$staging_dir/"
   cp -R "$source_dir/scripts" "$staging_dir/"
+  mkdir -p "$staging_dir/collect-diff-context-cli"
+  cp -R "$source_dir/collect-diff-context-cli/schemas" "$staging_dir/collect-diff-context-cli/"
   if [ -d "$source_dir/THIRD_PARTY_LICENSES" ]; then
     cp -R "$source_dir/THIRD_PARTY_LICENSES" "$staging_dir/"
   fi

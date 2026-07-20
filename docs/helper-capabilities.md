@@ -62,3 +62,36 @@ For large or fragmented diffs, the helper emits structured sections so a reducer
 When updating `scripts/gitleaks.version`, regenerate both `scripts/gitleaks-assets.sha256` from the upstream release archives and `scripts/gitleaks-binaries.sha256` from the corresponding extracted executables. Fetch, doctor, and release checks reject inconsistent artifacts; installer and runtime review degrade without redaction rather than becoming unavailable.
 
 Reducer and subagent automation should prefer authoritative `Review Control Plane JSON`; the older Review Plan/Manifest/Ledger sections remain compatibility output. Automation must not reconstruct scope from direct `git status` or `git diff --name-only` after the helper has emitted a manifest.
+
+## Optional Static Analysis Evidence
+
+`scripts/collect_static_evidence.sh` is a separate, opt-in evidence collector layered on top of the authoritative control plane. It accepts only explicitly supplied SARIF 2.1.0 or `static_analysis_input/v1` JSON files. It does not discover reports or run analyzers.
+
+The collector:
+
+- requires the opening `scope_fingerprint` and fails closed on scope drift or report mismatch
+- normalizes and deduplicates tool findings
+- maps paths to authoritative manifest units and locations to added or unchanged lines
+- classifies findings as blocking candidates, priority candidates, notes, or outside-scope evidence
+- revalidates fingerprint, units, groups, and work order before emitting `static_analysis_evidence/v1`
+- applies optional local secret sanitization to its machine-readable output
+
+Static evidence feeds the existing candidate ledger and reducer finding merge, but never marks a manifest unit reviewed. See [static-analysis-evidence.md](static-analysis-evidence.md) for the protocol and command examples.
+
+## Optional Controlled Static Analysis Execution
+
+`scripts/run_static_analysis.sh` is the opt-in Phase 2 execution lane. It requires an explicitly supplied absolute `static_analysis_profile/v1` path and the exact SHA256 authorizing those profile bytes. It never discovers a profile, analyzer, package command, or result file.
+
+The runner:
+
+- verifies the profile and absolute external executable hashes before execution and again before release
+- rejects executables inside the reviewed repository and never searches `PATH`
+- materializes staged index blobs, tracked unstaged files, or branch `HEAD` in a temporary snapshot without Git metadata or checkout filters
+- rejects escaping symlinks and enforces snapshot file/byte limits before making the source tree read-only
+- invokes the exact argument array without a shell, with an isolated home/temp area and allowlisted environment
+- bounds runtime and stdout/stderr size, and emits only digests for raw stderr
+- accepts only schema-valid SARIF or normalized JSON whose tool identity matches the profile
+- links `static_analysis_execution/v1` to `static_analysis_evidence/v1` through scope, report ids, and `execution_id`
+- reuses the Phase 1 mapping, reducer dispositions, final scope refresh, and optional secret sanitization
+
+The network guard is best-effort environment isolation, not an operating-system sandbox. Profiles must require offline execution, and only known hash-pinned tools belong in this lane. See [static-analysis-execution.md](static-analysis-execution.md) for the authorization and threat model.

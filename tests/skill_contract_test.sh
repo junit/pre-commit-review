@@ -10,6 +10,8 @@ skill_file="$repo_root/SKILL.md"
 decision_verdict_file="$repo_root/references/decision/verdict-rules.md"
 decision_risk_file="$repo_root/references/decision/risk-taxonomy.md"
 decision_finding_verification_file="$repo_root/references/decision/finding-verification.md"
+decision_static_analysis_file="$repo_root/references/decision/static-analysis-evidence.md"
+decision_static_execution_file="$repo_root/references/decision/static-analysis-execution.md"
 
 render_output_en_file="$repo_root/references/rendering/output-en.md"
 render_output_zh_file="$repo_root/references/rendering/output-zh.md"
@@ -37,6 +39,8 @@ for required_file in \
   "$decision_verdict_file" \
   "$decision_risk_file" \
   "$decision_finding_verification_file" \
+  "$decision_static_analysis_file" \
+  "$decision_static_execution_file" \
   "$render_output_en_file" \
   "$render_output_zh_file" \
   "$render_visual_file" \
@@ -75,6 +79,28 @@ grep -Fq 'references/decision/risk-taxonomy.md' "$skill_file" \
   || fail 'SKILL.md must route finding taxonomy to references/decision/risk-taxonomy.md'
 grep -Fq 'references/decision/finding-verification.md' "$skill_file" \
   || fail 'SKILL.md must route strong finding verification to references/decision/finding-verification.md'
+grep -Fq 'references/decision/static-analysis-evidence.md' "$skill_file" \
+  || fail 'SKILL.md must route explicit SARIF/JSON evidence through the static-analysis contract'
+grep -Fq 'references/decision/static-analysis-execution.md' "$skill_file" \
+  || fail 'SKILL.md must route authorized analyzer execution through the controlled-execution contract'
+grep -Fq 'When the user explicitly authorizes controlled static-analysis execution, additionally load both execution and evidence contracts:' "$skill_file" \
+  || fail 'SKILL.md reference loading must route controlled execution through both contracts'
+grep -Fq 'Never auto-discover result files and never execute a repository-provided analyzer' "$skill_file" \
+  || fail 'SKILL.md must prohibit implicit static report discovery and analyzer execution'
+grep -Fq 'Never discover or select a profile, executable, argument, configuration, plugin, package script, or build target on the user'\''s behalf.' "$skill_file" \
+  || fail 'SKILL.md must prohibit implicit controlled-execution selection'
+grep -Fq 'This is controlled execution for a trusted tool, not an operating-system hostile-code sandbox.' "$skill_file" \
+  || fail 'SKILL.md must state the controlled-execution threat boundary'
+grep -Fq 'Only `completed` with `result_accepted: true` is accepted tool evidence.' "$skill_file" \
+  || fail 'SKILL.md must reject incomplete controlled execution as clean evidence'
+grep -Fq 'Pass `--allow-repository-configuration` only when the authorized profile says `repository_configuration: explicitly-trusted`' "$skill_file" \
+  || fail 'SKILL.md must require a separate repository-configuration authorization gate'
+grep -Fq 'Proxy poisoning is only a best-effort network guard' "$decision_static_execution_file" \
+  || fail 'controlled execution reference must not overclaim network isolation'
+grep -Fq 'Git blobs are read without checkout/smudge filters.' "$decision_static_execution_file" \
+  || fail 'controlled execution reference must preserve filter-free snapshot materialization'
+grep -Fq '`blocking-candidate` and `priority-candidate` as hypotheses' "$skill_file" \
+  || fail 'SKILL.md must keep static tool dispositions subject to finding verification'
 grep -Fq 'references/rendering/output-en.md' "$skill_file" \
   || fail 'SKILL.md must route English output through references/rendering/output-en.md'
 grep -Fq 'references/rendering/output-zh.md' "$skill_file" \
@@ -184,6 +210,14 @@ grep -Fq 'Each priority finding must use exactly one primary marker.' "$decision
   || fail 'risk-taxonomy.md must define primary finding markers'
 grep -Fq 'Finding verification exists to prevent false confidence in the final report.' "$decision_finding_verification_file" \
   || fail 'finding-verification.md must define the purpose of finding verification'
+grep -Fq 'A deterministic tool result can raise confidence in the reported pattern.' "$decision_finding_verification_file" \
+  || fail 'finding-verification.md must bound deterministic static tool claims'
+grep -Fq 'Static analysis is an optional deterministic evidence lane.' "$decision_static_analysis_file" \
+  || fail 'static-analysis-evidence.md must define the optional evidence lane'
+grep -Fq 'Static evidence never marks a unit reviewed' "$decision_static_analysis_file" \
+  || fail 'static-analysis-evidence.md must keep static findings separate from manifest coverage'
+grep -Fq 'scripts/collect_static_evidence.sh' "$decision_static_analysis_file" \
+  || fail 'static-analysis-evidence.md must define the collector entrypoint'
 grep -Fq 'Negative or exhaustive claims require broader evidence than positive claims.' "$decision_finding_verification_file" \
   || fail 'finding-verification.md must guard negative and exhaustive claims'
 grep -Fq 'Security, auth, authorization, privacy, and injection findings must be traced to the execution point.' "$decision_finding_verification_file" \

@@ -95,9 +95,15 @@ jobs:
           mkdir -p dist/pre-commit-review
           cp SKILL.md LICENSE dist/pre-commit-review/
           cp -R agents references scripts THIRD_PARTY_LICENSES dist/pre-commit-review/
+          mkdir -p dist/pre-commit-review/collect-diff-context-cli
+          cp -R collect-diff-context-cli/schemas dist/pre-commit-review/collect-diff-context-cli/
           find artifacts -type f -name 'collect_diff_context-*' -exec cp {} dist/pre-commit-review/scripts/bin/ \;
           find artifacts -type f -name 'gitleaks-*' -exec cp {} dist/pre-commit-review/scripts/bin/ \;
           chmod +x dist/pre-commit-review/scripts/collect_diff_context.sh
+          chmod +x dist/pre-commit-review/scripts/collect_static_evidence.sh
+          chmod +x dist/pre-commit-review/scripts/collect_static_evidence.py
+          chmod +x dist/pre-commit-review/scripts/run_static_analysis.sh
+          chmod +x dist/pre-commit-review/scripts/run_static_analysis.py
           chmod +x dist/pre-commit-review/scripts/check_gitleaks.sh
           chmod +x dist/pre-commit-review/scripts/bin/collect_diff_context-* || true
           chmod +x dist/pre-commit-review/scripts/bin/gitleaks-* || true

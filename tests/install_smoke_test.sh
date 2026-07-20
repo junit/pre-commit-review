@@ -14,6 +14,10 @@ run_offline_install codex --copy --dir "$tmp_dir/codex-skills"
 [ -f "$tmp_dir/codex-skills/pre-commit-review/SKILL.md" ]
 [ -f "$tmp_dir/codex-skills/pre-commit-review/agents/openai.yaml" ]
 [ -f "$tmp_dir/codex-skills/pre-commit-review/scripts/collect_diff_context.sh" ]
+[ -x "$tmp_dir/codex-skills/pre-commit-review/scripts/collect_static_evidence.sh" ]
+[ -x "$tmp_dir/codex-skills/pre-commit-review/scripts/collect_static_evidence.py" ]
+[ -x "$tmp_dir/codex-skills/pre-commit-review/scripts/run_static_analysis.sh" ]
+[ -x "$tmp_dir/codex-skills/pre-commit-review/scripts/run_static_analysis.py" ]
 [ -f "$tmp_dir/codex-skills/pre-commit-review/scripts/fetch_gitleaks.sh" ]
 [ -f "$tmp_dir/codex-skills/pre-commit-review/scripts/gitleaks.version" ]
 [ -f "$tmp_dir/codex-skills/pre-commit-review/scripts/gitleaks-assets.sha256" ]
@@ -25,6 +29,8 @@ run_offline_install codex --copy --dir "$tmp_dir/codex-skills"
 [ ! -e "$tmp_dir/codex-skills/pre-commit-review/install.sh" ]
 [ -f "$tmp_dir/codex-skills/pre-commit-review/references/decision/verdict-rules.md" ]
 [ -f "$tmp_dir/codex-skills/pre-commit-review/references/decision/risk-taxonomy.md" ]
+[ -f "$tmp_dir/codex-skills/pre-commit-review/references/decision/static-analysis-evidence.md" ]
+[ -f "$tmp_dir/codex-skills/pre-commit-review/references/decision/static-analysis-execution.md" ]
 [ -f "$tmp_dir/codex-skills/pre-commit-review/references/rendering/output-en.md" ]
 [ -f "$tmp_dir/codex-skills/pre-commit-review/references/rendering/output-zh.md" ]
 [ -f "$tmp_dir/codex-skills/pre-commit-review/references/rendering/visual-output.md" ]
@@ -36,7 +42,15 @@ run_offline_install codex --copy --dir "$tmp_dir/codex-skills"
 [ -f "$tmp_dir/codex-skills/pre-commit-review/references/examples/default-tiny-zh.md" ]
 [ -f "$tmp_dir/codex-skills/pre-commit-review/references/examples/complex-visual-and-coverage.md" ]
 [ -f "$tmp_dir/codex-skills/pre-commit-review/references/security/gitleaks.toml" ]
+[ -f "$tmp_dir/codex-skills/pre-commit-review/collect-diff-context-cli/schemas/static-analysis-input.schema.json" ]
+[ -f "$tmp_dir/codex-skills/pre-commit-review/collect-diff-context-cli/schemas/static-analysis-evidence.schema.json" ]
+[ -f "$tmp_dir/codex-skills/pre-commit-review/collect-diff-context-cli/schemas/static-analysis-profile.schema.json" ]
+[ -f "$tmp_dir/codex-skills/pre-commit-review/collect-diff-context-cli/schemas/static-analysis-execution.schema.json" ]
 [ -f "$tmp_dir/codex-skills/pre-commit-review/THIRD_PARTY_LICENSES/gitleaks-LICENSE" ]
+(
+  cd "$tmp_dir"
+  python3 "$tmp_dir/codex-skills/pre-commit-review/scripts/validate_schemas.py" >/dev/null
+)
 
 run_offline_install codex --copy --dir "$tmp_dir/codex-skills"
 [ -d "$tmp_dir/codex-skills/pre-commit-review" ]

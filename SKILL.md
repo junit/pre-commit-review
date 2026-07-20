@@ -94,6 +94,50 @@ When helper output contains `## Secret Scan`:
 
 If the helper emits `Test Selection Hints`, use them only as read-only guidance for verification planning. They do not prove test safety, do not replace CI, and must not be described as skipped or stripped tests. Built-in hints cover common JVM/Spring/Quarkus/Micronaut, pytest, Node e2e, Go, Rust, container, HTTP-stub, and external-service markers; project-specific `.pre-commit-review/test-hints` rules still take precedence for local conventions. Treat env-dependent tests such as `@SpringBootTest`, Testcontainers, or DB slices as verification that may require CI/local profile support, not as sandbox-safe unit tests. Treat `no-known-env-heavy-marker` as "no known marker matched", not as proof that the test is a pure unit test.
 
+### Optional Static Analysis Evidence
+
+When the user explicitly provides a SARIF or normalized JSON static-analysis report for the commit candidate, load `references/decision/static-analysis-evidence.md` and follow it before final synthesis. Static evidence is optional and supplements the normal diff review; it never satisfies manifest coverage by itself.
+
+After opening the authoritative control plane, run the skill-owned collector with the same selected source and fingerprint:
+
+```bash
+scripts/collect_static_evidence.sh \
+  --source <staged|unstaged|branch> \
+  --expect-scope <scope_fingerprint> \
+  --result <explicit-result-path>
+```
+
+Resolve the collector relative to the skill package containing this `SKILL.md`. Never auto-discover result files and never execute a repository-provided analyzer, package script, plugin, build target, or remote rule download merely because a report or analyzer configuration exists.
+
+Use only authoritative evidence whose `scope.fingerprint` matches the opening control plane. SARIF without an embedded scope may use `--result-scope <scope_fingerprint>` only when the user or trusted CI context explicitly asserts that the report was produced from that exact snapshot. A report mismatch, malformed input, unavailable collector, or failed tool result must not be presented as successful static verification.
+
+Treat `blocking-candidate` and `priority-candidate` as hypotheses that require the normal finding verification gate. Merge them into the candidate disposition ledger and reducer findings; do not let static evidence mark a manifest unit reviewed. Historical, unbaselined unchanged, failed-report, maintainability-only, and outside-scope findings cannot block by themselves. The final control-plane refresh must still match the static evidence fingerprint.
+
+If static evidence reports `truncated: true`, rerun it with a higher bounded `--max-findings` value before claiming complete static-evidence review. Any undisposed material candidate hidden by remaining truncation is a review limitation with verdict impact.
+
+### Optional Controlled Static Analysis Execution
+
+Run an analyzer only when the user or trusted CI policy explicitly authorizes all of the following: an absolute `static_analysis_profile/v1` path, its exact lowercase SHA256, and `repository_configuration: explicitly-trusted` when that trust level is present. Load `references/decision/static-analysis-execution.md` before executing. Never discover or select a profile, executable, argument, configuration, plugin, package script, or build target on the user's behalf.
+
+After opening the authoritative control plane, resolve the skill-owned runner relative to the package containing this `SKILL.md` and run:
+
+```bash
+scripts/run_static_analysis.sh \
+  --source <staged|unstaged|branch> \
+  --expect-scope <scope_fingerprint> \
+  --profile <absolute-profile-path> \
+  --expect-profile-sha256 <exact-profile-sha256> \
+  [--allow-repository-configuration]
+```
+
+Pass `--allow-repository-configuration` only when the authorized profile says `repository_configuration: explicitly-trusted` and the user or trusted CI policy separately accepted that trust decision. The runner fails if the flag is missing for such a profile or is supplied for a `disabled` profile.
+
+The runner accepts only a hash-pinned executable at an absolute path outside the reviewed repository. It materializes a bounded, read-only tracked-file snapshot without `.git`, invokes the exact argument array directly without a shell, supplies an allowlisted environment, enforces time and output limits, and feeds accepted stdout through the Phase 1 collector. Do not substitute an executable from `PATH`, pass the original repository path, or weaken profile limits.
+
+This is controlled execution for a trusted tool, not an operating-system hostile-code sandbox. `network_access: offline-required` is enforced only through a restricted environment and best-effort proxy poisoning; authorize only a tool whose fixed invocation independently operates offline. If the executable or tracked configuration is not trusted at the exact authorized bytes, do not run it.
+
+Accept controlled output only when `static_analysis_execution/v1` and linked `static_analysis_evidence/v1` share the opening scope and `execution_id`. Only `completed` with `result_accepted: true` is accepted tool evidence. Treat `failed`, `timeout`, `output-limit`, and `invalid-output` as unavailable verification, never as a clean result. Controlled evidence remains subject to candidate verification, does not mark manifest units reviewed, and does not replace the final authoritative control-plane refresh.
+
 If a legacy/default helper invocation is persisted because it is too large and only returns a preview:
 
 - recover the structured control plane before reviewing code
@@ -308,6 +352,15 @@ For routine reviews, resolve the target language first, then load:
 For reviews with priority findings, blocking review limits, delegated/reducer findings, security/auth/privacy/data claims, negative or absolute claims, or framework/library behavior claims, additionally load:
 
 - `references/decision/finding-verification.md`
+
+When the user explicitly supplies SARIF or normalized static-analysis results, additionally load:
+
+- `references/decision/static-analysis-evidence.md`
+
+When the user explicitly authorizes controlled static-analysis execution, additionally load both execution and evidence contracts:
+
+- `references/decision/static-analysis-execution.md`
+- `references/decision/static-analysis-evidence.md`
 
 For visual reviews, additionally load:
 

@@ -34,6 +34,55 @@ bash "$runner" --fixtures-dir "$fixtures_dir" --responses-dir "$responses_dir" -
 [ -f "$manifest_file" ] || fail 'manifest file not created'
 [ -d "$fixtures_dir/output-full-review-split-reducer/workdir" ] || fail 'full review fixture missing workdir'
 [ -f "$fixtures_dir/output-pasted-diff/workdir/pasted.patch" ] || fail 'pasted diff fixture missing patch file'
+[ -f "$fixtures_dir/output-static-analysis-evidence/workdir/static-results.sarif" ] \
+  || fail 'static-analysis fixture missing SARIF report'
+[ -f "$fixtures_dir/output-controlled-static-analysis/trusted-tools/controlled-profile.json" ] \
+  || fail 'controlled static-analysis fixture missing execution profile'
+[ -x "$fixtures_dir/output-controlled-static-analysis/trusted-tools/controlled-analyzer.py" ] \
+  || fail 'controlled static-analysis fixture missing trusted analyzer'
+grep -Fq 'Exact profile SHA256:' "$fixtures_dir/output-controlled-static-analysis/prompt.txt" \
+  || fail 'controlled static-analysis prompt missing explicit profile authorization'
+[ -f "$fixtures_dir/output-controlled-static-analysis-unauthorized/untrusted-until-hash/profile-without-authorizing-hash.json" ] \
+  || fail 'unauthorized controlled static-analysis fixture missing profile'
+grep -Fq 'No expected profile SHA256 is provided.' \
+  "$fixtures_dir/output-controlled-static-analysis-unauthorized/prompt.txt" \
+  || fail 'unauthorized controlled static-analysis prompt must omit execution authority'
+if grep -Fq 'Exact profile SHA256:' \
+  "$fixtures_dir/output-controlled-static-analysis-unauthorized/prompt.txt"; then
+  fail 'unauthorized controlled static-analysis prompt accidentally supplied a profile hash'
+fi
+
+controlled_workdir="$fixtures_dir/output-controlled-static-analysis/workdir"
+controlled_profile="$fixtures_dir/output-controlled-static-analysis/trusted-tools/controlled-profile.json"
+controlled_profile_hash="$(python3 - "$controlled_profile" <<'PY'
+import hashlib
+import pathlib
+import sys
+print(hashlib.sha256(pathlib.Path(sys.argv[1]).read_bytes()).hexdigest())
+PY
+)"
+controlled_control="$tmp_dir/controlled-control.out"
+(
+  cd "$controlled_workdir"
+  PRE_COMMIT_REVIEW_SECRET_SCAN=off \
+    "$repo_root/scripts/collect_diff_context.sh" --source staged --control-plane
+) >"$controlled_control" 2>/dev/null
+controlled_fingerprint="$(awk '/^## Review Control Plane JSON$/ { getline; print; exit }' "$controlled_control" | jq -r '.scope_fingerprint')"
+(
+  cd "$controlled_workdir"
+  PRE_COMMIT_REVIEW_SECRET_SCAN=off \
+    "$repo_root/scripts/run_static_analysis.sh" \
+      --source staged \
+      --expect-scope "$controlled_fingerprint" \
+      --profile "$controlled_profile" \
+      --expect-profile-sha256 "$controlled_profile_hash"
+) >"$tmp_dir/controlled-execution.out" 2>"$tmp_dir/controlled-execution.err"
+python3 "$repo_root/scripts/validate_schemas.py" \
+  --static-execution-output "$tmp_dir/controlled-execution.out" >/dev/null \
+  || fail 'controlled static-analysis eval fixture did not produce valid linked evidence'
+jq -e '.counts.blocking_candidates == 1 and .reports[0].trust == "controlled-execution"' \
+  < <(awk '/^## Static Analysis Evidence JSON$/ { getline; print; exit }' "$tmp_dir/controlled-execution.out") >/dev/null \
+  || fail 'controlled static-analysis eval fixture did not produce its expected blocking candidate'
 
 jq -e '.fixtures_root != null' "$manifest_file" >/dev/null \
   || fail 'manifest content is invalid'
@@ -78,6 +127,12 @@ grep -Fq 'PASS full-review-split-reducer' "$tmp_dir/grade.out" \
   || fail 'runner did not grade the full-review-split-reducer case'
 grep -Fq 'PASS pasted-diff' "$tmp_dir/grade.out" \
   || fail 'runner did not grade the pasted-diff case'
+grep -Fq 'PASS static-analysis-evidence' "$tmp_dir/grade.out" \
+  || fail 'runner did not grade the static-analysis-evidence case'
+grep -Fq 'PASS controlled-static-analysis' "$tmp_dir/grade.out" \
+  || fail 'runner did not grade the controlled-static-analysis case'
+grep -Fq 'PASS controlled-static-analysis-unauthorized' "$tmp_dir/grade.out" \
+  || fail 'runner did not grade the unauthorized controlled-static-analysis case'
 grep -Fq 'output eval runner completed' "$tmp_dir/grade.out" \
   || fail 'runner did not finish cleanly'
 

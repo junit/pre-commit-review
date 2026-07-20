@@ -264,6 +264,8 @@ After coverage validation and before final verdict:
 
 Do not perform cross-file reduction before coverage validation.
 
+When snapshot-bound static-analysis evidence exists, attach each mapped finding to its owning manifest unit or group result before cross-file reduction. Preserve the static `finding_id`, report ids, tool/rule identity, line scope, baseline state, and initial disposition. Static evidence can strengthen or challenge a finding, but it never changes a unit's coverage status from pending to reviewed.
+
 ## Review Limits
 
 A review limit is the user-visible representation of an actual unreviewed gap.
@@ -366,3 +368,4 @@ Before producing the final review, verify:
 7. high-impact reducer findings passed the finding verification gate or were downgraded
 8. the final verdict matches the actual coverage state
 9. the opening and final authoritative scope fingerprints match
+10. all mapped static findings were reduced with their owning units and every blocking/priority candidate has a final disposition
