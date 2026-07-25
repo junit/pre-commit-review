@@ -1,3 +1,7 @@
+use crate::review_scope::{
+    AuthoritativeScope, ReviewSource, ScopeError, ScopeGroup as ReviewGroup, ScopeParts,
+    ScopeRequest, ScopeUnit as ManifestUnit,
+};
 use crate::secret_scan;
 
 use regex::Regex;
@@ -219,32 +223,6 @@ struct NumstatEntry {
     path: String,
     old_path: Option<String>,
     path_spec: String,
-}
-
-#[derive(Debug, Clone, Serialize)]
-struct ManifestUnit {
-    unit_id: String,
-    #[serde(rename = "path")]
-    file_path: String,
-    status: String,
-    additions: usize,
-    deletions: usize,
-    diff_bytes: usize,
-    risk_tags: Vec<String>,
-    group_id: String,
-    review_command: String,
-    context_command: String,
-    content_fingerprint: String,
-}
-
-#[derive(Debug, Clone, Serialize)]
-struct ReviewGroup {
-    group_id: String,
-    risk: String,
-    reason: String,
-    diff_bytes: usize,
-    files: Vec<String>,
-    budget_status: String,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -895,32 +873,29 @@ fn emit_authority_failure(
     println!("{}", serde_json::to_string(&payload).unwrap_or_default());
 }
 
-fn emit_control_plane(
-    scope: &ScopeIdentity<'_>,
-    scope_fingerprint: &str,
-    self_exe: &str,
-    manifest_units: &[ManifestUnit],
-    groups: &[ReviewGroup],
-) {
-    let total_additions: usize = manifest_units.iter().map(|u| u.additions).sum();
-    let total_deletions: usize = manifest_units.iter().map(|u| u.deletions).sum();
-    let total_diff_bytes: usize = manifest_units.iter().map(|u| u.diff_bytes).sum();
-    let high_risk_units = manifest_units
+fn emit_control_plane(scope: &AuthoritativeScope, self_exe: &str) {
+    let total_additions: usize = scope.units.iter().map(|unit| unit.additions).sum();
+    let total_deletions: usize = scope.units.iter().map(|unit| unit.deletions).sum();
+    let total_diff_bytes: usize = scope.units.iter().map(|unit| unit.diff_bytes).sum();
+    let high_risk_units = scope
+        .units
         .iter()
-        .filter(|u| u.risk_tags.iter().any(|tag| tag == "high-risk"))
+        .filter(|unit| unit.risk_tags.iter().any(|tag| tag == "high-risk"))
         .count();
-    let split_required_groups = groups
+    let split_required_groups = scope
+        .groups
         .iter()
-        .filter(|g| g.budget_status == "split-required")
+        .filter(|group| group.budget_status == "split-required")
         .count();
 
     // Positional tuple schema keeps large manifests compact while preserving a
     // single, explicit field definition for consumers.
-    let units: Vec<serde_json::Value> = manifest_units
+    let units: Vec<serde_json::Value> = scope
+        .units
         .iter()
         .map(|u| {
             serde_json::json!([
-                u.file_path,
+                u.path,
                 u.status,
                 u.additions,
                 u.deletions,
@@ -932,10 +907,12 @@ fn emit_control_plane(
         })
         .collect();
 
-    let compact_groups: Vec<serde_json::Value> = groups
+    let compact_groups: Vec<serde_json::Value> = scope
+        .groups
         .iter()
         .map(|g| {
-            let unit_indexes: Vec<usize> = manifest_units
+            let unit_indexes: Vec<usize> = scope
+                .units
                 .iter()
                 .enumerate()
                 .filter(|(_, u)| u.group_id == g.group_id)
@@ -952,55 +929,29 @@ fn emit_control_plane(
         })
         .collect();
 
-    let mut work_order: Vec<serde_json::Value> = groups
+    let work_order: Vec<serde_json::Value> = scope
+        .work_order
         .iter()
-        .map(|g| {
-            let (priority, action) = if g.budget_status == "split-required" {
-                (1, "split")
-            } else if g.risk == "high" {
-                (2, "review")
-            } else if g.risk == "consistency" {
-                (3, "review")
-            } else {
-                (4, "review")
-            };
-            serde_json::json!([priority, g.group_id, action])
-        })
+        .map(|entry| serde_json::json!([entry.priority, entry.group_id, entry.action]))
         .collect();
-    work_order.sort_by(|a, b| {
-        let a_priority = a
-            .get(0)
-            .and_then(|v| v.as_u64())
-            .unwrap_or(usize::MAX as u64);
-        let b_priority = b
-            .get(0)
-            .and_then(|v| v.as_u64())
-            .unwrap_or(usize::MAX as u64);
-        a_priority.cmp(&b_priority).then_with(|| {
-            a.get(1)
-                .and_then(|v| v.as_str())
-                .unwrap_or("")
-                .cmp(b.get(1).and_then(|v| v.as_str()).unwrap_or(""))
-        })
-    });
 
     let payload = serde_json::json!({
         "schema_version": 1,
         "kind": "review_control_plane",
         "authoritative": true,
-        "source": scope.source,
+        "source": scope.source.as_str(),
         "head": scope.head,
         "base": scope.base,
         "selected_ref": scope.selected_ref,
-        "scope_fingerprint": scope_fingerprint,
+        "scope_fingerprint": scope.fingerprint,
         "fingerprint_algorithm": "git-hash-object(binary-full-index-no-textconv)",
         "collection": {
-            "start": scope_fingerprint,
-            "end": scope_fingerprint
+            "start": scope.collection_start,
+            "end": scope.collection_end
         },
         "counts": {
-            "units": manifest_units.len(),
-            "groups": groups.len(),
+            "units": scope.units.len(),
+            "groups": scope.groups.len(),
             "additions": total_additions,
             "deletions": total_deletions,
             "diff_bytes": total_diff_bytes,
@@ -1009,7 +960,7 @@ fn emit_control_plane(
         },
         "command_templates": {
             "helper": self_exe,
-            "source_args": ["--source", scope.source],
+            "source_args": ["--source", scope.source.as_str()],
             "refresh_args": ["--control-plane"],
             "group_args": ["--group", "{group_id}", "--expect-scope", "{scope_fingerprint}"],
             "path_args": ["--path", "{path}", "--expect-scope", "{scope_fingerprint}"]
@@ -2178,6 +2129,364 @@ fn build_review_plan(
     )
 }
 
+pub(crate) fn open_authoritative_scope_impl(
+    request: ScopeRequest,
+) -> Result<AuthoritativeScope, ScopeError> {
+    let requested_repository = fs::canonicalize(&request.repository)
+        .map_err(|error| ScopeError::new(format!("cannot resolve repository: {error}")))?;
+    let requested_cwd = requested_repository.to_string_lossy().into_owned();
+    let repo_root_output =
+        run_command_string(&["git", "rev-parse", "--show-toplevel"], &requested_cwd)
+            .map_err(|error| ScopeError::new(error.to_string()))?;
+    let repo_root = fs::canonicalize(repo_root_output.trim())
+        .map_err(|error| ScopeError::new(format!("cannot resolve Git root: {error}")))?;
+    let repo_root_text = repo_root.to_string_lossy().into_owned();
+
+    let mut group_target_bytes = env::var("PRE_COMMIT_REVIEW_GROUP_TARGET_BYTES")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or(DEFAULT_GROUP_TARGET_BYTES);
+    let group_hard_bytes = env::var("PRE_COMMIT_REVIEW_GROUP_HARD_BYTES")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or(DEFAULT_GROUP_HARD_BYTES);
+    group_target_bytes = group_target_bytes.min(group_hard_bytes);
+
+    let head_oid = git_get_head_oid(&repo_root_text);
+    let base = git_detect_base_branch(&repo_root_text);
+    let staged_available = git_has_staged_changes(&repo_root_text)
+        .map_err(|error| ScopeError::new(error.to_string()))?;
+    let unstaged_available = git_has_unstaged_changes(&repo_root_text)
+        .map_err(|error| ScopeError::new(error.to_string()))?;
+
+    let mut selected_ref = String::new();
+    let mut branch_available = false;
+    let remote_ref = format!("origin/{base}");
+    if run_command_string(
+        &["git", "rev-parse", "--verify", "--quiet", &remote_ref],
+        &repo_root_text,
+    )
+    .is_ok()
+    {
+        selected_ref = remote_ref;
+        branch_available = git_has_diff_for_ref(&selected_ref, &repo_root_text)
+            .map_err(|error| ScopeError::new(error.to_string()))?;
+    } else if run_command_string(
+        &["git", "rev-parse", "--verify", "--quiet", &base],
+        &repo_root_text,
+    )
+    .is_ok()
+    {
+        selected_ref = base.clone();
+        branch_available = git_has_diff_for_ref(&selected_ref, &repo_root_text)
+            .map_err(|error| ScopeError::new(error.to_string()))?;
+    }
+
+    let detected_source = if staged_available {
+        Some(ReviewSource::Staged)
+    } else if unstaged_available {
+        Some(ReviewSource::Unstaged)
+    } else if branch_available {
+        Some(ReviewSource::Branch)
+    } else {
+        None
+    };
+    let source = request.source.or(detected_source);
+    let source = source.ok_or_else(|| ScopeError::new("no diff available"))?;
+    let source_available = match source {
+        ReviewSource::Staged => staged_available,
+        ReviewSource::Unstaged => unstaged_available,
+        ReviewSource::Branch => branch_available,
+    };
+    if !source_available {
+        return Err(ScopeError::new(format!(
+            "no {} diff available",
+            source.as_str()
+        )));
+    }
+    if source != ReviewSource::Branch {
+        selected_ref.clear();
+    }
+
+    let collection_start = diff_fingerprint(
+        source.as_str(),
+        &selected_ref,
+        &head_oid,
+        None,
+        None,
+        &repo_root_text,
+    )
+    .map_err(|error| ScopeError::new(error.to_string()))?;
+    if let Some(expected) = request.expected_fingerprint.as_deref() {
+        if expected != collection_start {
+            return Err(ScopeError::new(
+                "expected scope fingerprint does not match opening scope",
+            ));
+        }
+    }
+
+    let name_status_entries = parse_name_status_z(
+        &git_run_diff_bytes(
+            source.as_str(),
+            &selected_ref,
+            &["--name-status", "-z"],
+            None,
+            &repo_root_text,
+        )
+        .map_err(|error| ScopeError::new(error.to_string()))?,
+    );
+    let numstat_entries = parse_numstat_z(
+        &git_run_diff_bytes(
+            source.as_str(),
+            &selected_ref,
+            &["--numstat", "-z"],
+            None,
+            &repo_root_text,
+        )
+        .map_err(|error| ScopeError::new(error.to_string()))?,
+    );
+    let global_diff_bytes =
+        git_run_diff_bytes(source.as_str(), &selected_ref, &[], None, &repo_root_text)
+            .map_err(|error| ScopeError::new(error.to_string()))?;
+    let global_diff = String::from_utf8_lossy(&global_diff_bytes);
+
+    let path_risk_regexes = get_path_risk_regexes();
+    let content_risk_regexes = get_content_risk_regexes();
+    let generated_regexes = get_generated_regexes();
+    let lockfile_regex = get_lockfile_regex();
+    let custom_risk_paths =
+        load_custom_regexes(repo_root.join(".pre-commit-review/risk-paths").as_path());
+    let custom_risk_content =
+        load_custom_regexes(repo_root.join(".pre-commit-review/risk-content").as_path());
+
+    let mut content_risk_files = HashSet::new();
+    let mut current_file = String::new();
+    for line in global_diff.lines() {
+        if let Some(path) = line.strip_prefix("+++ b/") {
+            current_file = unquote_git_path(path);
+            continue;
+        }
+        if let Some(path) = line.strip_prefix("+++ \"b/") {
+            let unquoted = unquote_git_path(&format!("\"{path}"));
+            current_file = unquoted.strip_prefix("b/").unwrap_or(&unquoted).to_string();
+            continue;
+        }
+        if line.starts_with("+++ ") {
+            current_file.clear();
+            continue;
+        }
+        if current_file.is_empty()
+            || !(line.starts_with('+') || line.starts_with('-'))
+            || line.starts_with("+++")
+            || line.starts_with("---")
+        {
+            continue;
+        }
+        let content = &line[1..];
+        let lowercase = content.to_lowercase();
+        if content_risk_regexes
+            .iter()
+            .any(|regex| regex.is_match(&lowercase) || regex.is_match(content))
+            || custom_risk_content
+                .iter()
+                .any(|regex| regex.is_match(content))
+        {
+            content_risk_files.insert(current_file.clone());
+        }
+    }
+
+    let mut high_risk_files = HashSet::new();
+    let mut generated_files = HashSet::new();
+    let mut lock_files = HashSet::new();
+    for entry in &name_status_entries {
+        if path_risk_regexes
+            .iter()
+            .any(|regex| regex.is_match(&entry.path))
+            || custom_risk_paths
+                .iter()
+                .any(|regex| regex.is_match(&entry.path))
+            || content_risk_files.contains(&entry.path)
+        {
+            high_risk_files.insert(entry.path.clone());
+        }
+        if generated_regexes
+            .iter()
+            .any(|regex| regex.is_match(&entry.path))
+        {
+            generated_files.insert(entry.path.clone());
+        }
+        if lockfile_regex.is_match(&entry.path) {
+            lock_files.insert(entry.path.clone());
+        }
+    }
+
+    let self_exe = env::var("PRE_COMMIT_REVIEW_HELPER_PATH").unwrap_or_else(|_| {
+        env::current_exe()
+            .unwrap_or_else(|_| PathBuf::from("collect_diff_context"))
+            .to_string_lossy()
+            .into_owned()
+    });
+    let mut units = Vec::new();
+    let mut group_sizes = HashMap::<String, usize>::new();
+    let mut group_files = HashMap::<String, Vec<String>>::new();
+    let mut group_risks = HashMap::<String, String>::new();
+    let mut group_reasons = HashMap::<String, String>::new();
+
+    for entry in &name_status_entries {
+        let display_path = quote_git_path(&entry.path);
+        let (additions, deletions) =
+            lookup_numstat(&numstat_entries, &entry.path, entry.old_path.as_deref());
+        let file_diff = git_run_diff_bytes(
+            source.as_str(),
+            &selected_ref,
+            &[],
+            Some(&entry.path),
+            &repo_root_text,
+        )
+        .map_err(|error| ScopeError::new(error.to_string()))?;
+        let content_fingerprint = diff_fingerprint_from_bytes(
+            source.as_str(),
+            &selected_ref,
+            &head_oid,
+            Some(&display_path),
+            &file_diff,
+            &repo_root_text,
+        )
+        .map_err(|error| ScopeError::new(error.to_string()))?;
+        let component = safe_group_component(&group_component_for_path(&display_path));
+
+        let (risk_tag, group_id, group_risk, group_reason) =
+            if high_risk_files.contains(&entry.path) {
+                (
+                    "high-risk",
+                    format!("high-risk-{component}"),
+                    "high",
+                    "path-or-content-risk",
+                )
+            } else if generated_files.contains(&entry.path) {
+                (
+                    "generated-like",
+                    format!("consistency-{component}"),
+                    "consistency",
+                    "generated-like",
+                )
+            } else if lock_files.contains(&entry.path) {
+                (
+                    "lockfile",
+                    "consistency-lockfiles".to_string(),
+                    "consistency",
+                    "lockfile",
+                )
+            } else {
+                ("medium", format!("module-{component}"), "medium", "module")
+            };
+
+        group_risks
+            .entry(group_id.clone())
+            .or_insert_with(|| group_risk.to_string());
+        group_reasons
+            .entry(group_id.clone())
+            .or_insert_with(|| group_reason.to_string());
+        *group_sizes.entry(group_id.clone()).or_default() += file_diff.len();
+        group_files
+            .entry(group_id.clone())
+            .or_default()
+            .push(display_path.clone());
+
+        let quoted_path = shell_quote(&entry.path);
+        let review_command = match source {
+            ReviewSource::Staged => {
+                format!("git diff --cached --no-textconv -- {quoted_path}")
+            }
+            ReviewSource::Unstaged => format!("git diff --no-textconv -- {quoted_path}"),
+            ReviewSource::Branch => format!(
+                "git diff --no-textconv {} -- {quoted_path}",
+                shell_quote(&format!("{selected_ref}...HEAD"))
+            ),
+        };
+        let context_command = format!(
+            "{} --source {} --path {}",
+            shell_quote(&self_exe),
+            source.as_str(),
+            quoted_path
+        );
+
+        units.push(ManifestUnit {
+            unit_id: format!("file:{display_path}"),
+            path: display_path,
+            status: entry.status.clone(),
+            additions: additions.parse().unwrap_or(0),
+            deletions: deletions.parse().unwrap_or(0),
+            diff_bytes: file_diff.len(),
+            risk_tags: vec![risk_tag.to_string()],
+            group_id,
+            review_command,
+            context_command,
+            content_fingerprint,
+        });
+    }
+
+    let mut groups = group_files
+        .into_iter()
+        .map(|(group_id, files)| {
+            let diff_bytes = group_sizes.get(&group_id).copied().unwrap_or(0);
+            let budget_status = if diff_bytes > group_hard_bytes {
+                "split-required"
+            } else if diff_bytes > group_target_bytes {
+                "over-target"
+            } else {
+                "ok"
+            };
+            ReviewGroup {
+                risk: group_risks
+                    .remove(&group_id)
+                    .unwrap_or_else(|| "medium".to_string()),
+                reason: group_reasons
+                    .remove(&group_id)
+                    .unwrap_or_else(|| "module".to_string()),
+                group_id,
+                diff_bytes,
+                files,
+                budget_status: budget_status.to_string(),
+            }
+        })
+        .collect::<Vec<_>>();
+    groups.sort_by(|left, right| left.group_id.cmp(&right.group_id));
+
+    let collection_end = diff_fingerprint(
+        source.as_str(),
+        &selected_ref,
+        &head_oid,
+        None,
+        None,
+        &repo_root_text,
+    )
+    .map_err(|error| ScopeError::new(error.to_string()))?;
+    if collection_end != collection_start {
+        return Err(ScopeError::new("scope changed during collection"));
+    }
+    if let Some(expected) = request.expected_fingerprint.as_deref() {
+        if expected != collection_end {
+            return Err(ScopeError::new(
+                "expected scope fingerprint does not match final scope",
+            ));
+        }
+    }
+
+    Ok(AuthoritativeScope::from_parts(ScopeParts {
+        repository: repo_root,
+        source,
+        head: head_oid,
+        base,
+        selected_ref,
+        fingerprint: collection_end.clone(),
+        collection_start,
+        collection_end,
+        units,
+        groups,
+    }))
+}
+
 fn run_app() -> Result<(), AppError> {
     let args = CliArgs::parse()?;
 
@@ -2189,6 +2498,24 @@ fn run_app() -> Result<(), AppError> {
             unreachable!();
         }
     };
+
+    if args.control_plane {
+        let request = ScopeRequest {
+            repository: PathBuf::from(&repo_root),
+            source: args.source.as_deref().and_then(ReviewSource::parse),
+            expected_fingerprint: args.expect_scope.clone(),
+        };
+        if let Ok(scope) = open_authoritative_scope_impl(request) {
+            let self_exe = env::var("PRE_COMMIT_REVIEW_HELPER_PATH").unwrap_or_else(|_| {
+                env::current_exe()
+                    .unwrap_or_else(|_| PathBuf::from("collect_diff_context"))
+                    .to_string_lossy()
+                    .into_owned()
+            });
+            emit_control_plane(&scope, &self_exe);
+            return Ok(());
+        }
+    }
 
     // Configuration from environment variables
     let max_diff_bytes = env::var("PRE_COMMIT_REVIEW_MAX_DIFF_BYTES")
@@ -3050,7 +3377,7 @@ fn run_app() -> Result<(), AppError> {
 
         manifest_units.push(ManifestUnit {
             unit_id: format!("file:{}", display_path),
-            file_path: display_path.clone(),
+            path: display_path.clone(),
             status: entry.status.clone(),
             additions: add.parse::<usize>().unwrap_or(0),
             deletions: del.parse::<usize>().unwrap_or(0),
@@ -3120,13 +3447,19 @@ fn run_app() -> Result<(), AppError> {
         }
 
         if args.control_plane {
-            emit_control_plane(
-                &scope_identity,
-                &collection_end_fingerprint,
-                &self_exe,
-                &manifest_units,
-                &groups,
-            );
+            let authoritative_scope = AuthoritativeScope::from_parts(ScopeParts {
+                repository: PathBuf::from(&repo_root),
+                source: ReviewSource::parse(mode).expect("authoritative source must be typed"),
+                head: head_oid.clone(),
+                base: base.clone(),
+                selected_ref: selected_ref.clone(),
+                fingerprint: collection_end_fingerprint.clone(),
+                collection_start: collection_start_fingerprint.clone(),
+                collection_end: collection_end_fingerprint,
+                units: manifest_units,
+                groups,
+            });
+            emit_control_plane(&authoritative_scope, &self_exe);
             return Ok(());
         }
 
@@ -3199,7 +3532,7 @@ fn run_app() -> Result<(), AppError> {
         let raw_req_path = unquote_git_path(req_path);
         let unit = manifest_units
             .iter()
-            .find(|u| u.file_path == *req_path || unquote_git_path(&u.file_path) == raw_req_path);
+            .find(|u| u.path == *req_path || unquote_git_path(&u.path) == raw_req_path);
         let r_cmd = unit.map(|u| u.review_command.clone()).unwrap_or_else(|| {
             let quoted_path = shell_quote(&raw_req_path);
             match mode {
@@ -3228,7 +3561,7 @@ fn run_app() -> Result<(), AppError> {
         println!("review_command: {}", r_cmd);
         println!("context_command: {}", c_cmd);
 
-        let cache_key = unit.map(|u| u.file_path.as_str()).unwrap_or(req_path);
+        let cache_key = unit.map(|u| u.path.as_str()).unwrap_or(req_path);
         let file_diff_bytes = unit_diff_cache.get(cache_key).cloned().unwrap_or_default();
         if file_diff_bytes.is_empty() {
             println!();
@@ -3285,7 +3618,7 @@ fn run_app() -> Result<(), AppError> {
         for g in &groups {
             if g.budget_status == "split-required" {
                 for f in &g.files {
-                    let unit = match manifest_units.iter().find(|u| u.file_path == *f) {
+                    let unit = match manifest_units.iter().find(|u| u.path == *f) {
                         Some(u) => u,
                         None => continue,
                     };
@@ -3339,14 +3672,14 @@ fn run_app() -> Result<(), AppError> {
                     "{}\t{}\t{}\tneeds-split\treplace-with-split-suggestions\tsplit-required group",
                     sanitize_tsv_field(&unit.unit_id),
                     sanitize_tsv_field(&unit.group_id),
-                    sanitize_tsv_field(&unit.file_path)
+                    sanitize_tsv_field(&unit.path)
                 );
             } else {
                 println!(
                     "{}\t{}\t{}\tpending\tfile-review\trecord group result before final verdict",
                     sanitize_tsv_field(&unit.unit_id),
                     sanitize_tsv_field(&unit.group_id),
-                    sanitize_tsv_field(&unit.file_path)
+                    sanitize_tsv_field(&unit.path)
                 );
             }
         }
@@ -3429,7 +3762,7 @@ fn run_app() -> Result<(), AppError> {
             println!(
                 "{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}\t{}",
                 sanitize_tsv_field(&unit.unit_id),
-                sanitize_tsv_field(&unit.file_path),
+                sanitize_tsv_field(&unit.path),
                 sanitize_tsv_field(&unit.status),
                 unit.additions,
                 unit.deletions,
@@ -3586,7 +3919,7 @@ fn run_app() -> Result<(), AppError> {
                 for f in &g.files {
                     let r_cmd = manifest_units
                         .iter()
-                        .find(|u| u.file_path == *f)
+                        .find(|u| u.path == *f)
                         .map(|u| u.review_command.clone())
                         .unwrap_or_default();
                     split_files.push((g.group_id.clone(), f.clone(), r_cmd));
@@ -3663,14 +3996,14 @@ fn run_app() -> Result<(), AppError> {
                     "{}\t{}\t{}\tneeds-split\treplace-with-split-suggestions\tsplit-required group",
                     sanitize_tsv_field(&unit.unit_id),
                     sanitize_tsv_field(&unit.group_id),
-                    sanitize_tsv_field(&unit.file_path)
+                    sanitize_tsv_field(&unit.path)
                 );
             } else {
                 println!(
                     "{}\t{}\t{}\tpending\tfile-review\trecord group result before final verdict",
                     sanitize_tsv_field(&unit.unit_id),
                     sanitize_tsv_field(&unit.group_id),
-                    sanitize_tsv_field(&unit.file_path)
+                    sanitize_tsv_field(&unit.path)
                 );
             }
         }
@@ -4109,7 +4442,7 @@ fn emit_requested_group(
         if unit.group_id == group.group_id {
             println!(
                 "{}\t{}\t{}\t{}",
-                unit.status, unit.file_path, unit.unit_id, unit.review_command
+                unit.status, unit.path, unit.unit_id, unit.review_command
             );
         }
     }
@@ -4152,7 +4485,7 @@ fn emit_requested_group(
             "parent_group_id\tunit_id\tpath\tsplit_kind\tdiff_bytes\thunk_header\treview_command"
         );
         for f in &group.files {
-            let unit = match manifest_units.iter().find(|u| u.file_path == *f) {
+            let unit = match manifest_units.iter().find(|u| u.path == *f) {
                 Some(u) => u,
                 None => continue,
             };

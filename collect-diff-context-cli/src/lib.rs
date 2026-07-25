@@ -1,4 +1,5 @@
 mod app;
+pub mod review_scope;
 pub mod secret_scan;
 
 pub fn collect_diff_context_main() -> i32 {
