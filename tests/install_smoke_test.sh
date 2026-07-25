@@ -4,11 +4,41 @@ set -euo pipefail
 script_dir="$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd -P)"
 repo_root="$(CDPATH='' cd -- "$script_dir/.." && pwd -P)"
 tmp_dir="$(mktemp -d)"
-trap 'rm -rf "$tmp_dir"' EXIT
+local_static_release=''
+local_static_backup=''
+
+cleanup() {
+  if [ -n "$local_static_backup" ] && [ -f "$local_static_backup" ]; then
+    cp "$local_static_backup" "$local_static_release"
+    chmod +x "$local_static_release"
+  fi
+  rm -rf "$tmp_dir"
+}
+trap cleanup EXIT
 
 run_offline_install() {
   "$repo_root/install.sh" "$@" --no-download
 }
+
+static_analysis_platform() {
+  local os_name arch_name suffix=''
+  case "$(uname -s | tr '[:upper:]' '[:lower:]')" in
+    darwin) os_name='darwin' ;;
+    linux) os_name='linux' ;;
+    msys*|mingw*|cygwin*) os_name='windows'; suffix='.exe' ;;
+    *) return 1 ;;
+  esac
+  case "$(uname -m)" in
+    arm64|aarch64) arch_name='arm64' ;;
+    x86_64|amd64) arch_name='amd64' ;;
+    *) return 1 ;;
+  esac
+  printf 'static_analysis-%s-%s%s\n' "$os_name" "$arch_name" "$suffix"
+}
+
+static_analysis_name="$(static_analysis_platform)"
+cargo build --release --manifest-path "$repo_root/collect-diff-context-cli/Cargo.toml" \
+  --bin static-analysis-cli >/dev/null
 
 run_offline_install codex --copy --dir "$tmp_dir/codex-skills"
 [ -f "$tmp_dir/codex-skills/pre-commit-review/SKILL.md" ]
@@ -24,6 +54,8 @@ run_offline_install codex --copy --dir "$tmp_dir/codex-skills"
 [ -f "$tmp_dir/codex-skills/pre-commit-review/scripts/gitleaks-binaries.sha256" ]
 [ -f "$tmp_dir/codex-skills/pre-commit-review/scripts/check_gitleaks.sh" ]
 [ -f "$tmp_dir/codex-skills/pre-commit-review/scripts/lib/gitleaks_integrity.sh" ]
+[ -f "$tmp_dir/codex-skills/pre-commit-review/scripts/lib/static_analysis_cli.sh" ]
+[ -x "$tmp_dir/codex-skills/pre-commit-review/scripts/bin/$static_analysis_name" ]
 [ ! -e "$tmp_dir/codex-skills/pre-commit-review/README.md" ]
 [ ! -e "$tmp_dir/codex-skills/pre-commit-review/README.zh-CN.md" ]
 [ ! -e "$tmp_dir/codex-skills/pre-commit-review/install.sh" ]
@@ -51,6 +83,22 @@ run_offline_install codex --copy --dir "$tmp_dir/codex-skills"
   cd "$tmp_dir"
   python3 "$tmp_dir/codex-skills/pre-commit-review/scripts/validate_schemas.py" >/dev/null
 )
+
+case "$static_analysis_name" in
+  *.exe) local_static_release="$repo_root/collect-diff-context-cli/target/release/static-analysis-cli.exe" ;;
+  *) local_static_release="$repo_root/collect-diff-context-cli/target/release/static-analysis-cli" ;;
+esac
+local_static_backup="$tmp_dir/static-analysis-cli.backup"
+cp "$local_static_release" "$local_static_backup"
+rm -f "$local_static_release"
+run_offline_install codex --copy --dir "$tmp_dir/source-without-static"
+[ -x "$tmp_dir/source-without-static/pre-commit-review/scripts/collect_static_evidence.sh" ]
+[ -x "$tmp_dir/source-without-static/pre-commit-review/scripts/run_static_analysis.sh" ]
+[ -f "$tmp_dir/source-without-static/pre-commit-review/scripts/lib/static_analysis_cli.sh" ]
+[ ! -e "$tmp_dir/source-without-static/pre-commit-review/scripts/bin/$static_analysis_name" ]
+cp "$local_static_backup" "$local_static_release"
+chmod +x "$local_static_release"
+local_static_backup=''
 
 run_offline_install codex --copy --dir "$tmp_dir/codex-skills"
 [ -d "$tmp_dir/codex-skills/pre-commit-review" ]

@@ -18,10 +18,12 @@ if [ "$(uname -s)" = "Darwin" ]; then
   echo "[1/4] Building macOS arm64 (aarch64-apple-darwin)..."
   (cd "${CLI_DIR}" && cargo build --release --target aarch64-apple-darwin >/dev/null)
   cp "${CLI_DIR}/target/aarch64-apple-darwin/release/collect-diff-context-cli" "${BIN_DIR}/collect_diff_context-darwin-arm64"
+  cp "${CLI_DIR}/target/aarch64-apple-darwin/release/static-analysis-cli" "${BIN_DIR}/static_analysis-darwin-arm64"
 
   echo "[2/4] Building macOS amd64 (x86_64-apple-darwin)..."
   (cd "${CLI_DIR}" && cargo build --release --target x86_64-apple-darwin >/dev/null)
   cp "${CLI_DIR}/target/x86_64-apple-darwin/release/collect-diff-context-cli" "${BIN_DIR}/collect_diff_context-darwin-amd64"
+  cp "${CLI_DIR}/target/x86_64-apple-darwin/release/static-analysis-cli" "${BIN_DIR}/static_analysis-darwin-amd64"
 else
   echo "[1/4 & 2/4] Skipping macOS targets (not on macOS host)"
 fi
@@ -32,6 +34,7 @@ if command -v cross >/dev/null 2>&1; then
   echo "      -> Using cross CLI"
   (cd "${CLI_DIR}" && cross build --release --target x86_64-unknown-linux-musl >/dev/null)
   cp "${CLI_DIR}/target/x86_64-unknown-linux-musl/release/collect-diff-context-cli" "${BIN_DIR}/collect_diff_context-linux-amd64"
+  cp "${CLI_DIR}/target/x86_64-unknown-linux-musl/release/static-analysis-cli" "${BIN_DIR}/static_analysis-linux-amd64"
 else
   echo "      -> Using Docker musl container"
   docker run --rm --platform linux/amd64 \
@@ -39,6 +42,7 @@ else
     -w /volume/collect-diff-context-cli \
     rust:latest sh -c "rustup target add x86_64-unknown-linux-musl >/dev/null && apt-get update -qq && apt-get install -y --no-install-recommends musl-tools >/dev/null && cargo build --release --target x86_64-unknown-linux-musl >/dev/null"
   cp "${CLI_DIR}/target/x86_64-unknown-linux-musl/release/collect-diff-context-cli" "${BIN_DIR}/collect_diff_context-linux-amd64"
+  cp "${CLI_DIR}/target/x86_64-unknown-linux-musl/release/static-analysis-cli" "${BIN_DIR}/static_analysis-linux-amd64"
 fi
 
 # 4. Windows AMD64 (Native mingw if available, else Docker)
@@ -47,6 +51,7 @@ if command -v x86_64-w64-mingw32-gcc >/dev/null 2>&1; then
   echo "      -> Using native mingw-w64 toolchain"
   (cd "${CLI_DIR}" && cargo build --release --target x86_64-pc-windows-gnu >/dev/null)
   cp "${CLI_DIR}/target/x86_64-pc-windows-gnu/release/collect-diff-context-cli.exe" "${BIN_DIR}/collect_diff_context-windows-amd64.exe"
+  cp "${CLI_DIR}/target/x86_64-pc-windows-gnu/release/static-analysis-cli.exe" "${BIN_DIR}/static_analysis-windows-amd64.exe"
 else
   echo "      -> Fallback to Docker mingw-w64 container"
   docker run --rm --platform linux/amd64 \
@@ -54,6 +59,7 @@ else
     -w /volume/collect-diff-context-cli \
     rust:latest sh -c "apt-get update -qq && apt-get install -y --no-install-recommends gcc-mingw-w64-x86-64 >/dev/null && rustup target add x86_64-pc-windows-gnu >/dev/null && cargo build --release --target x86_64-pc-windows-gnu >/dev/null"
   cp "${CLI_DIR}/target/x86_64-pc-windows-gnu/release/collect-diff-context-cli.exe" "${BIN_DIR}/collect_diff_context-windows-amd64.exe"
+  cp "${CLI_DIR}/target/x86_64-pc-windows-gnu/release/static-analysis-cli.exe" "${BIN_DIR}/static_analysis-windows-amd64.exe"
 fi
 
 echo "Fetching pinned Gitleaks release binaries..."

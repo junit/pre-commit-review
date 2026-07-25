@@ -21,6 +21,8 @@ assert_target() {
     printf '%s\n' '--------------' >&2
     fail "expected target: $expected"
   }
+  grep -Fq 'Static analysis:' "$output_file" \
+    || fail "static-analysis runtime plan missing for target: $expected"
 }
 
 run_install_clean() (

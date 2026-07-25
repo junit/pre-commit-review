@@ -333,6 +333,50 @@ gitleaks_binary_name() {
   printf 'gitleaks-%s%s\n' "$platform" "$suffix"
 }
 
+static_analysis_binary_name() {
+  local platform="$1"
+  local suffix=''
+  case "$platform" in
+    windows-*) suffix='.exe' ;;
+  esac
+  printf 'static_analysis-%s%s\n' "$platform" "$suffix"
+}
+
+provision_static_analysis() {
+  local runtime_root="$1"
+  local binary_name="$2"
+  local installed_path="$runtime_root/scripts/bin/$binary_name"
+  local local_suffix=''
+  local local_release
+
+  case "$binary_name" in
+    *.exe) local_suffix='.exe' ;;
+  esac
+  local_release="$source_dir/collect-diff-context-cli/target/release/static-analysis-cli${local_suffix}"
+
+  if [ "$dry_run" = 'yes' ]; then
+    if [ -x "$source_dir/scripts/bin/$binary_name" ] || [ -x "$local_release" ]; then
+      log "Static analysis: DRY RUN include $binary_name"
+    else
+      log "Static analysis: bundled binary unavailable; wrappers remain installed"
+    fi
+    return 0
+  fi
+
+  if [ -x "$installed_path" ]; then
+    log "Static analysis: installed bundled $binary_name"
+    return 0
+  fi
+  if [ -x "$local_release" ]; then
+    mkdir -p "$runtime_root/scripts/bin"
+    cp "$local_release" "$installed_path"
+    chmod +x "$installed_path"
+    log "Static analysis: installed local release as $binary_name"
+    return 0
+  fi
+  log "Static analysis: bundled binary unavailable; wrappers remain installed"
+}
+
 gitleaks_is_compatible() {
   local executable="$1"
   gitleaks_version_matches "$executable" "$source_dir/scripts/gitleaks.version" \
@@ -412,6 +456,7 @@ copy_payload() {
   local target="$1"
   local platform="$2"
   local binary_name="$3"
+  local static_binary_name="$4"
   local staging_dir="${target}.tmp.$$"
 
   if [ "$dry_run" = 'yes' ]; then
@@ -421,6 +466,7 @@ copy_payload() {
     fi
     prepare_target "$target"
     log "DRY RUN copy runtime payload $source_dir -> $target"
+    provision_static_analysis "$plan_root" "$static_binary_name"
     provision_gitleaks "$plan_root" "$platform" "$binary_name"
     return 0
   fi
@@ -440,6 +486,7 @@ copy_payload() {
     cp -R "$source_dir/THIRD_PARTY_LICENSES" "$staging_dir/"
   fi
 
+  provision_static_analysis "$staging_dir" "$static_binary_name"
   provision_gitleaks "$staging_dir" "$platform" "$binary_name"
 
   prepare_target "$target"
@@ -547,12 +594,13 @@ skills_dir="$(expand_home "$skills_dir")"
 target_dir="${skills_dir%/}/$skill_name"
 gitleaks_platform="$(resolve_gitleaks_platform)"
 gitleaks_binary="$(gitleaks_binary_name "$gitleaks_platform")"
+static_analysis_binary="$(static_analysis_binary_name "$gitleaks_platform")"
 
 validate_target "$target_dir"
 ensure_parent_dir "$skills_dir"
 
 case "$mode" in
-  copy) copy_payload "$target_dir" "$gitleaks_platform" "$gitleaks_binary" ;;
+  copy) copy_payload "$target_dir" "$gitleaks_platform" "$gitleaks_binary" "$static_analysis_binary" ;;
   link) link_payload "$target_dir" "$gitleaks_platform" "$gitleaks_binary" ;;
   *) die "unsupported mode: $mode" ;;
 esac
