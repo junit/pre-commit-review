@@ -14,6 +14,10 @@ fail() {
   exit 1
 }
 
+static_analysis_bin="$repo_root/collect-diff-context-cli/target/release/static-analysis-cli"
+[ -x "$static_analysis_bin" ] || fail 'release static-analysis-cli is unavailable'
+export PRE_COMMIT_REVIEW_STATIC_ANALYSIS_BIN="$static_analysis_bin"
+
 sha256_file() {
   if command -v sha256sum >/dev/null 2>&1; then
     sha256sum "$1" | awk '{print $1}'

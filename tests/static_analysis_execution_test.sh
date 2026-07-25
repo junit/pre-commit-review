@@ -14,6 +14,10 @@ fail() {
   exit 1
 }
 
+static_analysis_bin="$repo_root/collect-diff-context-cli/target/release/static-analysis-cli"
+[ -x "$static_analysis_bin" ] || fail 'release static-analysis-cli is unavailable'
+export PRE_COMMIT_REVIEW_STATIC_ANALYSIS_BIN="$static_analysis_bin"
+
 python3 - "$repo_root/scripts/run_static_analysis.py" <<'PY' \
   || fail 'declared Git blob size was not rejected before body allocation'
 import importlib.util

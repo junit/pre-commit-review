@@ -3,7 +3,7 @@
 set -uo pipefail
 
 SCRIPT_DIR="$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd -P)"
-PYTHON_RUNNER="$SCRIPT_DIR/run_static_analysis.py"
+STATIC_ANALYSIS_RESOLVER="$SCRIPT_DIR/lib/static_analysis_cli.sh"
 SECRET_SCAN_MODE="${PRE_COMMIT_REVIEW_SECRET_SCAN:-auto}"
 
 tmp_output="$(mktemp)"
@@ -12,13 +12,19 @@ tmp_sanitized="$(mktemp)"
 tmp_report="$(mktemp)"
 trap 'rm -f "$tmp_output" "$tmp_error" "$tmp_sanitized" "$tmp_report"' EXIT
 
-if ! command -v python3 >/dev/null 2>&1; then
-  printf '%s\n' 'run_static_analysis: python3 is required for controlled static analysis' >&2
+if [ ! -r "$STATIC_ANALYSIS_RESOLVER" ]; then
+  printf '%s\n' 'run_static_analysis: trusted Rust static-analysis CLI resolver is unavailable' >&2
+  exit 2
+fi
+# shellcheck source=scripts/lib/static_analysis_cli.sh
+source "$STATIC_ANALYSIS_RESOLVER"
+if ! static_analysis_bin="$(resolve_static_analysis_cli "$SCRIPT_DIR")"; then
+  printf '%s\n' 'run_static_analysis: trusted Rust static-analysis CLI is unavailable or invalid' >&2
   exit 2
 fi
 
 runner_exit=0
-python3 "$PYTHON_RUNNER" "$@" >"$tmp_output" 2>"$tmp_error" || runner_exit=$?
+"$static_analysis_bin" run "$@" >"$tmp_output" 2>"$tmp_error" || runner_exit=$?
 if [ "$runner_exit" -ne 0 ]; then
   cat "$tmp_error" >&2
   exit "$runner_exit"

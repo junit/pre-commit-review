@@ -14,6 +14,96 @@ fail() {
   exit 1
 }
 
+test_static_analysis_binary_resolution() {
+  local layout="$tmp_dir/resolver-layout"
+  local isolated_wrapper="$layout/scripts/collect_static_evidence.sh"
+  local override_bin="$tmp_dir/override-static-analysis"
+  local local_bin="$layout/collect-diff-context-cli/target/release/static-analysis-cli"
+  local path_bin="$tmp_dir/path-only/static-analysis-cli"
+  local os_name arch_name bundled_name bundled_bin
+
+  mkdir -p "$layout/scripts/lib" "$layout/scripts/bin" \
+    "$layout/collect-diff-context-cli/target/release" "$tmp_dir/path-only"
+  cp "$collector" "$isolated_wrapper"
+  cp "$repo_root/scripts/lib/static_analysis_cli.sh" "$layout/scripts/lib/static_analysis_cli.sh"
+
+  cat >"$override_bin" <<'SH'
+#!/bin/sh
+printf 'override:%s\n' "$1"
+SH
+  chmod +x "$override_bin"
+  PRE_COMMIT_REVIEW_SECRET_SCAN=off PRE_COMMIT_REVIEW_STATIC_ANALYSIS_BIN="$override_bin" \
+    "$isolated_wrapper" --expect-scope ignored >"$tmp_dir/resolver-override.out" 2>/dev/null
+  grep -Fxq 'override:collect' "$tmp_dir/resolver-override.out" \
+    || fail 'absolute static-analysis override was not selected'
+
+  cat >"$local_bin" <<'SH'
+#!/bin/sh
+printf 'local:%s\n' "$1"
+SH
+  chmod +x "$local_bin"
+  PRE_COMMIT_REVIEW_SECRET_SCAN=off "$isolated_wrapper" --expect-scope ignored \
+    >"$tmp_dir/resolver-local.out" 2>/dev/null
+  grep -Fxq 'local:collect' "$tmp_dir/resolver-local.out" \
+    || fail 'local release static-analysis binary was not selected'
+
+  os_name="$(uname -s | tr '[:upper:]' '[:lower:]')"
+  arch_name="$(uname -m)"
+  case "$os_name" in
+    darwin) os_name='darwin' ;;
+    msys*|mingw*|cygwin*) os_name='windows' ;;
+    *) os_name='linux' ;;
+  esac
+  case "$arch_name" in
+    x86_64|amd64) arch_name='amd64' ;;
+    arm64|aarch64) arch_name='arm64' ;;
+    *) fail "unsupported resolver-test architecture: $arch_name" ;;
+  esac
+  bundled_name="static_analysis-${os_name}-${arch_name}"
+  [ "$os_name" = 'windows' ] && bundled_name="${bundled_name}.exe"
+  bundled_bin="$layout/scripts/bin/$bundled_name"
+  cat >"$bundled_bin" <<'SH'
+#!/bin/sh
+printf 'bundled:%s\n' "$1"
+SH
+  chmod +x "$bundled_bin"
+  rm -f "$local_bin"
+  PRE_COMMIT_REVIEW_SECRET_SCAN=off "$isolated_wrapper" --expect-scope ignored \
+    >"$tmp_dir/resolver-bundled.out" 2>/dev/null
+  grep -Fxq 'bundled:collect' "$tmp_dir/resolver-bundled.out" \
+    || fail 'bundled platform static-analysis binary was not selected'
+
+  if PRE_COMMIT_REVIEW_SECRET_SCAN=off PRE_COMMIT_REVIEW_STATIC_ANALYSIS_BIN=relative-bin \
+    "$isolated_wrapper" --expect-scope ignored >/dev/null 2>"$tmp_dir/resolver-relative.err"; then
+    fail 'relative static-analysis override was accepted'
+  fi
+  non_executable="$tmp_dir/non-executable-static-analysis"
+  : >"$non_executable"
+  if PRE_COMMIT_REVIEW_SECRET_SCAN=off PRE_COMMIT_REVIEW_STATIC_ANALYSIS_BIN="$non_executable" \
+    "$isolated_wrapper" --expect-scope ignored >/dev/null 2>"$tmp_dir/resolver-nonexec.err"; then
+    fail 'non-executable static-analysis override was accepted'
+  fi
+
+  rm -f "$bundled_bin"
+  cat >"$path_bin" <<'SH'
+#!/bin/sh
+printf 'path search must not run\n' >"$PATH_SEARCH_MARKER"
+SH
+  chmod +x "$path_bin"
+  if PATH="$tmp_dir/path-only:$PATH" PATH_SEARCH_MARKER="$tmp_dir/path-search-ran" \
+    PRE_COMMIT_REVIEW_SECRET_SCAN=off "$isolated_wrapper" --expect-scope ignored \
+    >/dev/null 2>"$tmp_dir/resolver-path.err"; then
+    fail 'wrapper searched PATH for static-analysis-cli'
+  fi
+  [ ! -e "$tmp_dir/path-search-ran" ] || fail 'PATH-only static-analysis binary was executed'
+}
+
+test_static_analysis_binary_resolution
+
+static_analysis_bin="$repo_root/collect-diff-context-cli/target/release/static-analysis-cli"
+[ -x "$static_analysis_bin" ] || fail 'release static-analysis-cli is unavailable'
+export PRE_COMMIT_REVIEW_STATIC_ANALYSIS_BIN="$static_analysis_bin"
+
 missing_dependency_error="$tmp_dir/missing-jsonschema.err"
 if python3 -S "$validator" 2>"$missing_dependency_error"; then
   fail 'schema validator unexpectedly succeeded without jsonschema'
