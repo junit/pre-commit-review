@@ -2,13 +2,14 @@ use super::contracts::{
     EvidenceScope, EvidenceTrust, ExecutableRecord, ExecutionEvidenceLinks, ExecutionProfileRecord,
     ExecutionRecord, ExecutionStatus, FailureReason, IsolationRecord, OutputFormat, ReportStatus,
     RepositoryConfiguration, SnapshotRecord, StaticAnalysisEvidence, StaticAnalysisExecution,
-    StaticAnalysisProfile,
+    StaticAnalysisProfile, ToolIdentity,
 };
 use super::evidence::{collect_evidence, CollectRequest};
 use super::snapshot::{CandidateSnapshot, SnapshotLimits};
 use crate::review_scope::{
     open_authoritative_scope, revalidate_scope, AuthoritativeScope, ReviewSource, ScopeRequest,
 };
+use serde::Serialize;
 use sha2::{Digest, Sha256};
 use std::fs::{self, File};
 use std::io::{Read, Seek, SeekFrom, Write};
@@ -572,20 +573,30 @@ fn collect_failure_evidence(
     final_status: ExecutionStatus,
     max_findings: usize,
 ) -> Result<StaticAnalysisEvidence, RunError> {
+    #[derive(Serialize)]
+    struct FailureInput<'a> {
+        schema_version: u8,
+        kind: &'static str,
+        scope_fingerprint: &'a str,
+        tool: &'a ToolIdentity,
+        status: ReportStatus,
+        findings: &'static [()],
+    }
+
     let result_path = process.runtime_path().join("failed-result.json");
     let report_status = if final_status == ExecutionStatus::Timeout {
         ReportStatus::Timeout
     } else {
         ReportStatus::Failed
     };
-    let payload = serde_json::json!({
-        "schema_version": 1,
-        "kind": "static_analysis_input",
-        "scope_fingerprint": expected_scope,
-        "tool": prepared.profile.tool.clone(),
-        "status": report_status,
-        "findings": []
-    });
+    let payload = FailureInput {
+        schema_version: 1,
+        kind: "static_analysis_input",
+        scope_fingerprint: expected_scope,
+        tool: &prepared.profile.tool,
+        status: report_status,
+        findings: &[],
+    };
     fs::write(
         &result_path,
         serde_json::to_vec(&payload).map_err(|error| {
