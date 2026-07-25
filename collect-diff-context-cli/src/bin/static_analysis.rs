@@ -1,11 +1,13 @@
 use collect_diff_context_cli::review_scope::ReviewSource;
 use collect_diff_context_cli::static_analysis::contracts::EvidenceTrust;
 use collect_diff_context_cli::static_analysis::evidence::{collect_evidence, CollectRequest};
-use collect_diff_context_cli::static_analysis::output::render_collect;
+use collect_diff_context_cli::static_analysis::executor::{run_analysis, RunRequest};
+use collect_diff_context_cli::static_analysis::output::{render_collect, render_run};
 use std::env;
 use std::path::PathBuf;
 
 const COLLECT_HELP: &str = "Usage: static-analysis-cli collect --result <path> [--result <path> ...] --expect-scope <fingerprint> [options]\n\nOptions:\n  --source <staged|unstaged|branch>\n  --result-scope <fingerprint>\n  --max-findings <1..5000>\n  --trust <explicit-input|controlled-execution>\n  --execution-id <16-hex>\n  --helper <path>\n  -h, --help\n";
+const RUN_HELP: &str = "Usage: static-analysis-cli run --source <staged|unstaged|branch> --expect-scope <fingerprint> --profile <absolute-path> --expect-profile-sha256 <sha256> [options]\n\nOptions:\n  --allow-repository-configuration\n  --max-findings <1..5000>\n  -h, --help\n";
 
 #[derive(Debug)]
 struct CollectArgs {
@@ -37,6 +39,21 @@ enum ParseOutcome {
     Collect(CollectArgs),
 }
 
+#[derive(Debug, Default)]
+struct RunArgs {
+    source: Option<ReviewSource>,
+    expected_scope: Option<String>,
+    profile_path: Option<PathBuf>,
+    expected_profile_sha256: Option<String>,
+    allow_repository_configuration: bool,
+    max_findings: Option<usize>,
+}
+
+enum RunParseOutcome {
+    Help,
+    Run(RunArgs),
+}
+
 fn main() {
     let exit_code = main_entry();
     if exit_code != 0 {
@@ -59,10 +76,14 @@ fn main_entry() -> i32 {
             println!("Usage: static-analysis-cli <collect|run> [options]");
             0
         }
-        Some("run") => {
-            eprintln!("static-analysis-cli: run subcommand is not implemented yet");
-            2
-        }
+        Some("run") => match parse_run(arguments.collect()) {
+            Ok(RunParseOutcome::Help) => {
+                print!("{RUN_HELP}");
+                0
+            }
+            Ok(RunParseOutcome::Run(arguments)) => run_controlled(arguments),
+            Err(error) => run_error(&error),
+        },
         _ => {
             eprintln!("static-analysis-cli: expected collect or run subcommand");
             2
@@ -180,7 +201,114 @@ fn run_collect(arguments: CollectArgs) -> i32 {
     }
 }
 
+fn parse_run(arguments: Vec<String>) -> Result<RunParseOutcome, String> {
+    if arguments
+        .iter()
+        .any(|argument| argument == "--help" || argument == "-h")
+    {
+        return Ok(RunParseOutcome::Help);
+    }
+    let mut parsed = RunArgs::default();
+    let mut index = 0;
+    while index < arguments.len() {
+        let argument = &arguments[index];
+        let (flag, inline_value) = argument
+            .split_once('=')
+            .map_or((argument.as_str(), None), |(flag, value)| {
+                (flag, Some(value))
+            });
+        if flag == "--allow-repository-configuration" {
+            if inline_value.is_some() {
+                return Err("--allow-repository-configuration does not take a value".to_string());
+            }
+            parsed.allow_repository_configuration = true;
+            index += 1;
+            continue;
+        }
+        let value = if let Some(value) = inline_value {
+            value.to_string()
+        } else {
+            arguments
+                .get(index + 1)
+                .cloned()
+                .ok_or_else(|| format!("{flag} requires a value"))?
+        };
+        match flag {
+            "--source" => {
+                parsed.source = Some(match value.as_str() {
+                    "staged" => ReviewSource::Staged,
+                    "unstaged" => ReviewSource::Unstaged,
+                    "branch" => ReviewSource::Branch,
+                    observed => {
+                        return Err(format!(
+                            "--source must be staged, unstaged, or branch; received {observed}"
+                        ));
+                    }
+                });
+            }
+            "--expect-scope" => parsed.expected_scope = Some(value),
+            "--profile" => parsed.profile_path = Some(PathBuf::from(value)),
+            "--expect-profile-sha256" => parsed.expected_profile_sha256 = Some(value),
+            "--max-findings" => {
+                parsed.max_findings = Some(
+                    value
+                        .parse::<usize>()
+                        .map_err(|_| "--max-findings must be an integer".to_string())?,
+                );
+            }
+            observed => return Err(format!("unsupported argument: {observed}")),
+        }
+        index += if inline_value.is_some() { 1 } else { 2 };
+    }
+    if parsed.source.is_none() {
+        return Err("--source is required".to_string());
+    }
+    if parsed.expected_scope.is_none() {
+        return Err("--expect-scope is required".to_string());
+    }
+    if parsed.profile_path.is_none() {
+        return Err("--profile is required".to_string());
+    }
+    if parsed.expected_profile_sha256.is_none() {
+        return Err("--expect-profile-sha256 is required".to_string());
+    }
+    Ok(RunParseOutcome::Run(parsed))
+}
+
+fn run_controlled(arguments: RunArgs) -> i32 {
+    let repository = match env::current_dir() {
+        Ok(path) => path,
+        Err(error) => return run_error(&format!("cannot resolve current directory: {error}")),
+    };
+    let artifact = match run_analysis(RunRequest {
+        repository,
+        source: arguments.source.expect("validated by parse_run"),
+        expected_scope: arguments.expected_scope.expect("validated by parse_run"),
+        profile_path: arguments.profile_path.expect("validated by parse_run"),
+        expected_profile_sha256: arguments
+            .expected_profile_sha256
+            .expect("validated by parse_run"),
+        allow_repository_configuration: arguments.allow_repository_configuration,
+        max_findings: arguments.max_findings.unwrap_or(500),
+    }) {
+        Ok(artifact) => artifact,
+        Err(error) => return run_error(&error.to_string()),
+    };
+    match render_run(&artifact) {
+        Ok(output) => {
+            print!("{output}");
+            0
+        }
+        Err(error) => run_error(&format!("cannot serialize controlled analysis: {error}")),
+    }
+}
+
 fn collect_error(message: &str) -> i32 {
     eprintln!("collect_static_evidence: {message}");
+    2
+}
+
+fn run_error(message: &str) -> i32 {
+    eprintln!("run_static_analysis: {message}");
     2
 }

@@ -3,7 +3,7 @@ use collect_diff_context_cli::static_analysis::contracts::StaticAnalysisProfile;
 use collect_diff_context_cli::static_analysis::contracts::{ExecutionStatus, FailureReason};
 #[cfg(unix)]
 use collect_diff_context_cli::static_analysis::executor::{
-    execute_prepared, prepare_profile, ExecutionLimits,
+    execute_prepared, prepare_profile, run_analysis, ExecutionLimits, RunRequest,
 };
 #[cfg(unix)]
 use collect_diff_context_cli::static_analysis::snapshot::{CandidateSnapshot, SnapshotLimits};
@@ -16,7 +16,6 @@ use std::fs;
 use std::io::Write;
 #[cfg(unix)]
 use std::path::{Path, PathBuf};
-#[cfg(unix)]
 use std::process::Command;
 #[cfg(unix)]
 use std::time::Duration;
@@ -574,4 +573,401 @@ fn executor_rejects_prepared_artifact_replacement_before_spawn() {
         .to_string()
         .contains("executable changed before execution"));
     assert!(!executable_marker.exists());
+}
+
+#[cfg(unix)]
+fn run_fixture(
+    script: &str,
+    success_exit_codes: serde_json::Value,
+) -> (TempDir, TempDir, PathBuf, String, String) {
+    use collect_diff_context_cli::review_scope::{
+        open_authoritative_scope, ReviewSource, ScopeRequest,
+    };
+
+    let repository = execution_repository();
+    let tools = TempDir::new().unwrap();
+    let executable = write_executable(tools.path(), "run-analyzer.sh", script);
+    let executable_hash = sha256_file(&executable);
+    let (profile, profile_hash) = write_profile(
+        tools.path(),
+        &executable,
+        &executable_hash,
+        json!([]),
+        "disabled",
+        success_exit_codes,
+    );
+    let scope = open_authoritative_scope(ScopeRequest {
+        repository: repository.path().to_path_buf(),
+        source: Some(ReviewSource::Staged),
+        expected_fingerprint: None,
+    })
+    .unwrap();
+    (repository, tools, profile, profile_hash, scope.fingerprint)
+}
+
+#[cfg(unix)]
+fn run_request(
+    repository: &Path,
+    profile: PathBuf,
+    profile_hash: String,
+    fingerprint: String,
+) -> RunRequest {
+    RunRequest {
+        repository: repository.to_path_buf(),
+        source: collect_diff_context_cli::review_scope::ReviewSource::Staged,
+        expected_scope: fingerprint,
+        profile_path: profile,
+        expected_profile_sha256: profile_hash,
+        allow_repository_configuration: false,
+        max_findings: 500,
+    }
+}
+
+#[cfg(unix)]
+fn rewrite_profile(profile: &Path, update: impl FnOnce(&mut serde_json::Value)) -> String {
+    let mut value: serde_json::Value = serde_json::from_slice(&fs::read(profile).unwrap()).unwrap();
+    update(&mut value);
+    fs::write(profile, serde_json::to_vec(&value).unwrap()).unwrap();
+    sha256_file(profile)
+}
+
+#[cfg(unix)]
+#[test]
+fn run_artifact_links_completed_execution_and_evidence() {
+    use collect_diff_context_cli::static_analysis::contracts::{
+        EvidenceScopeBinding, EvidenceTrust,
+    };
+
+    let script = r#"#!/bin/sh
+printf '{"schema_version":1,"kind":"static_analysis_input","scope_fingerprint":"%s","tool":{"name":"fixture","version":"1.0"},"status":"completed","findings":[]}' "$PRE_COMMIT_REVIEW_SCOPE_FINGERPRINT"
+"#;
+    let (repository, _tools, profile, profile_hash, fingerprint) = run_fixture(script, json!([0]));
+    let artifact = run_analysis(run_request(
+        repository.path(),
+        profile,
+        profile_hash,
+        fingerprint.clone(),
+    ))
+    .unwrap();
+
+    assert_eq!(
+        artifact.execution.execution.status,
+        ExecutionStatus::Completed
+    );
+    assert!(artifact.execution.execution.result_accepted);
+    assert_eq!(artifact.execution.execution_id.len(), 16);
+    assert_eq!(artifact.execution.scope.fingerprint, fingerprint);
+    assert_eq!(artifact.evidence.scope, artifact.execution.scope);
+    assert_eq!(
+        artifact.evidence.reports[0].trust,
+        EvidenceTrust::ControlledExecution
+    );
+    assert_eq!(
+        artifact.evidence.reports[0].scope_binding,
+        EvidenceScopeBinding::ControlledExecution
+    );
+    assert_eq!(
+        artifact.evidence.reports[0].execution_id.as_deref(),
+        Some(artifact.execution.execution_id.as_str())
+    );
+    assert_eq!(
+        artifact.execution.evidence.report_ids,
+        vec![artifact.evidence.reports[0].report_id.clone()]
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn run_artifact_synthesizes_nonblocking_failure_evidence() {
+    let (repository, _tools, profile, profile_hash, fingerprint) =
+        run_fixture("#!/bin/sh\nprintf failure >&2\nexit 7\n", json!([0]));
+    let artifact = run_analysis(run_request(
+        repository.path(),
+        profile,
+        profile_hash,
+        fingerprint,
+    ))
+    .unwrap();
+
+    assert_eq!(artifact.execution.execution.status, ExecutionStatus::Failed);
+    assert_eq!(artifact.execution.execution.exit_code, Some(7));
+    assert_eq!(
+        artifact.execution.execution.failure_reason,
+        Some(FailureReason::NonSuccessExit)
+    );
+    assert!(!artifact.execution.execution.result_accepted);
+    assert!(artifact.evidence.findings.is_empty());
+    assert_eq!(artifact.evidence.counts.blocking_candidates, 0);
+    assert_eq!(
+        artifact.evidence.reports[0].status,
+        collect_diff_context_cli::static_analysis::contracts::ReportStatus::Failed
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn run_artifact_rejects_malformed_or_mismatched_success_output() {
+    let scripts = [
+        "#!/bin/sh\nprintf '{'\n",
+        r#"#!/bin/sh
+printf '{"schema_version":1,"kind":"static_analysis_input","scope_fingerprint":"%s","tool":{"name":"other-tool","version":"1.0"},"status":"completed","findings":[]}' "$PRE_COMMIT_REVIEW_SCOPE_FINGERPRINT"
+"#,
+    ];
+    for script in scripts {
+        let (repository, _tools, profile, profile_hash, fingerprint) =
+            run_fixture(script, json!([0]));
+        let artifact = run_analysis(run_request(
+            repository.path(),
+            profile,
+            profile_hash,
+            fingerprint,
+        ))
+        .unwrap();
+
+        assert_eq!(
+            artifact.execution.execution.status,
+            ExecutionStatus::InvalidOutput
+        );
+        assert_eq!(
+            artifact.execution.execution.failure_reason,
+            Some(FailureReason::InvalidOutput)
+        );
+        assert!(!artifact.execution.execution.result_accepted);
+        assert!(artifact.evidence.findings.is_empty());
+        assert_eq!(artifact.evidence.counts.blocking_candidates, 0);
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn run_artifact_synthesizes_bounded_timeout_evidence() {
+    let (repository, _tools, profile, _profile_hash, fingerprint) =
+        run_fixture("#!/bin/sh\nsleep 2\n", json!([0]));
+    let profile_hash = rewrite_profile(&profile, |value| {
+        value["limits"]["timeout_seconds"] = json!(1);
+    });
+
+    let artifact = run_analysis(run_request(
+        repository.path(),
+        profile,
+        profile_hash,
+        fingerprint,
+    ))
+    .unwrap();
+
+    assert_eq!(
+        artifact.execution.execution.status,
+        ExecutionStatus::Timeout
+    );
+    assert_eq!(
+        artifact.execution.execution.failure_reason,
+        Some(FailureReason::Timeout)
+    );
+    assert!(!artifact.execution.execution.result_accepted);
+    assert_eq!(
+        artifact.evidence.reports[0].status,
+        collect_diff_context_cli::static_analysis::contracts::ReportStatus::Timeout
+    );
+    assert!(artifact.evidence.findings.is_empty());
+    assert_eq!(artifact.evidence.counts.blocking_candidates, 0);
+}
+
+#[cfg(unix)]
+#[test]
+fn run_artifact_synthesizes_bounded_output_limit_evidence() {
+    let script = "#!/bin/sh\ni=0\nwhile [ \"$i\" -lt 4096 ]; do printf x; i=$((i + 1)); done\n";
+    let (repository, _tools, profile, _profile_hash, fingerprint) = run_fixture(script, json!([0]));
+    let profile_hash = rewrite_profile(&profile, |value| {
+        value["limits"]["max_output_bytes"] = json!(1024);
+    });
+
+    let artifact = run_analysis(run_request(
+        repository.path(),
+        profile,
+        profile_hash,
+        fingerprint,
+    ))
+    .unwrap();
+
+    assert_eq!(
+        artifact.execution.execution.status,
+        ExecutionStatus::OutputLimit
+    );
+    assert_eq!(
+        artifact.execution.execution.failure_reason,
+        Some(FailureReason::OutputLimit)
+    );
+    assert!(artifact.execution.execution.stdout_bytes <= 1025);
+    assert!(!artifact.execution.execution.result_accepted);
+    assert_eq!(
+        artifact.evidence.reports[0].status,
+        collect_diff_context_cli::static_analysis::contracts::ReportStatus::Failed
+    );
+    assert!(artifact.evidence.findings.is_empty());
+    assert_eq!(artifact.evidence.counts.blocking_candidates, 0);
+}
+
+#[cfg(unix)]
+#[test]
+fn run_artifact_rejects_profile_and_executable_drift() {
+    let profile_script = r#"#!/bin/sh
+printf '\n' >> "$1"
+printf '{"schema_version":1,"kind":"static_analysis_input","scope_fingerprint":"%s","tool":{"name":"fixture","version":"1.0"},"status":"completed","findings":[]}' "$PRE_COMMIT_REVIEW_SCOPE_FINGERPRINT"
+"#;
+    let repository = execution_repository();
+    let tools = TempDir::new().unwrap();
+    let executable = write_executable(tools.path(), "profile-drift.sh", profile_script);
+    let executable_hash = sha256_file(&executable);
+    let profile_path = tools.path().join("profile.json");
+    let (profile, profile_hash) = write_profile(
+        tools.path(),
+        &executable,
+        &executable_hash,
+        json!([profile_path.to_string_lossy()]),
+        "disabled",
+        json!([0]),
+    );
+    let scope = collect_diff_context_cli::review_scope::open_authoritative_scope(
+        collect_diff_context_cli::review_scope::ScopeRequest {
+            repository: repository.path().to_path_buf(),
+            source: Some(collect_diff_context_cli::review_scope::ReviewSource::Staged),
+            expected_fingerprint: None,
+        },
+    )
+    .unwrap();
+    let error = run_analysis(run_request(
+        repository.path(),
+        profile,
+        profile_hash,
+        scope.fingerprint,
+    ))
+    .unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("static-analysis profile changed during execution"),
+        "{error}"
+    );
+
+    let script = r#"#!/bin/sh
+chmod u+w "$0"
+printf '\n# changed' >> "$0"
+printf '{"schema_version":1,"kind":"static_analysis_input","scope_fingerprint":"%s","tool":{"name":"fixture","version":"1.0"},"status":"completed","findings":[]}' "$PRE_COMMIT_REVIEW_SCOPE_FINGERPRINT"
+"#;
+    let (repository, _tools, profile, profile_hash, fingerprint) = run_fixture(script, json!([0]));
+    let error = run_analysis(run_request(
+        repository.path(),
+        profile,
+        profile_hash,
+        fingerprint,
+    ))
+    .unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("trusted analyzer executable changed during execution"),
+        "{error}"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn run_artifact_rejects_repository_and_scope_drift() {
+    let repository = execution_repository();
+    let tools = TempDir::new().unwrap();
+    let script = format!(
+        "#!/bin/sh\nprintf drift >> '{}/candidate.txt'\nprintf '{{\"schema_version\":1,\"kind\":\"static_analysis_input\",\"scope_fingerprint\":\"%s\",\"tool\":{{\"name\":\"fixture\",\"version\":\"1.0\"}},\"status\":\"completed\",\"findings\":[]}}' \"$PRE_COMMIT_REVIEW_SCOPE_FINGERPRINT\"\n",
+        repository.path().display()
+    );
+    let executable = write_executable(tools.path(), "repository-drift.sh", &script);
+    let executable_hash = sha256_file(&executable);
+    let (profile, profile_hash) = write_profile(
+        tools.path(),
+        &executable,
+        &executable_hash,
+        json!([]),
+        "disabled",
+        json!([0]),
+    );
+    let scope = collect_diff_context_cli::review_scope::open_authoritative_scope(
+        collect_diff_context_cli::review_scope::ScopeRequest {
+            repository: repository.path().to_path_buf(),
+            source: Some(collect_diff_context_cli::review_scope::ReviewSource::Staged),
+            expected_fingerprint: None,
+        },
+    )
+    .unwrap();
+    let error = run_analysis(run_request(
+        repository.path(),
+        profile,
+        profile_hash,
+        scope.fingerprint,
+    ))
+    .unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("reviewed repository state changed during controlled execution"),
+        "{error}"
+    );
+
+    let repository = execution_repository();
+    git(repository.path(), &["commit", "-qm", "candidate"]);
+    git(
+        repository.path(),
+        &["commit", "--allow-empty", "-qm", "same tree"],
+    );
+    fs::write(repository.path().join("candidate.txt"), "next candidate\n").unwrap();
+    git(repository.path(), &["add", "candidate.txt"]);
+    let tools = TempDir::new().unwrap();
+    let script = format!(
+        "#!/bin/sh\ngit -C '{}' update-ref HEAD HEAD^\nprintf '{{\"schema_version\":1,\"kind\":\"static_analysis_input\",\"scope_fingerprint\":\"%s\",\"tool\":{{\"name\":\"fixture\",\"version\":\"1.0\"}},\"status\":\"completed\",\"findings\":[]}}' \"$PRE_COMMIT_REVIEW_SCOPE_FINGERPRINT\"\n",
+        repository.path().display()
+    );
+    let executable = write_executable(tools.path(), "scope-drift.sh", &script);
+    let executable_hash = sha256_file(&executable);
+    let (profile, profile_hash) = write_profile(
+        tools.path(),
+        &executable,
+        &executable_hash,
+        json!([]),
+        "disabled",
+        json!([0]),
+    );
+    let scope = collect_diff_context_cli::review_scope::open_authoritative_scope(
+        collect_diff_context_cli::review_scope::ScopeRequest {
+            repository: repository.path().to_path_buf(),
+            source: Some(collect_diff_context_cli::review_scope::ReviewSource::Staged),
+            expected_fingerprint: None,
+        },
+    )
+    .unwrap();
+    let error = run_analysis(run_request(
+        repository.path(),
+        profile,
+        profile_hash,
+        scope.fingerprint,
+    ))
+    .unwrap_err();
+    assert!(
+        error
+            .to_string()
+            .contains("expected scope fingerprint does not match opening scope"),
+        "{error}"
+    );
+}
+
+#[test]
+fn run_artifact_cli_help_and_usage_errors_are_stable() {
+    let binary = env!("CARGO_BIN_EXE_static-analysis-cli");
+    let help = Command::new(binary)
+        .args(["run", "--help"])
+        .output()
+        .unwrap();
+    assert!(help.status.success());
+    assert!(String::from_utf8_lossy(&help.stdout).contains("--expect-profile-sha256"));
+
+    let usage = Command::new(binary).arg("run").output().unwrap();
+    assert_eq!(usage.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&usage.stderr).starts_with("run_static_analysis:"));
 }

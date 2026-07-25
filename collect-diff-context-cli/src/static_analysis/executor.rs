@@ -1,11 +1,17 @@
 use super::contracts::{
-    ExecutionStatus, FailureReason, RepositoryConfiguration, StaticAnalysisProfile,
+    EvidenceScope, EvidenceTrust, ExecutableRecord, ExecutionEvidenceLinks, ExecutionProfileRecord,
+    ExecutionRecord, ExecutionStatus, FailureReason, IsolationRecord, OutputFormat, ReportStatus,
+    RepositoryConfiguration, SnapshotRecord, StaticAnalysisEvidence, StaticAnalysisExecution,
+    StaticAnalysisProfile,
 };
-use super::snapshot::CandidateSnapshot;
-use crate::review_scope::ReviewSource;
+use super::evidence::{collect_evidence, CollectRequest};
+use super::snapshot::{CandidateSnapshot, SnapshotLimits};
+use crate::review_scope::{
+    open_authoritative_scope, revalidate_scope, AuthoritativeScope, ReviewSource, ScopeRequest,
+};
 use sha2::{Digest, Sha256};
 use std::fs::{self, File};
-use std::io::{Read, Write};
+use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Component, Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
@@ -31,6 +37,23 @@ pub struct PreparedProfile {
 pub struct ExecutionLimits {
     pub timeout: Duration,
     pub max_output_bytes: usize,
+}
+
+#[derive(Debug, Clone)]
+pub struct RunRequest {
+    pub repository: PathBuf,
+    pub source: ReviewSource,
+    pub expected_scope: String,
+    pub profile_path: PathBuf,
+    pub expected_profile_sha256: String,
+    pub allow_repository_configuration: bool,
+    pub max_findings: usize,
+}
+
+#[derive(Debug)]
+pub struct RunArtifact {
+    pub execution: StaticAnalysisExecution,
+    pub evidence: StaticAnalysisEvidence,
 }
 
 #[derive(Debug)]
@@ -344,6 +367,396 @@ pub fn execute_prepared(
         stderr_sha256,
         failure_reason,
     })
+}
+
+pub fn run_analysis(request: RunRequest) -> Result<RunArtifact, RunError> {
+    if !is_scope_fingerprint(&request.expected_scope) {
+        return Err(RunError::new("--expect-scope is missing or invalid"));
+    }
+    if !(1..=5_000).contains(&request.max_findings) {
+        return Err(RunError::new("--max-findings must be between 1 and 5000"));
+    }
+    let scope = open_authoritative_scope(ScopeRequest {
+        repository: request.repository.clone(),
+        source: Some(request.source),
+        expected_fingerprint: Some(request.expected_scope.clone()),
+    })
+    .map_err(|error| RunError::new(error.to_string()))?;
+    let repository = scope.repository.clone();
+    let repository_state_before = repository_state_digest(&repository)?;
+    let prepared = prepare_profile(
+        &repository,
+        &request.profile_path,
+        &request.expected_profile_sha256,
+        request.allow_repository_configuration,
+    )?;
+    let snapshot = CandidateSnapshot::materialize(
+        &repository,
+        request.source,
+        SnapshotLimits {
+            max_files: prepared.profile.limits.max_snapshot_files,
+            max_bytes: prepared.profile.limits.max_snapshot_bytes,
+        },
+    )
+    .map_err(|error| RunError::new(error.to_string()))?;
+    let process = execute_prepared(
+        &prepared,
+        &snapshot,
+        request.source,
+        &request.expected_scope,
+        ExecutionLimits {
+            timeout: Duration::from_secs(prepared.profile.limits.timeout_seconds),
+            max_output_bytes: prepared.profile.limits.max_output_bytes,
+        },
+    )?;
+
+    let mut final_status = process.status;
+    let mut execution_id =
+        compact_execution_id(&request.expected_scope, &prepared, &process, final_status);
+    let mut evidence = if final_status == ExecutionStatus::Completed {
+        collect_completed_evidence(
+            &repository,
+            request.source,
+            &request.expected_scope,
+            &prepared,
+            &process,
+            &execution_id,
+            request.max_findings,
+        )
+        .ok()
+        .filter(|evidence| evidence_matches_profile(evidence, &prepared.profile))
+    } else {
+        None
+    };
+    if evidence.is_none() {
+        if final_status == ExecutionStatus::Completed {
+            final_status = ExecutionStatus::InvalidOutput;
+            execution_id =
+                compact_execution_id(&request.expected_scope, &prepared, &process, final_status);
+        }
+        evidence = Some(collect_failure_evidence(
+            &repository,
+            request.source,
+            &request.expected_scope,
+            &prepared,
+            &process,
+            &execution_id,
+            final_status,
+            request.max_findings,
+        )?);
+    }
+    let evidence = evidence.expect("assigned above");
+
+    snapshot
+        .verify_unchanged()
+        .map_err(|error| RunError::new(error.to_string()))?;
+    verify_prepared_integrity(&prepared, "during controlled execution")?;
+    if repository_state_digest(&repository)? != repository_state_before {
+        return Err(RunError::new(
+            "reviewed repository state changed during controlled execution",
+        ));
+    }
+    revalidate_scope(&scope).map_err(|error| {
+        RunError::new(format!(
+            "review scope changed during controlled execution: {error}"
+        ))
+    })?;
+    let expected_evidence_scope = evidence_scope(&scope);
+    if evidence.scope != expected_evidence_scope {
+        return Err(RunError::new(
+            "controlled evidence scope does not match the opening control plane",
+        ));
+    }
+
+    let mut report_ids = evidence
+        .reports
+        .iter()
+        .map(|report| report.report_id.clone())
+        .collect::<Vec<_>>();
+    report_ids.sort();
+    let failure_reason = if final_status == ExecutionStatus::InvalidOutput {
+        Some(FailureReason::InvalidOutput)
+    } else {
+        process.failure_reason
+    };
+    let execution = StaticAnalysisExecution {
+        schema_version: 1,
+        kind: "static_analysis_execution".to_string(),
+        authoritative: true,
+        execution_id,
+        scope: evidence.scope.clone(),
+        profile: ExecutionProfileRecord {
+            profile_id: prepared.profile_id.clone(),
+            sha256: prepared.profile_sha256.clone(),
+            name: prepared.profile.name.clone(),
+            output_format: prepared.profile.output_format,
+            success_exit_codes: prepared.profile.success_exit_codes.clone(),
+            limits: prepared.profile.limits.clone(),
+            repository_configuration: prepared.profile.repository_configuration,
+            network_access: prepared.profile.network_access,
+        },
+        tool: prepared.profile.tool.clone(),
+        executable: ExecutableRecord {
+            name: prepared
+                .executable_path
+                .file_name()
+                .map(|name| name.to_string_lossy().into_owned())
+                .unwrap_or_else(|| "analyzer".to_string()),
+            sha256: prepared.executable_sha256.clone(),
+            path_policy: "absolute-explicit-outside-repository".to_string(),
+        },
+        snapshot: SnapshotRecord {
+            kind: "temporary-tracked-files".to_string(),
+            sha256: snapshot.sha256.clone(),
+            files: snapshot.files,
+            bytes: snapshot.bytes,
+        },
+        isolation: IsolationRecord {
+            shell: false,
+            vcs_metadata: false,
+            environment: "allowlist".to_string(),
+            source_tree: "read-only-temporary-snapshot".to_string(),
+            original_repository_path: "not-exposed".to_string(),
+            network: "best-effort-offline-profile-required".to_string(),
+        },
+        execution: ExecutionRecord {
+            status: final_status,
+            exit_code: process.exit_code,
+            duration_ms: process.duration_ms,
+            stdout_bytes: process.stdout_bytes,
+            stdout_sha256: process.stdout_sha256.clone(),
+            stderr_bytes: process.stderr_bytes,
+            stderr_sha256: process.stderr_sha256.clone(),
+            result_accepted: final_status == ExecutionStatus::Completed,
+            failure_reason,
+        },
+        evidence: ExecutionEvidenceLinks { report_ids },
+    };
+    Ok(RunArtifact {
+        execution,
+        evidence,
+    })
+}
+
+fn collect_completed_evidence(
+    repository: &Path,
+    source: ReviewSource,
+    expected_scope: &str,
+    prepared: &PreparedProfile,
+    process: &ProcessOutcome,
+    execution_id: &str,
+    max_findings: usize,
+) -> Result<StaticAnalysisEvidence, RunError> {
+    collect_evidence(CollectRequest {
+        repository: repository.to_path_buf(),
+        source: Some(source),
+        expected_scope: expected_scope.to_string(),
+        result_paths: vec![process.stdout_path().to_path_buf()],
+        asserted_result_scope: (prepared.profile.output_format == OutputFormat::Sarif)
+            .then(|| expected_scope.to_string()),
+        max_findings,
+        trust: EvidenceTrust::ControlledExecution,
+        execution_id: Some(execution_id.to_string()),
+    })
+    .map_err(|error| RunError::new(error.to_string()))
+}
+
+#[allow(clippy::too_many_arguments)]
+fn collect_failure_evidence(
+    repository: &Path,
+    source: ReviewSource,
+    expected_scope: &str,
+    prepared: &PreparedProfile,
+    process: &ProcessOutcome,
+    execution_id: &str,
+    final_status: ExecutionStatus,
+    max_findings: usize,
+) -> Result<StaticAnalysisEvidence, RunError> {
+    let result_path = process.runtime_path().join("failed-result.json");
+    let report_status = if final_status == ExecutionStatus::Timeout {
+        ReportStatus::Timeout
+    } else {
+        ReportStatus::Failed
+    };
+    let payload = serde_json::json!({
+        "schema_version": 1,
+        "kind": "static_analysis_input",
+        "scope_fingerprint": expected_scope,
+        "tool": prepared.profile.tool.clone(),
+        "status": report_status,
+        "findings": []
+    });
+    fs::write(
+        &result_path,
+        serde_json::to_vec(&payload).map_err(|error| {
+            RunError::new(format!("cannot serialize failure evidence: {error}"))
+        })?,
+    )
+    .map_err(|error| RunError::new(format!("cannot write failure evidence: {error}")))?;
+    collect_evidence(CollectRequest {
+        repository: repository.to_path_buf(),
+        source: Some(source),
+        expected_scope: expected_scope.to_string(),
+        result_paths: vec![result_path],
+        asserted_result_scope: None,
+        max_findings,
+        trust: EvidenceTrust::ControlledExecution,
+        execution_id: Some(execution_id.to_string()),
+    })
+    .map_err(|error| RunError::new(format!("cannot create bounded failure evidence: {error}")))
+}
+
+fn evidence_matches_profile(
+    evidence: &StaticAnalysisEvidence,
+    profile: &StaticAnalysisProfile,
+) -> bool {
+    !evidence.reports.is_empty()
+        && evidence
+            .reports
+            .iter()
+            .all(|report| report.tool == profile.tool && report.status == ReportStatus::Completed)
+}
+
+fn compact_execution_id(
+    expected_scope: &str,
+    prepared: &PreparedProfile,
+    process: &ProcessOutcome,
+    status: ExecutionStatus,
+) -> String {
+    let mut digest = Sha256::new();
+    for value in [
+        expected_scope,
+        &prepared.profile_sha256,
+        &prepared.executable_sha256,
+        &process.stdout_sha256,
+        execution_status_name(status),
+    ] {
+        digest.update(value.as_bytes());
+        digest.update([0]);
+    }
+    format!("{:x}", digest.finalize())[..16].to_string()
+}
+
+fn execution_status_name(status: ExecutionStatus) -> &'static str {
+    match status {
+        ExecutionStatus::Completed => "completed",
+        ExecutionStatus::Failed => "failed",
+        ExecutionStatus::Timeout => "timeout",
+        ExecutionStatus::OutputLimit => "output-limit",
+        ExecutionStatus::InvalidOutput => "invalid-output",
+    }
+}
+
+fn evidence_scope(scope: &AuthoritativeScope) -> EvidenceScope {
+    EvidenceScope {
+        source: scope.source,
+        head: scope.head.clone(),
+        fingerprint: scope.fingerprint.clone(),
+    }
+}
+
+fn is_scope_fingerprint(value: &str) -> bool {
+    matches!(value.len(), 40 | 64)
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}
+
+fn repository_state_digest(repository: &Path) -> Result<String, RunError> {
+    let commands: [&[&str]; 3] = [
+        &["status", "--porcelain=v2", "-z", "--untracked-files=all"],
+        &["diff", "--no-ext-diff", "--no-textconv", "--binary"],
+        &[
+            "diff",
+            "--cached",
+            "--no-ext-diff",
+            "--no-textconv",
+            "--binary",
+        ],
+    ];
+    let mut digest = Sha256::new();
+    for arguments in commands {
+        update_digest_from_git(repository, arguments, &mut digest)?;
+        digest.update([0]);
+    }
+    Ok(format!("{:x}", digest.finalize()))
+}
+
+fn update_digest_from_git(
+    repository: &Path,
+    arguments: &[&str],
+    digest: &mut Sha256,
+) -> Result<(), RunError> {
+    let mut stderr = tempfile::tempfile()
+        .map_err(|error| RunError::new(format!("cannot capture Git state: {error}")))?;
+    let stderr_child = stderr
+        .try_clone()
+        .map_err(|error| RunError::new(format!("cannot capture Git state: {error}")))?;
+    let mut command = Command::new("git");
+    command
+        .args(arguments)
+        .current_dir(repository)
+        .stdin(Stdio::null())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::from(stderr_child))
+        .env("GIT_OPTIONAL_LOCKS", "0")
+        .env("GIT_NO_LAZY_FETCH", "1")
+        .env("GIT_CONFIG_NOSYSTEM", "1");
+    #[cfg(not(windows))]
+    command.env("GIT_CONFIG_GLOBAL", "/dev/null");
+    let mut child = command
+        .spawn()
+        .map_err(|error| RunError::new(format!("cannot inspect Git repository state: {error}")))?;
+    let mut stdout = child.stdout.take().ok_or_else(|| {
+        let _ = child.kill();
+        RunError::new("cannot hash Git repository state")
+    })?;
+    let mut buffer = [0_u8; 1024 * 1024];
+    loop {
+        let read = match stdout.read(&mut buffer) {
+            Ok(read) => read,
+            Err(error) => {
+                let _ = child.kill();
+                let _ = child.wait();
+                return Err(RunError::new(format!(
+                    "cannot hash Git repository state: {error}"
+                )));
+            }
+        };
+        if read == 0 {
+            break;
+        }
+        digest.update(&buffer[..read]);
+    }
+    let status = child
+        .wait()
+        .map_err(|error| RunError::new(format!("cannot wait for Git state: {error}")))?;
+    if !status.success() {
+        stderr.seek(SeekFrom::Start(0)).ok();
+        let mut detail = Vec::new();
+        Read::by_ref(&mut stderr)
+            .take(500)
+            .read_to_end(&mut detail)
+            .ok();
+        return Err(RunError::new(format!(
+            "Git repository-state command failed: {}",
+            bounded_process_detail(&detail)
+        )));
+    }
+    Ok(())
+}
+
+fn bounded_process_detail(value: &[u8]) -> String {
+    let detail = String::from_utf8_lossy(value)
+        .split_whitespace()
+        .collect::<Vec<_>>()
+        .join(" ");
+    let detail = detail.chars().take(500).collect::<String>();
+    if detail.is_empty() {
+        "unknown Git error".to_string()
+    } else {
+        detail
+    }
 }
 
 fn verify_prepared_integrity(prepared: &PreparedProfile, phase: &str) -> Result<(), RunError> {

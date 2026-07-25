@@ -1,7 +1,19 @@
 use collect_diff_context_cli::review_scope::ReviewSource;
+#[cfg(unix)]
+use collect_diff_context_cli::review_scope::{open_authoritative_scope, ScopeRequest};
+#[cfg(unix)]
+use collect_diff_context_cli::static_analysis::contracts::ExecutionStatus;
+#[cfg(unix)]
+use collect_diff_context_cli::static_analysis::executor::{run_analysis, RunRequest};
 use collect_diff_context_cli::static_analysis::snapshot::{CandidateSnapshot, SnapshotLimits};
+#[cfg(unix)]
+use serde_json::json;
+#[cfg(unix)]
+use sha2::{Digest, Sha256};
 use std::fs;
 use std::path::Path;
+#[cfg(unix)]
+use std::path::PathBuf;
 use std::process::Command;
 use tempfile::TempDir;
 
@@ -187,4 +199,113 @@ fn snapshot_omits_gitlinks() {
     assert!(snapshot.path().join("tracked.txt").exists());
     assert!(!snapshot.path().join("vendor/sub").exists());
     assert_eq!(snapshot.files, 1);
+}
+
+#[cfg(unix)]
+fn write_executable(directory: &Path, name: &str, body: &str) -> PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+
+    let path = directory.join(name);
+    fs::write(&path, body).unwrap();
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+    path
+}
+
+#[cfg(unix)]
+fn sha256_file(path: &Path) -> String {
+    format!("{:x}", Sha256::digest(fs::read(path).unwrap()))
+}
+
+#[cfg(unix)]
+#[test]
+fn run_analysis_uses_source_specific_candidate_bytes() {
+    let repository = TempDir::new().unwrap();
+    git(repository.path(), &["init", "-q"]);
+    git(
+        repository.path(),
+        &["config", "user.email", "review@example.test"],
+    );
+    git(repository.path(), &["config", "user.name", "Review Test"]);
+    fs::write(repository.path().join("tracked.txt"), "main\n").unwrap();
+    git(repository.path(), &["add", "tracked.txt"]);
+    git(repository.path(), &["commit", "-qm", "main"]);
+    git(repository.path(), &["switch", "-qc", "feature"]);
+    fs::write(repository.path().join("tracked.txt"), "branch\n").unwrap();
+    git(repository.path(), &["add", "tracked.txt"]);
+    git(repository.path(), &["commit", "-qm", "branch"]);
+    fs::write(repository.path().join("tracked.txt"), "staged\n").unwrap();
+    git(repository.path(), &["add", "tracked.txt"]);
+    fs::write(repository.path().join("tracked.txt"), "unstaged\n").unwrap();
+
+    let tools = TempDir::new().unwrap();
+    let executable = write_executable(
+        tools.path(),
+        "mode-analyzer.sh",
+        r#"#!/bin/sh
+expected="$1"
+observed=$(cat tracked.txt)
+if [ "$observed" != "$expected" ]; then
+  printf 'expected %s, observed %s\n' "$expected" "$observed" >&2
+  exit 9
+fi
+printf '{"schema_version":1,"kind":"static_analysis_input","scope_fingerprint":"%s","tool":{"name":"fixture","version":"1.0"},"status":"completed","findings":[]}' "$PRE_COMMIT_REVIEW_SCOPE_FINGERPRINT"
+"#,
+    );
+    let executable_hash = sha256_file(&executable);
+
+    for (source, expected) in [
+        (ReviewSource::Staged, "staged"),
+        (ReviewSource::Unstaged, "unstaged"),
+        (ReviewSource::Branch, "branch"),
+    ] {
+        let profile = tools.path().join(format!("profile-{expected}.json"));
+        fs::write(
+            &profile,
+            serde_json::to_vec(&json!({
+                "schema_version": 1,
+                "kind": "static_analysis_profile",
+                "name": "source mode profile",
+                "tool": {"name": "fixture", "version": "1.0"},
+                "executable": {
+                    "path": executable.to_string_lossy(),
+                    "sha256": executable_hash
+                },
+                "arguments": [expected],
+                "output_format": "normalized-json",
+                "success_exit_codes": [0],
+                "limits": {
+                    "timeout_seconds": 10,
+                    "max_output_bytes": 1048576,
+                    "max_snapshot_bytes": 10485760,
+                    "max_snapshot_files": 1000
+                },
+                "repository_configuration": "disabled",
+                "network_access": "offline-required"
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        let profile_hash = sha256_file(&profile);
+        let scope = open_authoritative_scope(ScopeRequest {
+            repository: repository.path().to_path_buf(),
+            source: Some(source),
+            expected_fingerprint: None,
+        })
+        .unwrap();
+
+        let artifact = run_analysis(RunRequest {
+            repository: repository.path().to_path_buf(),
+            source,
+            expected_scope: scope.fingerprint,
+            profile_path: profile,
+            expected_profile_sha256: profile_hash,
+            allow_repository_configuration: false,
+            max_findings: 500,
+        })
+        .unwrap();
+        assert_eq!(
+            artifact.execution.execution.status,
+            ExecutionStatus::Completed
+        );
+    }
 }
