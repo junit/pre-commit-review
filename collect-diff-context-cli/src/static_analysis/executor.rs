@@ -864,7 +864,7 @@ fn validate_arguments(arguments: &[String], repository: &Path) -> Result<(), Run
     for argument in arguments {
         if argument.contains(repository_text.as_ref()) {
             return Err(RunError::new(
-                "profile arguments must not expose the reviewed repository path",
+                "profile arguments must not reference paths inside the reviewed repository",
             ));
         }
         let candidate = Path::new(argument);
