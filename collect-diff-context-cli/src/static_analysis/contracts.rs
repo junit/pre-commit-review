@@ -161,6 +161,16 @@ impl InputFinding {
         require_string(&self.rule_id, "finding.rule_id", usize::MAX)?;
         require_string(&self.message, "finding.message", usize::MAX)?;
         require_string(&self.path, "finding.path", usize::MAX)?;
+        if self.start_line == Some(0) {
+            return Err(ContractError::new(
+                "finding.start_line must be a positive integer or null",
+            ));
+        }
+        if self.end_line == Some(0) {
+            return Err(ContractError::new(
+                "finding.end_line must be a positive integer or null",
+            ));
+        }
         if let (Some(start), Some(end)) = (self.start_line, self.end_line) {
             if end < start {
                 return Err(ContractError::new(
