@@ -137,7 +137,9 @@ For a blocking issue the verdict is `DO_NOT_COMMIT` with a `🔒`-marked blocker
 
 - A supported AI coding agent runtime that can load skills (Codex, Claude Code, Gemini CLI, or Kiro). The skill package ships no runtime of its own.
 - `git` on `PATH` for local diff collection. The review still works without it when you paste a diff or code directly.
-- Python 3 only when using optional SARIF/JSON evidence ingestion or controlled static-analysis execution. Those runtime lanes use the standard library; the standalone schema validator additionally requires the `jsonschema` package. Normal diff review does not require Python.
+- The static-analysis product runtime is Rust-only. `collect_static_evidence.sh` and `run_static_analysis.sh` are compatibility wrappers over `static-analysis-cli collect` and `static-analysis-cli run`.
+- Self-contained releases include `static_analysis-<platform>` next to the diff helper binary. Source builds may use `collect-diff-context-cli/target/release/static-analysis-cli`, and `PRE_COMMIT_REVIEW_STATIC_ANALYSIS_BIN` may explicitly select an absolute executable. The wrappers never search `PATH` for it.
+- Python 3 is required only for the optional development schema validator, `scripts/validate_schemas.py`, which additionally requires the `jsonschema` package.
 - Network access is optional. From a source clone, `install.sh` attempts to download the pinned Gitleaks `8.30.1` binary and verify both the release archive and extracted executable SHA256. Self-contained release packages already include the verified executable. If download is disabled, unavailable, or fails, installation and review still work without local secret redaction. Implicit `PATH` discovery is not allowed.
 - A Unix-compatible shell to run `install.sh` and the helper. On Windows use Git Bash, MSYS2, or WSL.
 
@@ -249,7 +251,7 @@ This package is intentionally conservative:
 - This repository does not include the runtime that loads or executes the skill.
 - The included installer covers common Codex, Claude Code, and Gemini CLI locations, but some local setups may still require `--dir` overrides.
 - The helper script expects a working `git` executable in the environment.
-- Python 3 is required only for optional static-analysis evidence ingestion and controlled execution; `scripts/validate_schemas.py` additionally requires the `jsonschema` package.
+- Static-analysis evidence ingestion and controlled execution use the bundled Rust CLI. Python is needed only for the optional `scripts/validate_schemas.py` development validator and its `jsonschema` dependency.
 - Controlled execution is process isolation for a trusted hash-pinned tool, not an operating-system hostile-code or network sandbox.
 - On Windows, the helper script and installer require a Unix-compatible environment (such as Git Bash, MSYS2, or WSL) to run correctly.
 - The current repository itself may be used outside Git, but local diff collection only works inside a Git repository.
@@ -284,9 +286,8 @@ This repository is not an application or framework. It is a small, portable skil
 │   ├── build_with_docker.sh
 │   ├── collect_diff_context.sh
 │   ├── collect_diff_context.legacy.sh
-│   ├── collect_static_evidence.py
 │   ├── collect_static_evidence.sh
-│   ├── run_static_analysis.py
+│   ├── lib/static_analysis_cli.sh
 │   ├── run_static_analysis.sh
 │   └── validate_schemas.py
 ├── tests/

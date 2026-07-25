@@ -115,9 +115,7 @@ jobs:
           find artifacts -type f -name 'gitleaks-*' -exec cp {} dist/pre-commit-review/scripts/bin/ \;
           chmod +x dist/pre-commit-review/scripts/collect_diff_context.sh
           chmod +x dist/pre-commit-review/scripts/collect_static_evidence.sh
-          chmod +x dist/pre-commit-review/scripts/collect_static_evidence.py
           chmod +x dist/pre-commit-review/scripts/run_static_analysis.sh
-          chmod +x dist/pre-commit-review/scripts/run_static_analysis.py
           chmod +x dist/pre-commit-review/scripts/check_gitleaks.sh
           chmod +x dist/pre-commit-review/scripts/bin/collect_diff_context-* || true
           chmod +x dist/pre-commit-review/scripts/bin/static_analysis-* || true

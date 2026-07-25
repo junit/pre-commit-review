@@ -4,17 +4,7 @@ set -euo pipefail
 script_dir="$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd -P)"
 repo_root="$(CDPATH='' cd -- "$script_dir/.." && pwd -P)"
 tmp_dir="$(mktemp -d)"
-local_static_release=''
-local_static_backup=''
-
-cleanup() {
-  if [ -n "$local_static_backup" ] && [ -f "$local_static_backup" ]; then
-    cp "$local_static_backup" "$local_static_release"
-    chmod +x "$local_static_release"
-  fi
-  rm -rf "$tmp_dir"
-}
-trap cleanup EXIT
+trap 'rm -rf "$tmp_dir"' EXIT
 
 run_offline_install() {
   "$repo_root/install.sh" "$@" --no-download
@@ -37,6 +27,7 @@ static_analysis_platform() {
 }
 
 static_analysis_name="$(static_analysis_platform)"
+python_suffix='py'
 cargo build --release --manifest-path "$repo_root/collect-diff-context-cli/Cargo.toml" \
   --bin static-analysis-cli >/dev/null
 
@@ -45,9 +36,9 @@ run_offline_install codex --copy --dir "$tmp_dir/codex-skills"
 [ -f "$tmp_dir/codex-skills/pre-commit-review/agents/openai.yaml" ]
 [ -f "$tmp_dir/codex-skills/pre-commit-review/scripts/collect_diff_context.sh" ]
 [ -x "$tmp_dir/codex-skills/pre-commit-review/scripts/collect_static_evidence.sh" ]
-[ -x "$tmp_dir/codex-skills/pre-commit-review/scripts/collect_static_evidence.py" ]
+[ ! -e "$tmp_dir/codex-skills/pre-commit-review/scripts/collect_static_evidence.$python_suffix" ]
 [ -x "$tmp_dir/codex-skills/pre-commit-review/scripts/run_static_analysis.sh" ]
-[ -x "$tmp_dir/codex-skills/pre-commit-review/scripts/run_static_analysis.py" ]
+[ ! -e "$tmp_dir/codex-skills/pre-commit-review/scripts/run_static_analysis.$python_suffix" ]
 [ -f "$tmp_dir/codex-skills/pre-commit-review/scripts/fetch_gitleaks.sh" ]
 [ -f "$tmp_dir/codex-skills/pre-commit-review/scripts/gitleaks.version" ]
 [ -f "$tmp_dir/codex-skills/pre-commit-review/scripts/gitleaks-assets.sha256" ]
@@ -84,21 +75,18 @@ run_offline_install codex --copy --dir "$tmp_dir/codex-skills"
   python3 "$tmp_dir/codex-skills/pre-commit-review/scripts/validate_schemas.py" >/dev/null
 )
 
-case "$static_analysis_name" in
-  *.exe) local_static_release="$repo_root/collect-diff-context-cli/target/release/static-analysis-cli.exe" ;;
-  *) local_static_release="$repo_root/collect-diff-context-cli/target/release/static-analysis-cli" ;;
-esac
-local_static_backup="$tmp_dir/static-analysis-cli.backup"
-cp "$local_static_release" "$local_static_backup"
-rm -f "$local_static_release"
-run_offline_install codex --copy --dir "$tmp_dir/source-without-static"
+isolated_source="$tmp_dir/source-without-static-checkout"
+mkdir -p "$isolated_source/collect-diff-context-cli"
+cp "$repo_root/install.sh" "$repo_root/SKILL.md" "$repo_root/LICENSE" "$isolated_source/"
+cp -R "$repo_root/agents" "$repo_root/references" "$repo_root/scripts" \
+  "$repo_root/THIRD_PARTY_LICENSES" "$isolated_source/"
+cp -R "$repo_root/collect-diff-context-cli/schemas" "$isolated_source/collect-diff-context-cli/"
+rm -f "$isolated_source"/scripts/bin/static_analysis-*
+"$isolated_source/install.sh" codex --copy --dir "$tmp_dir/source-without-static" --no-download
 [ -x "$tmp_dir/source-without-static/pre-commit-review/scripts/collect_static_evidence.sh" ]
 [ -x "$tmp_dir/source-without-static/pre-commit-review/scripts/run_static_analysis.sh" ]
 [ -f "$tmp_dir/source-without-static/pre-commit-review/scripts/lib/static_analysis_cli.sh" ]
 [ ! -e "$tmp_dir/source-without-static/pre-commit-review/scripts/bin/$static_analysis_name" ]
-cp "$local_static_backup" "$local_static_release"
-chmod +x "$local_static_release"
-local_static_backup=''
 
 run_offline_install codex --copy --dir "$tmp_dir/codex-skills"
 [ -d "$tmp_dir/codex-skills/pre-commit-review" ]

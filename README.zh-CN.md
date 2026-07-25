@@ -137,7 +137,9 @@
 
 - 一个能加载 skill 的受支持 AI 编程 agent 运行时（Codex、Claude Code、Gemini CLI 或 Kiro）。skill 包本身不附带运行时。
 - 本地 diff 收集需要 `PATH` 中存在 `git`。当你直接粘贴 diff 或代码时，无需 git 也能审查。
-- 只有使用可选 SARIF/JSON 证据接入或受控静态分析执行时才需要 Python 3；这两个运行通道只使用标准库，独立 Schema 校验器还需要 `jsonschema` 包。普通 diff 审查不依赖 Python。
+- 静态分析产品运行时仅使用 Rust。`collect_static_evidence.sh` 与 `run_static_analysis.sh` 是 `static-analysis-cli collect` 和 `static-analysis-cli run` 的兼容包装器。
+- 自包含 release 会在 diff helper 二进制旁提供 `static_analysis-<platform>`。源码构建可使用 `collect-diff-context-cli/target/release/static-analysis-cli`，也可通过 `PRE_COMMIT_REVIEW_STATIC_ANALYSIS_BIN` 显式指定绝对可执行文件；包装器不会搜索 `PATH`。
+- 只有可选的开发期 Schema 校验器 `scripts/validate_schemas.py` 需要 Python 3，并额外依赖 `jsonschema` 包。
 - 网络访问是可选的。从源码 clone 安装时，`install.sh` 会尝试下载当前平台固定的 Gitleaks `8.30.1`，并同时校验 release archive 与解压后 executable 的 SHA256。自包含 release 包已经附带验证过的二进制。下载被关闭、不可用或失败时，skill 仍会完成安装并继续审查，只是不提供本地密钥打码；不会隐式搜索 `PATH`。
 - 运行 `install.sh` 和辅助脚本需要 Unix 兼容 shell。Windows 上请使用 Git Bash、MSYS2 或 WSL。
 
@@ -249,7 +251,7 @@
 - 该仓库不包含加载或执行 skill 的运行时本身
 - 仓库自带安装脚本，覆盖 Codex、Claude Code、Gemini CLI 的常见目录；如果你的本地布局不同，可能仍需要通过 `--dir` 指定目标位置
 - 辅助脚本依赖环境中可用的 `git`
-- 只有使用可选静态分析证据接入或受控执行时才需要 Python 3；`scripts/validate_schemas.py` 还需要 `jsonschema` 包
+- 静态分析证据接入与受控执行使用捆绑的 Rust CLI。只有可选的开发期校验器 `scripts/validate_schemas.py` 及其 `jsonschema` 依赖需要 Python
 - 受控执行面向可信且哈希固定的工具，属于进程隔离，不是操作系统级恶意代码或网络沙箱
 - 在 Windows 环境下，辅助脚本与安装器需要类 Unix 环境（如 Git Bash、MSYS2 或 WSL）支持才能正常运行。
 - 当前仓库即使脱离 Git 也能作为内容包存在，但本地 diff 收集只有在 Git 仓库内才有效
@@ -284,9 +286,8 @@
 │   ├── build_with_docker.sh
 │   ├── collect_diff_context.sh
 │   ├── collect_diff_context.legacy.sh
-│   ├── collect_static_evidence.py
 │   ├── collect_static_evidence.sh
-│   ├── run_static_analysis.py
+│   ├── lib/static_analysis_cli.sh
 │   ├── run_static_analysis.sh
 │   └── validate_schemas.py
 ├── tests/

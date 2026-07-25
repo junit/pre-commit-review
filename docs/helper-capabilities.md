@@ -67,6 +67,8 @@ Reducer and subagent automation should prefer authoritative `Review Control Plan
 
 `scripts/collect_static_evidence.sh` is a separate, opt-in evidence collector layered on top of the authoritative control plane. It accepts only explicitly supplied SARIF 2.1.0 or `static_analysis_input/v1` JSON files. It does not discover reports or run analyzers.
 
+The wrapper resolves the Rust `static-analysis-cli` from an explicit absolute `PRE_COMMIT_REVIEW_STATIC_ANALYSIS_BIN`, a local release build, or the bundled `static_analysis-<platform>` asset, in that order. It invokes `static-analysis-cli collect` directly and never searches `PATH`.
+
 The collector:
 
 - requires the opening `scope_fingerprint` and fails closed on scope drift or report mismatch
@@ -81,6 +83,8 @@ Static evidence feeds the existing candidate ledger and reducer finding merge, b
 ## Optional Controlled Static Analysis Execution
 
 `scripts/run_static_analysis.sh` is the opt-in Phase 2 execution lane. It requires an explicitly supplied absolute `static_analysis_profile/v1` path and the exact SHA256 authorizing those profile bytes. It never discovers a profile, analyzer, package command, or result file.
+
+This compatibility wrapper uses the same trusted Rust binary resolver and invokes `static-analysis-cli run` directly.
 
 The runner:
 

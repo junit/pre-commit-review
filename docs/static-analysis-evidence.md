@@ -2,6 +2,8 @@
 
 `pre-commit-review` can ingest precomputed SARIF 2.1.0 or normalized JSON as an optional deterministic evidence lane. The integration never discovers reports automatically and never runs the analyzer that produced them.
 
+The product implementation is the Rust `static-analysis-cli collect` subcommand. `scripts/collect_static_evidence.sh` preserves the public Shell interface and optional output sanitization.
+
 ## Workflow
 
 Open the ordinary review control plane first:
@@ -95,7 +97,7 @@ python3 scripts/validate_schemas.py \
 
 ## Bounds and Safety
 
-- Python 3 is required only for this optional evidence lane.
+- Evidence ingestion uses the bundled Rust CLI. The separate `scripts/validate_schemas.py` development validator is optional and requires Python plus `jsonschema`.
 - Input is limited to 10 MB per file by default; override with `PRE_COMMIT_REVIEW_STATIC_MAX_INPUT_BYTES`.
 - At most 10,000 input findings are processed and 500 are emitted by default; `--max-findings` accepts 1 to 5,000.
 - Blocking and priority candidates are emitted before notes and outside-scope results. A truncated result must be expanded before claiming complete static-evidence review when material candidates remain undisposed.

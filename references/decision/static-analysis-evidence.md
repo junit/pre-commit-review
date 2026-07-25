@@ -24,7 +24,7 @@ Never auto-discover reports, execute analyzer commands, load repository-provided
 
 5. A normalized JSON report must use `static_analysis_input/v1` and embed the same `scope_fingerprint`.
 6. SARIF 2.1.0 may embed the fingerprint in `runs[].properties.preCommitReviewScopeFingerprint`. If it does not, use `--result-scope <scope_fingerprint>` only when the user or trusted CI context explicitly confirms that the report was produced from that exact snapshot.
-7. Treat collector failure, missing Python, malformed input, an invalid schema, or a scope mismatch as unavailable static evidence. Continue the ordinary review unless the user explicitly required that evidence or the missing result leaves a material high-risk area unverified.
+7. Treat collector failure, a missing trusted Rust binary, malformed input, an invalid schema, or a scope mismatch as unavailable static evidence. Continue the ordinary review unless the user explicitly required that evidence or the missing result leaves a material high-risk area unverified.
 8. If evidence reports `truncated: true`, rerun with a higher bounded `--max-findings` value. Do not claim complete static-evidence review while material candidates remain hidden by truncation.
 9. Before final synthesis, rerun the normal control plane. Its fingerprint, units, groups, and work order must still match both the opening scope and the emitted static evidence.
 

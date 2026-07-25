@@ -470,4 +470,26 @@ grep -Fq '默认 shadow mode 不会把 diff 内容写入 `/tmp`。' "$readme_zh_
 grep -Fq 'default_prompt: "Use $pre-commit-review' "$repo_root/agents/openai.yaml" \
   || fail 'agents/openai.yaml default_prompt must explicitly mention $pre-commit-review'
 
+python_suffix='py'
+for removed_python_runtime in \
+  "$repo_root/scripts/collect_static_evidence.$python_suffix" \
+  "$repo_root/scripts/run_static_analysis.$python_suffix"; do
+  [ ! -e "$removed_python_runtime" ] \
+    || fail "Python static-analysis product runtime must be removed: $removed_python_runtime"
+done
+grep -Fq 'The static-analysis product runtime is Rust-only.' "$readme_file" \
+  || fail 'README.md must declare the Rust-only static-analysis product runtime'
+grep -Fq '静态分析产品运行时仅使用 Rust。' "$readme_zh_file" \
+  || fail 'README.zh-CN.md must declare the Rust-only static-analysis product runtime'
+grep -Fq '`static-analysis-cli collect`' "$repo_root/docs/static-analysis-evidence.md" \
+  || fail 'static-analysis-evidence.md must document the Rust collect subcommand'
+grep -Fq '`static-analysis-cli run`' "$repo_root/docs/static-analysis-execution.md" \
+  || fail 'static-analysis-execution.md must document the Rust run subcommand'
+grep -Fq '`PRE_COMMIT_REVIEW_STATIC_ANALYSIS_BIN`' "$repo_root/docs/helper-capabilities.md" \
+  || fail 'helper-capabilities.md must document the explicit Rust binary override'
+grep -Fq '`static_analysis-<platform>`' "$readme_file" \
+  || fail 'README.md must document bundled static-analysis release assets'
+grep -Fq '`static_analysis-<platform>`' "$readme_zh_file" \
+  || fail 'README.zh-CN.md must document bundled static-analysis release assets'
+
 printf 'skill contract tests passed\n'

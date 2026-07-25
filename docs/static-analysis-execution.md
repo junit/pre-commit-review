@@ -2,6 +2,8 @@
 
 Phase 2 adds an opt-in execution lane on top of the Phase 1 evidence collector. It runs exactly one explicitly authorized, hash-pinned analyzer profile and feeds the accepted result into the existing snapshot-bound reducer.
 
+The product implementation is the Rust `static-analysis-cli run` subcommand. `scripts/run_static_analysis.sh` preserves the public Shell interface and optional output sanitization.
+
 The runner never discovers profiles, executables, reports, package scripts, or repository commands. Supplying a profile path without its exact SHA256 is insufficient authorization.
 
 ## Workflow
@@ -83,9 +85,7 @@ An `explicitly-trusted` profile also requires the separate `--allow-repository-c
 
 `network_access` is always `offline-required`. The runner supplies loopback-only proxy values as a best-effort guard, but it is not an operating-system network sandbox. The pinned executable and its fixed arguments must independently support offline operation.
 
-Validate and hash a profile before authorization:
-
-The runner itself uses only the Python standard library. This standalone validation command additionally requires `jsonschema` (`python3 -m pip install jsonschema`).
+Validate and hash a profile before authorization. This optional standalone development validation command requires Python and `jsonschema` (`python3 -m pip install jsonschema`).
 
 ```bash
 python3 scripts/validate_schemas.py --static-profile /absolute/trusted/profile.json

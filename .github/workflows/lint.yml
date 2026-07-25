@@ -119,8 +119,6 @@ jobs:
         run: |
           cargo build --release --manifest-path collect-diff-context-cli/Cargo.toml
           echo "PRE_COMMIT_REVIEW_RUST_BIN=$GITHUB_WORKSPACE/collect-diff-context-cli/target/release/collect-diff-context-cli" >> "$GITHUB_ENV"
-      - name: Run Rust static-analysis parity gate
-        run: ./tests/static_analysis_rust_parity_test.sh
       - name: Run collect_diff_context_test.sh
         run: ./tests/collect_diff_context_test.sh
       - name: Run parity_golden_test.sh
