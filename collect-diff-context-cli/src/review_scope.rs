@@ -1,5 +1,7 @@
 use serde::{Deserialize, Serialize};
-use std::path::PathBuf;
+use std::collections::BTreeSet;
+use std::path::{Path, PathBuf};
+use std::process::Command;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -185,4 +187,133 @@ pub fn revalidate_scope(scope: &AuthoritativeScope) -> Result<(), ScopeError> {
         ));
     }
     Ok(())
+}
+
+pub fn added_lines(
+    repository: &Path,
+    source: ReviewSource,
+    selected_ref: &str,
+    path: &str,
+) -> Result<BTreeSet<u32>, ScopeError> {
+    let mut command = Command::new("git");
+    command.current_dir(repository).args([
+        "-c",
+        "color.ui=false",
+        "diff",
+        "--no-ext-diff",
+        "--no-textconv",
+        "--find-renames",
+        "--unified=0",
+    ]);
+    match source {
+        ReviewSource::Staged => {
+            command.arg("--cached");
+        }
+        ReviewSource::Unstaged => {}
+        ReviewSource::Branch => {
+            if selected_ref.is_empty() {
+                return Err(ScopeError::new("branch scope is missing selected_ref"));
+            }
+            command.arg(format!("{selected_ref}...HEAD"));
+        }
+    }
+    command.arg("--").arg(crate::app::unquote_git_path(path));
+    let output = command.output().map_err(|error| {
+        ScopeError::new(format!("cannot map changed lines for {path}: {error}"))
+    })?;
+    if !output.status.success() {
+        let detail = String::from_utf8_lossy(&output.stderr)
+            .split_whitespace()
+            .collect::<Vec<_>>()
+            .join(" ");
+        let detail = detail.chars().take(500).collect::<String>();
+        return Err(ScopeError::new(format!(
+            "cannot map changed lines for {path}: {}",
+            if detail.is_empty() {
+                "git diff failed"
+            } else {
+                &detail
+            }
+        )));
+    }
+    parse_added_lines(&output.stdout)
+}
+
+#[derive(Debug, Clone, Copy)]
+struct HunkCursor {
+    next_new_line: u32,
+    remaining_old: u64,
+    remaining_new: u64,
+}
+
+fn parse_added_lines(diff: &[u8]) -> Result<BTreeSet<u32>, ScopeError> {
+    let mut added = BTreeSet::new();
+    let mut hunk = None;
+    for line in diff.split(|byte| *byte == b'\n') {
+        if line.starts_with(b"@@ -") {
+            hunk = parse_hunk_header(line)?;
+            continue;
+        }
+        let Some(mut cursor) = hunk else {
+            continue;
+        };
+        match line.first().copied() {
+            Some(b'+') if cursor.remaining_new > 0 => {
+                added.insert(cursor.next_new_line);
+                cursor.next_new_line = cursor
+                    .next_new_line
+                    .checked_add(1)
+                    .ok_or_else(|| ScopeError::new("added line number exceeds u32"))?;
+                cursor.remaining_new -= 1;
+            }
+            Some(b'-') if cursor.remaining_old > 0 => cursor.remaining_old -= 1,
+            Some(b' ') if cursor.remaining_old > 0 && cursor.remaining_new > 0 => {
+                cursor.remaining_old -= 1;
+                cursor.remaining_new -= 1;
+                cursor.next_new_line = cursor
+                    .next_new_line
+                    .checked_add(1)
+                    .ok_or_else(|| ScopeError::new("added line number exceeds u32"))?;
+            }
+            Some(b'\\') => {}
+            _ => {}
+        }
+        hunk = (cursor.remaining_old != 0 || cursor.remaining_new != 0).then_some(cursor);
+    }
+    Ok(added)
+}
+
+fn parse_hunk_header(line: &[u8]) -> Result<Option<HunkCursor>, ScopeError> {
+    let header = std::str::from_utf8(line)
+        .map_err(|_| ScopeError::new("git diff emitted a non-UTF-8 hunk header"))?;
+    let mut fields = header.split_whitespace();
+    if fields.next() != Some("@@") {
+        return Ok(None);
+    }
+    let old_range = fields
+        .next()
+        .and_then(|value| value.strip_prefix('-'))
+        .ok_or_else(|| ScopeError::new("git diff emitted an invalid old hunk range"))?;
+    let new_range = fields
+        .next()
+        .and_then(|value| value.strip_prefix('+'))
+        .ok_or_else(|| ScopeError::new("git diff emitted an invalid new hunk range"))?;
+    let (_, old_count) = parse_hunk_range(old_range)?;
+    let (new_start, new_count) = parse_hunk_range(new_range)?;
+    Ok(Some(HunkCursor {
+        next_new_line: new_start,
+        remaining_old: old_count,
+        remaining_new: new_count,
+    }))
+}
+
+fn parse_hunk_range(value: &str) -> Result<(u32, u64), ScopeError> {
+    let (start, count) = value.split_once(',').unwrap_or((value, "1"));
+    let start = start
+        .parse::<u32>()
+        .map_err(|_| ScopeError::new("git diff emitted an invalid hunk line number"))?;
+    let count = count
+        .parse::<u64>()
+        .map_err(|_| ScopeError::new("git diff emitted an invalid hunk line count"))?;
+    Ok((start, count))
 }

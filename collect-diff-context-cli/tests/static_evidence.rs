@@ -1,10 +1,10 @@
 use collect_diff_context_cli::review_scope::{
     open_authoritative_scope, ReviewSource, ScopeRequest,
 };
-use collect_diff_context_cli::static_analysis::contracts::{EvidenceReport, StaticAnalysisInput};
 use collect_diff_context_cli::static_analysis::contracts::{
-    EvidenceScopeBinding, EvidenceTrust, OutputFormat,
+    BaselineState, EvidenceScopeBinding, EvidenceTrust, FindingDisposition, LineScope, OutputFormat,
 };
+use collect_diff_context_cli::static_analysis::contracts::{EvidenceReport, StaticAnalysisInput};
 use collect_diff_context_cli::static_analysis::evidence::{collect_evidence, CollectRequest};
 use serde_json::json;
 use std::{fs, path::Path, process::Command};
@@ -56,6 +56,30 @@ fn staged_repository() -> (TempDir, String) {
 
 fn static_analysis_binary() -> &'static str {
     env!("CARGO_BIN_EXE_static-analysis-cli")
+}
+
+fn write_normalized_result(
+    repo: &Path,
+    name: &str,
+    fingerprint: &str,
+    status: &str,
+    findings: serde_json::Value,
+) -> std::path::PathBuf {
+    let result = repo.join(name);
+    fs::write(
+        &result,
+        serde_json::to_vec(&json!({
+            "schema_version": 1,
+            "kind": "static_analysis_input",
+            "scope_fingerprint": fingerprint,
+            "tool": {"name": "fixture", "version": "1.0"},
+            "status": status,
+            "findings": findings
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    result
 }
 
 fn valid_input() -> serde_json::Value {
@@ -523,4 +547,288 @@ fn parsing_collect_cli_renders_stable_marker() {
     let stdout = String::from_utf8(output.stdout).unwrap();
     assert!(stdout.starts_with("# Pre-Commit Review Static Analysis Evidence\n\n"));
     assert!(stdout.contains("\n## Static Analysis Evidence JSON\n"));
+}
+
+#[test]
+fn parsing_collect_respects_configured_input_limit() {
+    let (repo, fingerprint) = staged_repository();
+    let result = write_normalized_result(
+        repo.path(),
+        "bounded.json",
+        &fingerprint,
+        "completed",
+        json!([]),
+    );
+
+    let output = Command::new(static_analysis_binary())
+        .current_dir(repo.path())
+        .env("PRE_COMMIT_REVIEW_STATIC_MAX_INPUT_BYTES", "1")
+        .args([
+            "collect",
+            "--source",
+            "staged",
+            "--expect-scope",
+            &fingerprint,
+            "--result",
+            result.to_str().unwrap(),
+        ])
+        .output()
+        .unwrap();
+
+    assert_eq!(output.status.code(), Some(2));
+    assert!(String::from_utf8_lossy(&output.stderr).contains("exceeds the 1-byte input limit"));
+}
+
+#[test]
+fn classification_maps_findings_to_changed_scope() {
+    let (repo, fingerprint) = staged_repository();
+    let result = write_normalized_result(
+        repo.path(),
+        "classification.json",
+        &fingerprint,
+        "completed",
+        json!([
+            {
+                "rule_id": "SEC-ADDED",
+                "message": "Attacker-controlled execution.",
+                "path": "src/app.rs",
+                "start_line": 1,
+                "end_line": 1,
+                "severity": "critical",
+                "category": "security",
+                "confidence": "very-high",
+                "baseline_state": "unknown"
+            },
+            {
+                "rule_id": "REL-UNKNOWN-LINE",
+                "message": "Resource cleanup is uncertain.",
+                "path": "src/app.rs",
+                "severity": "warning",
+                "category": "reliability",
+                "confidence": "medium",
+                "baseline_state": "new"
+            },
+            {
+                "rule_id": "STYLE-UNCHANGED",
+                "message": "Prefer a local variable.",
+                "path": "src/app.rs",
+                "start_line": 2,
+                "end_line": 2,
+                "severity": "warning",
+                "category": "maintainability",
+                "confidence": "medium",
+                "baseline_state": "unknown"
+            },
+            {
+                "rule_id": "BUILD-OUTSIDE",
+                "message": "Type mismatch outside the candidate.",
+                "path": "src/other.rs",
+                "start_line": 1,
+                "end_line": 1,
+                "severity": "error",
+                "category": "build",
+                "confidence": "high",
+                "baseline_state": "new"
+            }
+        ]),
+    );
+
+    let evidence = collect_evidence(CollectRequest {
+        repository: repo.path().to_path_buf(),
+        source: Some(ReviewSource::Staged),
+        expected_scope: fingerprint,
+        result_paths: vec![result],
+        asserted_result_scope: None,
+        max_findings: 500,
+        trust: EvidenceTrust::ExplicitInput,
+        execution_id: None,
+    })
+    .unwrap();
+    let by_rule = evidence
+        .findings
+        .iter()
+        .map(|finding| (finding.rule_id.as_str(), finding))
+        .collect::<std::collections::HashMap<_, _>>();
+
+    let blocking = by_rule["SEC-ADDED"];
+    assert_eq!(blocking.line_scope, LineScope::Added);
+    assert_eq!(blocking.baseline_state, BaselineState::New);
+    assert_eq!(blocking.disposition, FindingDisposition::BlockingCandidate);
+    assert!(blocking.blocking_candidate);
+
+    let priority = by_rule["REL-UNKNOWN-LINE"];
+    assert_eq!(priority.line_scope, LineScope::Unknown);
+    assert_eq!(priority.disposition, FindingDisposition::PriorityCandidate);
+
+    let note = by_rule["STYLE-UNCHANGED"];
+    assert_eq!(note.line_scope, LineScope::Unchanged);
+    assert_eq!(note.disposition, FindingDisposition::Note);
+
+    let outside = by_rule["BUILD-OUTSIDE"];
+    assert_eq!(outside.line_scope, LineScope::OutsideScope);
+    assert_eq!(outside.disposition, FindingDisposition::OutsideScope);
+    assert_eq!(outside.manifest_unit_id, None);
+
+    assert_eq!(evidence.counts.mapped_to_units, 3);
+    assert_eq!(evidence.counts.added_line, 1);
+    assert_eq!(evidence.counts.blocking_candidates, 1);
+    assert_eq!(evidence.counts.priority_candidates, 1);
+    assert_eq!(evidence.counts.notes, 1);
+    assert_eq!(evidence.counts.outside_scope, 1);
+}
+
+#[test]
+fn classification_failed_report_cannot_block() {
+    let (repo, fingerprint) = staged_repository();
+    let result = write_normalized_result(
+        repo.path(),
+        "failed.json",
+        &fingerprint,
+        "failed",
+        json!([{
+            "rule_id": "SEC-FAILED",
+            "message": "Untrusted execution.",
+            "path": "src/app.rs",
+            "start_line": 1,
+            "end_line": 1,
+            "severity": "critical",
+            "category": "security",
+            "confidence": "very-high",
+            "baseline_state": "new"
+        }]),
+    );
+
+    let evidence = collect_evidence(CollectRequest {
+        repository: repo.path().to_path_buf(),
+        source: Some(ReviewSource::Staged),
+        expected_scope: fingerprint,
+        result_paths: vec![result],
+        asserted_result_scope: None,
+        max_findings: 500,
+        trust: EvidenceTrust::ExplicitInput,
+        execution_id: None,
+    })
+    .unwrap();
+
+    assert_eq!(evidence.findings[0].line_scope, LineScope::Added);
+    assert_eq!(evidence.findings[0].disposition, FindingDisposition::Note);
+    assert!(!evidence.findings[0].blocking_candidate);
+    assert_eq!(evidence.counts.blocking_candidates, 0);
+    assert_eq!(evidence.counts.priority_candidates, 0);
+}
+
+#[test]
+fn classification_deduplicates_reports_and_truncates_findings() {
+    let (repo, fingerprint) = staged_repository();
+    let result = write_normalized_result(
+        repo.path(),
+        "truncate.json",
+        &fingerprint,
+        "completed",
+        json!([
+            {
+                "rule_id": "SEC-FIRST",
+                "message": "First finding.",
+                "path": "src/app.rs",
+                "start_line": 1,
+                "severity": "error",
+                "category": "security",
+                "confidence": "high"
+            },
+            {
+                "rule_id": "SEC-SECOND",
+                "message": "Second finding.",
+                "path": "src/app.rs",
+                "start_line": 1,
+                "severity": "error",
+                "category": "security",
+                "confidence": "high"
+            }
+        ]),
+    );
+
+    let evidence = collect_evidence(CollectRequest {
+        repository: repo.path().to_path_buf(),
+        source: Some(ReviewSource::Staged),
+        expected_scope: fingerprint,
+        result_paths: vec![result.clone(), result],
+        asserted_result_scope: None,
+        max_findings: 1,
+        trust: EvidenceTrust::ExplicitInput,
+        execution_id: None,
+    })
+    .unwrap();
+
+    assert_eq!(evidence.reports.len(), 1);
+    assert_eq!(evidence.counts.reports, 1);
+    assert_eq!(evidence.counts.input_findings, 2);
+    assert_eq!(evidence.counts.deduplicated_findings, 2);
+    assert_eq!(evidence.findings.len(), 1);
+    assert!(evidence.truncated);
+}
+
+#[test]
+fn classification_maps_git_quoted_utf8_paths() {
+    let repo = TempDir::new().unwrap();
+    git(repo.path(), &["init", "-q"]);
+    git(
+        repo.path(),
+        &["config", "user.email", "review@example.test"],
+    );
+    git(repo.path(), &["config", "user.name", "Review Test"]);
+    fs::create_dir_all(repo.path().join("src")).unwrap();
+    let relative_path = "src/\u{4e2d}.rs";
+    fs::write(
+        repo.path().join(relative_path),
+        "pub fn value() -> u8 { 1 }\n",
+    )
+    .unwrap();
+    git(repo.path(), &["add", relative_path]);
+    git(repo.path(), &["commit", "-qm", "base"]);
+    fs::write(
+        repo.path().join(relative_path),
+        "pub fn value() -> u8 { 2 }\n",
+    )
+    .unwrap();
+    git(repo.path(), &["add", relative_path]);
+    let scope = open_authoritative_scope(ScopeRequest {
+        repository: repo.path().to_path_buf(),
+        source: Some(ReviewSource::Staged),
+        expected_fingerprint: None,
+    })
+    .unwrap();
+    let result = write_normalized_result(
+        repo.path(),
+        "utf8-path.json",
+        &scope.fingerprint,
+        "completed",
+        json!([{
+            "rule_id": "SEC-UTF8",
+            "message": "Unsafe value.",
+            "path": relative_path,
+            "start_line": 1,
+            "severity": "error",
+            "category": "security",
+            "confidence": "high"
+        }]),
+    );
+
+    let evidence = collect_evidence(CollectRequest {
+        repository: repo.path().to_path_buf(),
+        source: Some(ReviewSource::Staged),
+        expected_scope: scope.fingerprint,
+        result_paths: vec![result],
+        asserted_result_scope: None,
+        max_findings: 500,
+        trust: EvidenceTrust::ExplicitInput,
+        execution_id: None,
+    })
+    .unwrap();
+
+    assert_eq!(evidence.findings[0].path, relative_path);
+    assert_eq!(evidence.findings[0].line_scope, LineScope::Added);
+    assert_eq!(
+        evidence.findings[0].disposition,
+        FindingDisposition::BlockingCandidate
+    );
 }

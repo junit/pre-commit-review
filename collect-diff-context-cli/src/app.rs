@@ -591,84 +591,80 @@ fn git_get_untracked_files(cwd: &str) -> String {
     out.unwrap_or_else(|_| "".to_string()).trim().to_string()
 }
 
-fn unquote_git_path(s: &str) -> String {
+pub(crate) fn unquote_git_path(s: &str) -> String {
     if s.len() >= 2 && s.starts_with('"') && s.ends_with('"') {
-        let mut unquoted = String::new();
-        let chars: Vec<char> = s[1..s.len() - 1].chars().collect();
+        let mut unquoted = Vec::new();
+        let bytes = &s.as_bytes()[1..s.len() - 1];
         let mut i = 0;
-        while i < chars.len() {
-            if chars[i] == '\\' && i + 1 < chars.len() {
-                match chars[i + 1] {
-                    'a' => {
-                        unquoted.push('\x07');
+        while i < bytes.len() {
+            if bytes[i] == b'\\' && i + 1 < bytes.len() {
+                match bytes[i + 1] {
+                    b'a' => {
+                        unquoted.push(7);
                         i += 2;
                     }
-                    'b' => {
-                        unquoted.push('\x08');
+                    b'b' => {
+                        unquoted.push(8);
                         i += 2;
                     }
-                    'f' => {
-                        unquoted.push('\x0c');
+                    b'f' => {
+                        unquoted.push(12);
                         i += 2;
                     }
-                    'n' => {
-                        unquoted.push('\n');
+                    b'n' => {
+                        unquoted.push(b'\n');
                         i += 2;
                     }
-                    'r' => {
-                        unquoted.push('\r');
+                    b'r' => {
+                        unquoted.push(b'\r');
                         i += 2;
                     }
-                    't' => {
-                        unquoted.push('\t');
+                    b't' => {
+                        unquoted.push(b'\t');
                         i += 2;
                     }
-                    'v' => {
-                        unquoted.push('\x0b');
+                    b'v' => {
+                        unquoted.push(11);
                         i += 2;
                     }
-                    '\\' => {
-                        unquoted.push('\\');
+                    b'\\' => {
+                        unquoted.push(b'\\');
                         i += 2;
                     }
-                    '"' => {
-                        unquoted.push('"');
+                    b'"' => {
+                        unquoted.push(b'"');
                         i += 2;
                     }
-                    '?' => {
-                        unquoted.push('?');
+                    b'?' => {
+                        unquoted.push(b'?');
                         i += 2;
                     }
-                    c if c.is_digit(8) => {
-                        let mut octal_val: u32 = 0;
+                    value if (b'0'..=b'7').contains(&value) => {
+                        let mut octal_value: u16 = 0;
                         let mut digits = 0;
-                        while i + 1 + digits < chars.len() && digits < 3 {
-                            let next_c = chars[i + 1 + digits];
-                            if next_c.is_digit(8) {
-                                octal_val = octal_val * 8 + next_c.to_digit(8).unwrap();
+                        while i + 1 + digits < bytes.len() && digits < 3 {
+                            let next = bytes[i + 1 + digits];
+                            if (b'0'..=b'7').contains(&next) {
+                                octal_value = octal_value * 8 + u16::from(next - b'0');
                                 digits += 1;
                             } else {
                                 break;
                             }
                         }
-                        if let Some(decoded_char) = std::char::from_u32(octal_val) {
-                            unquoted.push(decoded_char);
-                        } else {
-                            unquoted.push(octal_val as u8 as char);
-                        }
+                        unquoted.push(octal_value as u8);
                         i += 1 + digits;
                     }
                     _ => {
-                        unquoted.push(chars[i]);
+                        unquoted.push(bytes[i]);
                         i += 1;
                     }
                 }
             } else {
-                unquoted.push(chars[i]);
+                unquoted.push(bytes[i]);
                 i += 1;
             }
         }
-        unquoted
+        String::from_utf8_lossy(&unquoted).into_owned()
     } else {
         s.to_string()
     }

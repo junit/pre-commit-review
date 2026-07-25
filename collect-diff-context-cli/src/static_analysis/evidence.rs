@@ -5,16 +5,17 @@ use super::contracts::{
     ToolIdentity,
 };
 use crate::review_scope::{
-    open_authoritative_scope, revalidate_scope, AuthoritativeScope, ReviewSource, ScopeRequest,
+    added_lines, open_authoritative_scope, revalidate_scope, AuthoritativeScope, ReviewSource,
+    ScopeRequest,
 };
 use percent_encoding::percent_decode_str;
 use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
-use std::collections::HashMap;
+use std::collections::{BTreeSet, HashMap};
 use std::fs;
 use std::path::{Path, PathBuf};
 
-const MAX_INPUT_BYTES: u64 = 10_000_000;
+const DEFAULT_MAX_INPUT_BYTES: u64 = 10_000_000;
 const MAX_INPUT_FINDINGS: usize = 10_000;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -101,6 +102,13 @@ pub fn collect_evidence(request: CollectRequest) -> Result<StaticAnalysisEvidenc
     })
     .map_err(|error| EvidenceError::new(error.to_string()))?;
 
+    collect_evidence_against_scope(request, scope)
+}
+
+fn collect_evidence_against_scope(
+    request: CollectRequest,
+    scope: AuthoritativeScope,
+) -> Result<StaticAnalysisEvidence, EvidenceError> {
     let mut reports = Vec::new();
     for result_path in &request.result_paths {
         for report in parse_report_file(
@@ -134,7 +142,11 @@ pub fn collect_evidence(request: CollectRequest) -> Result<StaticAnalysisEvidenc
     let merged = merge_findings(&reports);
     let mut evidence =
         build_preliminary_evidence(&request, &scope, reports, merged, input_findings)?;
-    revalidate_scope(&scope).map_err(|error| EvidenceError::new(error.to_string()))?;
+    revalidate_scope(&scope).map_err(|error| {
+        EvidenceError::new(format!(
+            "review scope changed while collecting static evidence: {error}"
+        ))
+    })?;
     evidence.scope = evidence_scope(&scope);
     Ok(evidence)
 }
@@ -208,9 +220,10 @@ fn parse_report_file(
             display_name(path)
         )));
     }
-    if metadata.len() > MAX_INPUT_BYTES {
+    let max_input_bytes = max_input_bytes();
+    if metadata.len() > max_input_bytes {
         return Err(EvidenceError::new(format!(
-            "static result {} exceeds the {MAX_INPUT_BYTES}-byte input limit",
+            "static result {} exceeds the {max_input_bytes}-byte input limit",
             display_name(path)
         )));
     }
@@ -246,6 +259,13 @@ fn parse_report_file(
     } else {
         parse_normalized(&payload, &raw, path, expected_scope, repository)
     }
+}
+
+fn max_input_bytes() -> u64 {
+    std::env::var("PRE_COMMIT_REVIEW_STATIC_MAX_INPUT_BYTES")
+        .ok()
+        .and_then(|value| value.parse::<u64>().ok())
+        .unwrap_or(DEFAULT_MAX_INPUT_BYTES)
 }
 
 fn parse_normalized(
@@ -709,46 +729,127 @@ fn build_preliminary_evidence(
     merged: Vec<MergedFinding>,
     input_findings: usize,
 ) -> Result<StaticAnalysisEvidence, EvidenceError> {
-    let unit_ids = scope
+    let units = scope
         .units
         .iter()
         .map(|unit| {
+            let raw_path = crate::app::unquote_git_path(&unit.path);
             (
-                normalize_path(&unit.path, &scope.repository),
-                unit.unit_id.clone(),
+                normalize_path(&raw_path, &scope.repository),
+                (unit.unit_id.as_str(), unit.path.as_str()),
             )
         })
         .collect::<HashMap<_, _>>();
-    let mut findings = merged
-        .into_iter()
-        .map(|mut merged| {
-            merged.report_ids.sort();
-            let manifest_unit_id = unit_ids.get(&merged.finding.path).cloned();
-            let (line_scope, disposition) = if manifest_unit_id.is_some() {
-                (LineScope::Unknown, FindingDisposition::Note)
-            } else {
-                (LineScope::OutsideScope, FindingDisposition::OutsideScope)
-            };
-            EvidenceFinding {
-                finding_id: compact_finding_id(&merged.finding),
-                report_ids: merged.report_ids,
-                tool: merged.finding.tool,
-                rule_id: merged.finding.rule_id,
-                message: merged.finding.message,
-                path: merged.finding.path,
-                start_line: merged.finding.start_line,
-                end_line: merged.finding.end_line,
-                severity: merged.finding.severity,
-                category: merged.finding.category,
-                confidence: merged.finding.confidence,
-                baseline_state: merged.finding.baseline_state,
-                manifest_unit_id,
-                line_scope,
-                disposition,
-                blocking_candidate: false,
-            }
+    let needed_paths = merged
+        .iter()
+        .filter_map(|merged| {
+            units
+                .contains_key(&merged.finding.path)
+                .then_some(merged.finding.path.clone())
         })
-        .collect::<Vec<_>>();
+        .collect::<BTreeSet<_>>();
+    let mut added_by_path = HashMap::new();
+    for path in needed_paths {
+        let (_, scope_path) = units[&path];
+        let lines = added_lines(
+            &scope.repository,
+            scope.source,
+            &scope.selected_ref,
+            scope_path,
+        )
+        .map_err(|error| EvidenceError::new(error.to_string()))?;
+        added_by_path.insert(path, lines);
+    }
+
+    let mut findings = Vec::with_capacity(merged.len());
+    for mut merged in merged {
+        merged.report_ids.sort();
+        let unit = units.get(&merged.finding.path).copied();
+        let manifest_unit_id = unit.map(|(unit_id, _)| unit_id.to_string());
+        let line_scope = match (unit, merged.finding.start_line) {
+            (None, _) => LineScope::OutsideScope,
+            (Some(_), None) => LineScope::Unknown,
+            (Some(_), Some(start_line)) => {
+                let end_line = merged.finding.end_line.unwrap_or(start_line);
+                let touches_added = added_by_path[&merged.finding.path]
+                    .range(start_line..=end_line)
+                    .next()
+                    .is_some();
+                if touches_added {
+                    LineScope::Added
+                } else {
+                    LineScope::Unchanged
+                }
+            }
+        };
+        if line_scope == LineScope::Added {
+            merged.finding.baseline_state = BaselineState::New;
+        }
+        let blocking_candidate = merged.completed
+            && line_scope == LineScope::Added
+            && merged.finding.baseline_state == BaselineState::New
+            && is_material_category(merged.finding.category)
+            && matches!(
+                merged.finding.severity,
+                Severity::Critical | Severity::Error
+            )
+            && matches!(
+                merged.finding.confidence,
+                Confidence::VeryHigh | Confidence::High
+            );
+        let disposition = if line_scope == LineScope::OutsideScope {
+            FindingDisposition::OutsideScope
+        } else if blocking_candidate {
+            FindingDisposition::BlockingCandidate
+        } else if merged.completed
+            && is_material_category(merged.finding.category)
+            && matches!(
+                merged.finding.severity,
+                Severity::Critical | Severity::Error | Severity::Warning
+            )
+            && (line_scope == LineScope::Added
+                || merged.finding.baseline_state == BaselineState::New
+                || (line_scope == LineScope::Unknown && manifest_unit_id.is_some()))
+        {
+            FindingDisposition::PriorityCandidate
+        } else {
+            FindingDisposition::Note
+        };
+        findings.push(EvidenceFinding {
+            finding_id: compact_finding_id(&merged.finding),
+            report_ids: merged.report_ids,
+            tool: merged.finding.tool,
+            rule_id: merged.finding.rule_id,
+            message: merged.finding.message,
+            path: merged.finding.path,
+            start_line: merged.finding.start_line,
+            end_line: merged.finding.end_line,
+            severity: merged.finding.severity,
+            category: merged.finding.category,
+            confidence: merged.finding.confidence,
+            baseline_state: merged.finding.baseline_state,
+            manifest_unit_id,
+            line_scope,
+            disposition,
+            blocking_candidate,
+        });
+    }
+    findings.sort_by(|left, right| {
+        disposition_order(left.disposition)
+            .cmp(&disposition_order(right.disposition))
+            .then_with(|| severity_order(right.severity).cmp(&severity_order(left.severity)))
+            .then_with(|| {
+                confidence_order(right.confidence).cmp(&confidence_order(left.confidence))
+            })
+            .then_with(|| left.path.cmp(&right.path))
+            .then_with(|| {
+                left.start_line
+                    .unwrap_or(0)
+                    .cmp(&right.start_line.unwrap_or(0))
+            })
+            .then_with(|| left.tool.name.cmp(&right.tool.name))
+            .then_with(|| left.rule_id.cmp(&right.rule_id))
+    });
     let counts = evidence_counts(&reports, input_findings, &findings);
     let truncated = findings.len() > request.max_findings;
     findings.truncate(request.max_findings);
@@ -791,6 +892,28 @@ fn build_preliminary_evidence(
             finalization: "expand truncated evidence before claiming complete static review, disposition every material candidate, and require the final control-plane fingerprint to match this evidence scope".to_string(),
         },
     })
+}
+
+fn is_material_category(category: FindingCategory) -> bool {
+    matches!(
+        category,
+        FindingCategory::Security
+            | FindingCategory::Privacy
+            | FindingCategory::Build
+            | FindingCategory::Correctness
+            | FindingCategory::Data
+            | FindingCategory::Compatibility
+            | FindingCategory::Reliability
+    )
+}
+
+fn disposition_order(disposition: FindingDisposition) -> u8 {
+    match disposition {
+        FindingDisposition::BlockingCandidate => 0,
+        FindingDisposition::PriorityCandidate => 1,
+        FindingDisposition::Note => 2,
+        FindingDisposition::OutsideScope => 3,
+    }
 }
 
 fn evidence_counts(
@@ -1047,5 +1170,94 @@ fn confidence_order(value: Confidence) -> u8 {
         Confidence::Medium => 2,
         Confidence::High => 3,
         Confidence::VeryHigh => 4,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::process::Command;
+    use tempfile::TempDir;
+
+    fn git(repository: &Path, arguments: &[&str]) {
+        let output = Command::new("git")
+            .args(arguments)
+            .current_dir(repository)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "git {arguments:?} failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    #[test]
+    fn classification_rejects_final_scope_drift() {
+        let repository = TempDir::new().unwrap();
+        git(repository.path(), &["init", "-q"]);
+        git(
+            repository.path(),
+            &["config", "user.email", "review@example.test"],
+        );
+        git(repository.path(), &["config", "user.name", "Review Test"]);
+        fs::write(
+            repository.path().join("app.rs"),
+            "pub fn value() -> u8 { 1 }\n",
+        )
+        .unwrap();
+        git(repository.path(), &["add", "app.rs"]);
+        git(repository.path(), &["commit", "-qm", "base"]);
+        fs::write(
+            repository.path().join("app.rs"),
+            "pub fn value() -> u8 { 2 }\n",
+        )
+        .unwrap();
+        git(repository.path(), &["add", "app.rs"]);
+        let scope = open_authoritative_scope(ScopeRequest {
+            repository: repository.path().to_path_buf(),
+            source: Some(ReviewSource::Staged),
+            expected_fingerprint: None,
+        })
+        .unwrap();
+        let result_path = repository.path().join("result.json");
+        fs::write(
+            &result_path,
+            serde_json::to_vec(&serde_json::json!({
+                "schema_version": 1,
+                "kind": "static_analysis_input",
+                "scope_fingerprint": scope.fingerprint.clone(),
+                "tool": {"name": "fixture", "version": "1.0"},
+                "status": "completed",
+                "findings": []
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+        fs::write(
+            repository.path().join("app.rs"),
+            "pub fn value() -> u8 { 3 }\n",
+        )
+        .unwrap();
+        git(repository.path(), &["add", "app.rs"]);
+
+        let error = collect_evidence_against_scope(
+            CollectRequest {
+                repository: repository.path().to_path_buf(),
+                source: Some(ReviewSource::Staged),
+                expected_scope: scope.fingerprint.clone(),
+                result_paths: vec![result_path],
+                asserted_result_scope: None,
+                max_findings: 500,
+                trust: EvidenceTrust::ExplicitInput,
+                execution_id: None,
+            },
+            scope,
+        )
+        .unwrap_err();
+
+        assert!(error
+            .to_string()
+            .contains("review scope changed while collecting static evidence"));
     }
 }
