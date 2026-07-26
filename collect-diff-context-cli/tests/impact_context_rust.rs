@@ -1,11 +1,77 @@
-use collect_diff_context_cli::candidate::ChangedRange;
+use collect_diff_context_cli::candidate::{
+    CandidateBytes, CandidateContent, CandidateError, CandidateFile, CandidatePresence,
+    ChangedRange, RepoPath,
+};
+use collect_diff_context_cli::impact_context::adapters::text::{
+    TextAdapter, TextFactKind, TextProvenance,
+};
 use collect_diff_context_cli::impact_context::adapters::tree_sitter_rust::TreeSitterRustAdapter;
 use collect_diff_context_cli::impact_context::budget::{
     BudgetResource, BudgetTracker, ImpactBudget,
 };
 use collect_diff_context_cli::impact_context::contracts::{ParseQuality, Resolution};
+use collect_diff_context_cli::review_scope::ReviewSource;
 use serde_json::json;
+use sha2::{Digest, Sha256};
+use std::collections::BTreeMap;
 use std::time::Duration;
+
+struct MemoryCandidate {
+    files: Vec<CandidateFile>,
+    contents: BTreeMap<String, Vec<u8>>,
+}
+
+impl MemoryCandidate {
+    fn new(entries: &[(&str, &[u8], bool)]) -> Self {
+        let mut files = Vec::new();
+        let mut contents = BTreeMap::new();
+        for (path, bytes, changed) in entries {
+            contents.insert((*path).to_string(), bytes.to_vec());
+            files.push(CandidateFile {
+                path: RepoPath::new(*path).unwrap(),
+                mode: "100644".to_string(),
+                content_identity: Some(format!("sha256:{:x}", Sha256::digest(bytes))),
+                presence: CandidatePresence::Present,
+                manifest_unit_id: changed.then(|| format!("file:{path}")),
+                change_status: changed.then(|| "M".to_string()),
+                changed_ranges: Vec::new(),
+            });
+        }
+        files.sort_by(|left, right| left.path.cmp(&right.path));
+        Self { files, contents }
+    }
+}
+
+impl CandidateContent for MemoryCandidate {
+    fn scope_fingerprint(&self) -> &str {
+        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    }
+
+    fn candidate_digest(&self) -> &str {
+        "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    }
+
+    fn source(&self) -> ReviewSource {
+        ReviewSource::Staged
+    }
+
+    fn files(&self) -> &[CandidateFile] {
+        &self.files
+    }
+
+    fn read(&self, path: &RepoPath) -> Result<CandidateBytes, CandidateError> {
+        let bytes = self
+            .contents
+            .get(path.as_str())
+            .expect("memory candidate path must exist")
+            .clone();
+        Ok(CandidateBytes {
+            sha256: format!("{:x}", Sha256::digest(&bytes)),
+            binary: bytes.iter().take(8192).any(|byte| *byte == 0),
+            bytes,
+        })
+    }
+}
 
 #[test]
 fn budget_file_bytes_exhaust_independently() {
@@ -353,4 +419,191 @@ fn tree_sitter_extracts_declared_rust_structure_without_expansion() {
         .calls
         .iter()
         .all(|call| call.resolution == Resolution::Unresolved));
+}
+
+#[test]
+fn text_adapter_loads_candidate_configuration_and_emits_textual_facts() {
+    let config = include_bytes!("fixtures/impact_context/config.toml");
+    let candidate = MemoryCandidate::new(&[
+        ("config.toml", config, true),
+        (
+            ".pre-commit-review/context-queries",
+            b"postgres://[^\\s]+\n# ignored\n",
+            false,
+        ),
+        (
+            ".pre-commit-review/test-hints",
+            b"service-config\tconfig\\.toml$\t\tconfiguration\tpostgres\thigh\tReview service configuration\n",
+            false,
+        ),
+    ]);
+    let mut tracker = BudgetTracker::new(ImpactBudget::fast_defaults());
+    let configuration = TextAdapter::load_configuration(&candidate, &mut tracker).unwrap();
+
+    let output = TextAdapter::scan(
+        &RepoPath::new("config.toml").unwrap(),
+        config,
+        false,
+        &configuration,
+        &mut tracker,
+    );
+
+    assert!(configuration
+        .limitation_codes
+        .iter()
+        .any(|code| code == "text-query-scope-changed-files"));
+    assert!(output
+        .facts
+        .iter()
+        .any(|fact| fact.kind == TextFactKind::ConfiguredQuery));
+    assert!(output
+        .facts
+        .iter()
+        .any(|fact| fact.kind == TextFactKind::Configuration));
+    assert!(output
+        .facts
+        .iter()
+        .any(|fact| fact.kind == TextFactKind::Storage));
+    assert!(output
+        .facts
+        .iter()
+        .any(|fact| fact.kind == TextFactKind::Network));
+    assert!(output
+        .facts
+        .iter()
+        .any(|fact| fact.kind == TextFactKind::TestHint));
+    assert!(output.facts.iter().all(|fact| {
+        fact.provenance == TextProvenance::Textual && fact.resolved_target.is_none()
+    }));
+}
+
+#[test]
+fn text_adapter_covers_configuration_and_marker_file_types() {
+    let candidate = MemoryCandidate::new(&[]);
+    let mut tracker = BudgetTracker::new(ImpactBudget::fast_defaults());
+    let configuration = TextAdapter::load_configuration(&candidate, &mut tracker).unwrap();
+    let cases: &[(&str, &[u8], TextFactKind)] = &[
+        (
+            "service.yaml",
+            b"database: postgres\nauthorization: bearer\n",
+            TextFactKind::Configuration,
+        ),
+        (
+            "Dockerfile",
+            include_bytes!("fixtures/impact_context/Dockerfile"),
+            TextFactKind::Lifecycle,
+        ),
+        (
+            "schema.sql",
+            b"CREATE TABLE sessions (token TEXT);\n",
+            TextFactKind::Configuration,
+        ),
+        (
+            "notes.custom",
+            b"authorization token sent over grpc network\n",
+            TextFactKind::Authorization,
+        ),
+        (
+            "src/lib.rs",
+            b"#[test]\nfn api_test() { let endpoint = \"/api/login\"; let cache = \"redis\"; }\n",
+            TextFactKind::TestMarker,
+        ),
+    ];
+
+    for (path, source, expected_kind) in cases {
+        let output = TextAdapter::scan(
+            &RepoPath::new(*path).unwrap(),
+            source,
+            false,
+            &configuration,
+            &mut tracker,
+        );
+        assert!(
+            output.facts.iter().any(|fact| fact.kind == *expected_kind),
+            "missing {expected_kind:?} fact for {path}"
+        );
+        assert!(output.facts.iter().all(|fact| {
+            fact.provenance == TextProvenance::Textual && fact.resolved_target.is_none()
+        }));
+    }
+}
+
+#[test]
+fn text_adapter_bounds_invalid_queries_query_count_and_matches() {
+    let candidate = MemoryCandidate::new(&[(
+        ".pre-commit-review/context-queries",
+        b"[\nneedle\nthird\n",
+        false,
+    )]);
+    let mut budget = ImpactBudget::fast_defaults();
+    budget.max_query_patterns = 2;
+    budget.max_matches_per_pattern = 2;
+    let mut tracker = BudgetTracker::new(budget);
+
+    let configuration = TextAdapter::load_configuration(&candidate, &mut tracker).unwrap();
+    let output = TextAdapter::scan(
+        &RepoPath::new("notes.txt").unwrap(),
+        b"needle needle needle",
+        false,
+        &configuration,
+        &mut tracker,
+    );
+
+    assert!(configuration
+        .limitation_codes
+        .iter()
+        .any(|code| code == "invalid-text-query"));
+    assert!(configuration
+        .limitation_codes
+        .iter()
+        .any(|code| code == "query-pattern-budget-exhausted"));
+    assert!(output
+        .limitation_codes
+        .iter()
+        .any(|code| code == "query-match-budget-exhausted"));
+    assert_eq!(
+        output
+            .facts
+            .iter()
+            .filter(|fact| fact.kind == TextFactKind::ConfiguredQuery)
+            .count(),
+        2
+    );
+}
+
+#[test]
+fn text_adapter_binary_and_syntax_budget_states_remain_independent() {
+    let candidate = MemoryCandidate::new(&[]);
+    let mut budget = ImpactBudget::fast_defaults();
+    budget.max_nodes = 1;
+    let mut tracker = BudgetTracker::new(budget);
+    let configuration = TextAdapter::load_configuration(&candidate, &mut tracker).unwrap();
+
+    tracker.consume(BudgetResource::Nodes, 1).unwrap();
+    tracker.consume(BudgetResource::Nodes, 1).unwrap_err();
+    let text = TextAdapter::scan(
+        &RepoPath::new("src/lib.rs").unwrap(),
+        b"fn value() { let token = \"jwt\"; }",
+        false,
+        &configuration,
+        &mut tracker,
+    );
+    let binary = TextAdapter::scan(
+        &RepoPath::new("binary.bin").unwrap(),
+        b"binary\0payload",
+        true,
+        &configuration,
+        &mut tracker,
+    );
+
+    assert!(text
+        .facts
+        .iter()
+        .any(|fact| fact.kind == TextFactKind::Authorization));
+    assert_eq!(
+        binary.status,
+        collect_diff_context_cli::impact_context::contracts::UnitStatus::Unsupported
+    );
+    assert!(binary.facts.is_empty());
+    assert_eq!(binary.limitation_codes, vec!["binary-text-unavailable"]);
 }
