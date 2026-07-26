@@ -856,6 +856,29 @@ fn emit_control_plane(scope: &AuthoritativeScope, self_exe: &str) {
         .map(|entry| serde_json::json!([entry.priority, entry.group_id, entry.action]))
         .collect();
 
+    let mut command_templates = serde_json::json!({
+        "helper": self_exe,
+        "source_args": ["--source", scope.source.as_str()],
+        "refresh_args": ["--control-plane"],
+        "group_args": ["--group", "{group_id}", "--expect-scope", "{scope_fingerprint}"],
+        "path_args": ["--path", "{path}", "--expect-scope", "{scope_fingerprint}"]
+    });
+    if let Some(helper) = env::var_os("PRE_COMMIT_REVIEW_IMPACT_CONTEXT_HELPER_PATH") {
+        let helper = Path::new(&helper);
+        if helper.is_absolute() {
+            command_templates["impact_context"] = serde_json::json!({
+                "helper": helper.to_string_lossy(),
+                "args": [
+                    "--source", scope.source.as_str(),
+                    "--expect-scope", "{scope_fingerprint}",
+                    "--mode", "fast"
+                ],
+                "contract": "impact_context/v1",
+                "coverage_credit": "none"
+            });
+        }
+    }
+
     let payload = serde_json::json!({
         "schema_version": 1,
         "kind": "review_control_plane",
@@ -879,13 +902,7 @@ fn emit_control_plane(scope: &AuthoritativeScope, self_exe: &str) {
             "high_risk_units": high_risk_units,
             "split_required_groups": split_required_groups
         },
-        "command_templates": {
-            "helper": self_exe,
-            "source_args": ["--source", scope.source.as_str()],
-            "refresh_args": ["--control-plane"],
-            "group_args": ["--group", "{group_id}", "--expect-scope", "{scope_fingerprint}"],
-            "path_args": ["--path", "{path}", "--expect-scope", "{scope_fingerprint}"]
-        },
+        "command_templates": command_templates,
         "unit_tuple_fields": ["path", "status", "additions", "deletions", "diff_bytes", "risk_tags", "group_id", "content_fingerprint"],
         "units": units,
         "group_tuple_fields": ["group_id", "risk", "reason", "diff_bytes", "budget_status", "unit_indexes"],

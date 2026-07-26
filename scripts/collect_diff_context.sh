@@ -8,6 +8,8 @@ set -uo pipefail
 SCRIPT_DIR="$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd -P)"
 LEGACY_SCRIPT="${SCRIPT_DIR}/collect_diff_context.legacy.sh"
 WRAPPER_SCRIPT="${SCRIPT_DIR}/collect_diff_context.sh"
+IMPACT_CONTEXT_HELPER="${SCRIPT_DIR}/collect_impact_context.sh"
+export PRE_COMMIT_REVIEW_IMPACT_CONTEXT_HELPER_PATH="$IMPACT_CONTEXT_HELPER"
 
 OS="$(uname -s | tr '[:upper:]' '[:lower:]')"
 ARCH="$(uname -m)"
@@ -198,6 +200,9 @@ release_captured_output() {
   local stderr_file="$2"
   local command_exit="$3"
   sanitize_captured_pair "$stdout_file" "$stderr_file" 'yes'
+  if grep -Fq '## Review Control Plane JSON' "$stdout_file"; then
+    CONTROL_PLANE_REQUEST='yes'
+  fi
   cat "$stdout_file"
   emit_optional_scan_summary
   cat "$stderr_file" >&2
@@ -207,10 +212,10 @@ release_captured_output() {
 get_rust_binary() {
   if [ -n "${PRE_COMMIT_REVIEW_RUST_BIN:-}" ] && [ -x "$PRE_COMMIT_REVIEW_RUST_BIN" ]; then
     echo "$PRE_COMMIT_REVIEW_RUST_BIN"
-  elif [ -f "$BINARY_PATH" ]; then
-    echo "$BINARY_PATH"
   elif [ -f "$CARGO_RELEASE_BIN" ]; then
     echo "$CARGO_RELEASE_BIN"
+  elif [ -f "$BINARY_PATH" ]; then
+    echo "$BINARY_PATH"
   else
     # Build it
     if command -v cargo >/dev/null 2>&1; then
