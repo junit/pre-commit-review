@@ -66,6 +66,18 @@ def load_static_orchestration_output(path):
     return json.loads(payload_line)
 
 
+def load_impact_context_output(path):
+    lines = pathlib.Path(path).read_text(encoding='utf-8').splitlines()
+    try:
+        marker = lines.index('## Impact Context JSON')
+    except ValueError as exc:
+        raise ValueError('missing Impact Context JSON section') from exc
+    payload_lines = [line for line in lines[marker + 1:] if line.strip()]
+    if len(payload_lines) != 1:
+        raise ValueError('impact-context section must contain exactly one compact JSON value')
+    return json.loads(payload_lines[0])
+
+
 def load_schema_bundle(schema_dir):
     schemas = {}
     resources = []
@@ -246,6 +258,144 @@ def validate_static_execution_record(payload):
             size == limits['max_output_bytes'] + 1 for size in stream_sizes
         ):
             raise ValueError('output-limit execution must retain exactly one sentinel byte')
+
+
+def _require_sorted_unique(values, label):
+    if values != sorted(values) or len(values) != len(set(values)):
+        raise ValueError(f'{label} must be unique and sorted')
+
+
+def _reject_authority_fields(value):
+    banned = {'reviewed_units', 'verdict', 'blocking_candidate'}
+    if isinstance(value, dict):
+        overlap = banned.intersection(value)
+        if overlap:
+            raise ValueError(f'impact context contains forbidden authority field: {sorted(overlap)[0]}')
+        for child in value.values():
+            _reject_authority_fields(child)
+    elif isinstance(value, list):
+        for child in value:
+            _reject_authority_fields(child)
+
+
+def validate_impact_context_invariants(payload):
+    _reject_authority_fields(payload)
+    providers = payload['providers']
+    units = payload['units']
+    symbols = payload['changed_symbols']
+    edges = payload['impact_edges']
+    summaries = payload['domain_summaries']
+    limitations = payload['limitations']
+    coverage = payload['coverage']
+    metrics = payload['metrics']
+
+    provider_ids = [item['provider_id'] for item in providers]
+    symbol_ids = [item['symbol_id'] for item in symbols]
+    edge_ids = [item['edge_id'] for item in edges]
+    summary_ids = [item['summary_id'] for item in summaries]
+    limitation_ids = [item['limitation_id'] for item in limitations]
+    for values, label in (
+        (provider_ids, 'provider ids'),
+        (symbol_ids, 'symbol ids'),
+        (edge_ids, 'edge ids'),
+        (summary_ids, 'summary ids'),
+        (limitation_ids, 'limitation ids'),
+    ):
+        _require_sorted_unique(values, label)
+
+    provider_by_id = {item['provider_id']: item for item in providers}
+    symbol_by_id = {item['symbol_id']: item for item in symbols}
+    limitation_id_set = set(limitation_ids)
+    unit_by_path = {item['path']: item for item in units}
+    if len(unit_by_path) != len(units):
+        raise ValueError('impact unit paths must be unique')
+    manifest_ids = [item['manifest_unit_id'] for item in units]
+    if len(manifest_ids) != len(set(manifest_ids)):
+        raise ValueError('manifest unit identifiers must be unique')
+    if any(not item.startswith('file:') for item in manifest_ids):
+        raise ValueError('every impact unit must map to a changed file manifest unit')
+
+    changed = coverage['changed_candidate_files']
+    total = coverage['total_candidate_files']
+    eligible = coverage['syntax_eligible_files']
+    parsed = coverage['parsed_files']
+    if not (len(units) == changed <= total):
+        raise ValueError('candidate file coverage is not monotonic')
+    if not (parsed <= eligible <= changed):
+        raise ValueError('syntax coverage is not monotonic')
+    if (
+        coverage['clean_parse_files']
+        + coverage['recovered_parse_files']
+        + coverage['degraded_parse_files']
+        != parsed
+    ):
+        raise ValueError('parse quality counts must partition parsed files')
+    if (
+        parsed
+        + coverage['unsupported_files']
+        + coverage['resource_limited_files']
+        + coverage['unavailable_files']
+        != changed
+    ):
+        raise ValueError('syntax terminal counts must partition changed files')
+    if coverage['reached_graph_depth'] > coverage['requested_graph_depth']:
+        raise ValueError('reached graph depth exceeds requested depth')
+
+    for provider in providers:
+        _require_sorted_unique(provider['limitation_ids'], 'provider limitation ids')
+        if not set(provider['limitation_ids']).issubset(limitation_id_set):
+            raise ValueError('provider references an unknown limitation')
+    for unit in units:
+        _require_sorted_unique(unit['provider_ids'], 'unit provider ids')
+        _require_sorted_unique(unit['changed_symbol_ids'], 'unit changed symbol ids')
+        _require_sorted_unique(unit['parse_affected_symbol_ids'], 'unit parse affected symbol ids')
+        _require_sorted_unique(unit['limitation_ids'], 'unit limitation ids')
+        if not set(unit['provider_ids']).issubset(provider_by_id):
+            raise ValueError('unit references an unknown provider')
+        if not set(unit['changed_symbol_ids']).issubset(symbol_by_id):
+            raise ValueError('unit references an unknown changed symbol')
+        if not set(unit['parse_affected_symbol_ids']).issubset(symbol_by_id):
+            raise ValueError('unit references an unknown parse-affected symbol')
+        if not set(unit['limitation_ids']).issubset(limitation_id_set):
+            raise ValueError('unit references an unknown limitation')
+        if any(symbol_by_id[symbol_id]['path'] != unit['path'] for symbol_id in unit['changed_symbol_ids']):
+            raise ValueError('unit references a changed symbol from another path')
+
+    for symbol in symbols:
+        if symbol['path'] not in unit_by_path:
+            raise ValueError('changed symbol path has no impact unit')
+        if symbol['provider_id'] not in provider_by_id:
+            raise ValueError('changed symbol references an unknown provider')
+    forbidden_resolution = {'resolved-reference', 'semantic', 'polymorphic-candidate'}
+    for edge in edges:
+        if edge['path'] not in unit_by_path:
+            raise ValueError('impact edge path has no impact unit')
+        provider = provider_by_id.get(edge['provider_id'])
+        if provider is None:
+            raise ValueError('impact edge references an unknown provider')
+        if edge['to_symbol'] is None and edge['unresolved_target'] is None:
+            raise ValueError('impact edge has no target')
+        if edge['to_symbol'] is not None and edge['to_symbol'] not in symbol_by_id:
+            raise ValueError('impact edge references an unknown target symbol')
+        if provider['provider_kind'] == 'text-adapter':
+            raise ValueError('text-adapter cannot emit symbol edges')
+        if provider['provider_kind'] == 'tree-sitter-rust' and edge['resolution'] in forbidden_resolution:
+            raise ValueError('tree-sitter-rust cannot claim resolved semantics')
+    for summary in summaries:
+        if summary['path'] not in unit_by_path:
+            raise ValueError('domain summary path has no impact unit')
+        if summary['symbol_id'] is not None and summary['symbol_id'] not in symbol_by_id:
+            raise ValueError('domain summary references an unknown symbol')
+        _require_sorted_unique(summary['evidence_fact_ids'], 'summary evidence fact ids')
+
+    output_limitations = [item for item in limitations if item['code'] == 'output-truncated']
+    if coverage['output_truncated'] != bool(output_limitations):
+        raise ValueError('output truncation coverage and limitation disagree')
+    if not coverage['output_truncated']:
+        if metrics['edges_emitted'] != len(edges):
+            raise ValueError('metrics.edges_emitted does not match impact edges')
+        if metrics['summaries_emitted'] != len(summaries):
+            raise ValueError('metrics.summaries_emitted does not match domain summaries')
 
 
 def validate_static_execution_invariants(payload, evidence):
@@ -458,6 +608,12 @@ def main():
         default=[],
         help='validate one orchestration output and its combined static evidence',
     )
+    parser.add_argument(
+        '--impact-context-output',
+        action='append',
+        default=[],
+        help='validate one impact_context/v1 output and semantic invariants',
+    )
     args = parser.parse_args()
     skill_root = pathlib.Path(__file__).resolve().parent.parent
     schema_dir = skill_root / 'collect-diff-context-cli/schemas'
@@ -566,6 +722,20 @@ def main():
                 validate_static_evidence_invariants(evidence)
                 validate_static_orchestration_invariants(payload, evidence)
                 print(f'  ✅ {output_path}: valid static-analysis orchestration output')
+            except Exception as exc:
+                print(f'  ❌ {output_path}: {exc}', file=sys.stderr)
+                errors += 1
+        if errors:
+            sys.exit(1)
+    if args.impact_context_output:
+        impact_schema = schemas['impact-context.schema.json']
+        impact_validator = jsonschema.Draft202012Validator(impact_schema)
+        for output_path in args.impact_context_output:
+            try:
+                payload = load_impact_context_output(output_path)
+                impact_validator.validate(payload)
+                validate_impact_context_invariants(payload)
+                print(f'  ✅ {output_path}: valid impact-context instance')
             except Exception as exc:
                 print(f'  ❌ {output_path}: {exc}', file=sys.stderr)
                 errors += 1
