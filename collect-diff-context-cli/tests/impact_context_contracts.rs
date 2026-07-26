@@ -146,9 +146,8 @@ fn valid_impact_context_deserializes_and_validates() {
 }
 
 fn assert_rejected(value: Value) {
-    match serde_json::from_value::<ImpactContext>(value) {
-        Ok(context) => assert!(context.validate().is_err(), "invalid context was accepted"),
-        Err(_) => {}
+    if let Ok(context) = serde_json::from_value::<ImpactContext>(value) {
+        assert!(context.validate().is_err(), "invalid context was accepted");
     }
 }
 

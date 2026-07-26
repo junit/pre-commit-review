@@ -417,15 +417,34 @@ impl ImpactContext {
             validate_path(&unit.path)?;
             validate_bounded_text(&unit.language, 100, "unit language")?;
             match unit.presence {
-                ImpactPresence::Present => {
-                    let sha256 = unit.content_sha256.as_deref().ok_or_else(|| {
-                        ImpactContractError::new("present unit is missing content_sha256")
-                    })?;
-                    validate_hex(sha256, &[64], "unit content SHA256")?;
-                    if unit.content_bytes.is_none() {
-                        return invalid("present unit is missing content_bytes");
+                ImpactPresence::Present => match (
+                    unit.content_sha256.as_deref(),
+                    unit.content_bytes,
+                ) {
+                    (Some(sha256), Some(_)) => {
+                        validate_hex(sha256, &[64], "unit content SHA256")?;
                     }
-                }
+                    (None, None)
+                        if unit.syntax_status == UnitStatus::Unavailable
+                            && unit.text_status == UnitStatus::Unavailable
+                            && unit.limitation_ids.iter().any(|limitation_id| {
+                                limitations
+                                    .get(limitation_id.as_str())
+                                    .is_some_and(|limitation| {
+                                        limitation.code == "candidate-read-unavailable"
+                                    })
+                            }) => {}
+                    (None, None) => {
+                        return invalid(
+                            "present unit without content metadata must report candidate-read-unavailable",
+                        )
+                    }
+                    _ => {
+                        return invalid(
+                            "present unit content_sha256 and content_bytes must appear together",
+                        )
+                    }
+                },
                 ImpactPresence::Deleted | ImpactPresence::Gitlink => {
                     if unit.content_sha256.is_some() || unit.content_bytes.is_some() {
                         return invalid("deleted and gitlink units cannot carry content bytes");

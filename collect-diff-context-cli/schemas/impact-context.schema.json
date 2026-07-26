@@ -237,10 +237,20 @@
         {
           "if": { "properties": { "presence": { "const": "present" } }, "required": ["presence"] },
           "then": {
-            "properties": {
-              "content_sha256": { "$ref": "#/$defs/sha256" },
-              "content_bytes": { "type": "integer", "minimum": 0 }
-            }
+            "oneOf": [
+              {
+                "properties": {
+                  "content_sha256": { "$ref": "#/$defs/sha256" },
+                  "content_bytes": { "type": "integer", "minimum": 0 }
+                }
+              },
+              {
+                "properties": {
+                  "content_sha256": { "type": "null" },
+                  "content_bytes": { "type": "null" }
+                }
+              }
+            ]
           },
           "else": {
             "properties": {

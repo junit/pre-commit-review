@@ -9,7 +9,10 @@ use collect_diff_context_cli::impact_context::adapters::tree_sitter_rust::TreeSi
 use collect_diff_context_cli::impact_context::budget::{
     BudgetResource, BudgetTracker, ImpactBudget,
 };
-use collect_diff_context_cli::impact_context::contracts::{ParseQuality, Resolution};
+use collect_diff_context_cli::impact_context::contracts::{
+    ImpactMode, ImpactPresence, ImpactStatus, ParseQuality, Resolution, UnitStatus,
+};
+use collect_diff_context_cli::impact_context::engine::{build_impact_context, ImpactRequest};
 use collect_diff_context_cli::impact_context::normalizer::{
     merge_normalized_units, normalize_unit,
 };
@@ -17,6 +20,7 @@ use collect_diff_context_cli::impact_context::summarizer::summarize_unit;
 use collect_diff_context_cli::review_scope::ReviewSource;
 use serde_json::json;
 use sha2::{Digest, Sha256};
+use std::cell::RefCell;
 use std::collections::BTreeMap;
 use std::time::Duration;
 
@@ -74,6 +78,69 @@ impl CandidateContent for MemoryCandidate {
             binary: bytes.iter().take(8192).any(|byte| *byte == 0),
             bytes,
         })
+    }
+}
+
+struct TrackingCandidate {
+    inner: MemoryCandidate,
+    reads: RefCell<Vec<String>>,
+}
+
+struct UnreadableCandidate {
+    files: Vec<CandidateFile>,
+}
+
+impl CandidateContent for UnreadableCandidate {
+    fn scope_fingerprint(&self) -> &str {
+        "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+    }
+
+    fn candidate_digest(&self) -> &str {
+        "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb"
+    }
+
+    fn source(&self) -> ReviewSource {
+        ReviewSource::Staged
+    }
+
+    fn files(&self) -> &[CandidateFile] {
+        &self.files
+    }
+
+    fn read(&self, _path: &RepoPath) -> Result<CandidateBytes, CandidateError> {
+        Err(RepoPath::new("").unwrap_err())
+    }
+}
+
+impl TrackingCandidate {
+    fn new(inner: MemoryCandidate) -> Self {
+        Self {
+            inner,
+            reads: RefCell::new(Vec::new()),
+        }
+    }
+}
+
+impl CandidateContent for TrackingCandidate {
+    fn scope_fingerprint(&self) -> &str {
+        self.inner.scope_fingerprint()
+    }
+
+    fn candidate_digest(&self) -> &str {
+        self.inner.candidate_digest()
+    }
+
+    fn source(&self) -> ReviewSource {
+        self.inner.source()
+    }
+
+    fn files(&self) -> &[CandidateFile] {
+        self.inner.files()
+    }
+
+    fn read(&self, path: &RepoPath) -> Result<CandidateBytes, CandidateError> {
+        self.reads.borrow_mut().push(path.as_str().to_string());
+        self.inner.read(path)
     }
 }
 
@@ -831,4 +898,458 @@ fn summarizer_emits_bounded_deterministic_domain_summaries() {
             && !summary.message.to_ascii_lowercase().contains("reviewed")
             && !summary.message.contains("cargo test")
     }));
+}
+
+#[test]
+fn engine_clean_rust_candidate_produces_completed_valid_context() {
+    let source = include_bytes!("fixtures/impact_context/rust-clean.rs");
+    let mut candidate = MemoryCandidate::new(&[("src/lib.rs", source, true)]);
+    candidate.files[0].changed_ranges = vec![ChangedRange {
+        start_line: 1,
+        end_line: std::str::from_utf8(source).unwrap().lines().count() as u32,
+        deletion_anchor: false,
+    }];
+
+    let context = build_impact_context(&candidate, ImpactRequest::fast_defaults()).unwrap();
+
+    context.validate().unwrap();
+    assert_eq!(
+        context.status,
+        collect_diff_context_cli::impact_context::contracts::ImpactStatus::Completed
+    );
+    assert_eq!(context.units.len(), 1);
+    assert_eq!(context.units[0].manifest_unit_id, "file:src/lib.rs");
+    assert_eq!(context.coverage.changed_candidate_files, 1);
+    assert_eq!(context.coverage.parsed_files, 1);
+    assert!(!context.changed_symbols.is_empty());
+    assert!(!context.impact_edges.is_empty());
+}
+
+#[test]
+fn engine_reports_file_byte_budget_exhaustion_independently() {
+    let source = b"pub fn changed() { println!(\"changed\"); }\n";
+    let mut candidate = MemoryCandidate::new(&[("src/lib.rs", source, true)]);
+    candidate.files[0].changed_ranges = vec![ChangedRange {
+        start_line: 1,
+        end_line: 1,
+        deletion_anchor: false,
+    }];
+    let mut request = ImpactRequest::fast_defaults();
+    request.budget.max_file_bytes = source.len() - 1;
+    request.budget.max_total_bytes = source.len() * 2;
+
+    let context = build_impact_context(&candidate, request).unwrap();
+
+    context.validate().unwrap();
+    assert_eq!(context.status, ImpactStatus::Unavailable);
+    assert_eq!(context.units[0].syntax_status, UnitStatus::BudgetExhausted);
+    assert!(context
+        .limitations
+        .iter()
+        .any(|limitation| limitation.code == "file-byte-budget-exhausted"));
+    assert!(!context
+        .limitations
+        .iter()
+        .any(|limitation| limitation.code == "total-byte-budget-exhausted"));
+}
+
+#[test]
+fn engine_mixed_rust_and_configuration_context_is_partial() {
+    let rust = b"pub fn changed() { println!(\"changed\"); }\n";
+    let config = b"database: postgres\nauthorization: bearer\n";
+    let mut candidate = MemoryCandidate::new(&[
+        ("src/lib.rs", rust, true),
+        ("config/service.yaml", config, true),
+    ]);
+    for file in &mut candidate.files {
+        file.changed_ranges = vec![ChangedRange {
+            start_line: 1,
+            end_line: 2,
+            deletion_anchor: false,
+        }];
+    }
+
+    let context = build_impact_context(&candidate, ImpactRequest::fast_defaults()).unwrap();
+
+    context.validate().unwrap();
+    assert_eq!(context.status, ImpactStatus::Partial);
+    assert_eq!(context.coverage.changed_candidate_files, 2);
+    assert_eq!(context.coverage.syntax_eligible_files, 1);
+    assert_eq!(context.coverage.parsed_files, 1);
+    assert_eq!(context.coverage.unsupported_files, 1);
+    assert!(context
+        .domain_summaries
+        .iter()
+        .any(|summary| summary.path == "config/service.yaml"));
+}
+
+#[test]
+fn engine_unsupported_only_context_is_unavailable() {
+    let mut candidate = MemoryCandidate::new(&[("notes.custom", b"plain prose\n", true)]);
+    candidate.files[0].changed_ranges = vec![ChangedRange {
+        start_line: 1,
+        end_line: 1,
+        deletion_anchor: false,
+    }];
+
+    let context = build_impact_context(&candidate, ImpactRequest::fast_defaults()).unwrap();
+
+    context.validate().unwrap();
+    assert_eq!(context.status, ImpactStatus::Unavailable);
+    assert_eq!(context.coverage.unsupported_files, 1);
+    assert!(context.changed_symbols.is_empty());
+    assert!(context.impact_edges.is_empty());
+    assert!(context.domain_summaries.is_empty());
+}
+
+#[test]
+fn engine_deleted_rust_unit_retains_removal_limitation() {
+    let mut candidate = MemoryCandidate::new(&[]);
+    candidate.files.push(CandidateFile {
+        path: RepoPath::new("src/removed.rs").unwrap(),
+        mode: "000000".to_string(),
+        content_identity: None,
+        presence: CandidatePresence::Deleted,
+        manifest_unit_id: Some("file:src/removed.rs".to_string()),
+        change_status: Some("D".to_string()),
+        changed_ranges: vec![ChangedRange {
+            start_line: 8,
+            end_line: 8,
+            deletion_anchor: true,
+        }],
+    });
+
+    let context = build_impact_context(&candidate, ImpactRequest::fast_defaults()).unwrap();
+
+    context.validate().unwrap();
+    assert_eq!(context.status, ImpactStatus::Unavailable);
+    assert_eq!(context.units[0].presence, ImpactPresence::Deleted);
+    assert_eq!(context.units[0].changed_ranges[0].start_line, 8);
+    assert!(context
+        .limitations
+        .iter()
+        .any(|limitation| limitation.code == "removed-structure-unavailable-in-fast-mvp"));
+}
+
+#[test]
+fn engine_retains_special_units_without_structural_coverage_credit() {
+    let source = b"pub fn generated() {}\n";
+    let mut candidate = MemoryCandidate::new(&[
+        ("generated/api.rs", source, true),
+        ("vendor/dependency.rs", source, true),
+        ("dist/app.min.js", b"function bundled(){}\n", true),
+        ("assets/data.bin", b"binary\0payload", true),
+        ("src/mode_only.rs", source, true),
+    ]);
+    for file in &mut candidate.files {
+        if file.path.as_str() != "src/mode_only.rs" {
+            file.changed_ranges = vec![ChangedRange {
+                start_line: 1,
+                end_line: 1,
+                deletion_anchor: false,
+            }];
+        }
+    }
+    candidate.files.push(CandidateFile {
+        path: RepoPath::new("src/deleted.rs").unwrap(),
+        mode: "000000".to_string(),
+        content_identity: None,
+        presence: CandidatePresence::Deleted,
+        manifest_unit_id: Some("file:src/deleted.rs".to_string()),
+        change_status: Some("D".to_string()),
+        changed_ranges: vec![ChangedRange {
+            start_line: 1,
+            end_line: 1,
+            deletion_anchor: true,
+        }],
+    });
+    candidate.files.push(CandidateFile {
+        path: RepoPath::new("third_party/module").unwrap(),
+        mode: "160000".to_string(),
+        content_identity: Some("0123456789012345678901234567890123456789".to_string()),
+        presence: CandidatePresence::Gitlink,
+        manifest_unit_id: Some("file:third_party/module".to_string()),
+        change_status: Some("M".to_string()),
+        changed_ranges: Vec::new(),
+    });
+    candidate
+        .files
+        .sort_by(|left, right| left.path.cmp(&right.path));
+
+    let context = build_impact_context(&candidate, ImpactRequest::fast_defaults()).unwrap();
+
+    context.validate().unwrap();
+    assert_eq!(context.units.len(), 7);
+    assert_eq!(context.coverage.syntax_eligible_files, 0);
+    assert_eq!(context.coverage.parsed_files, 0);
+    let codes = context
+        .limitations
+        .iter()
+        .map(|limitation| limitation.code.as_str())
+        .collect::<std::collections::BTreeSet<_>>();
+    for code in [
+        "generated-like-structure-skipped",
+        "vendored-structure-skipped",
+        "minified-structure-skipped",
+        "binary-structure-unavailable",
+        "mode-only-no-structural-range",
+        "removed-structure-unavailable-in-fast-mvp",
+        "gitlink-structure-unavailable",
+    ] {
+        assert!(codes.contains(code), "missing limitation {code}");
+    }
+}
+
+#[test]
+fn engine_changed_file_budget_retains_later_units_as_limited() {
+    let source = b"pub fn changed() {}\n";
+    let mut candidate =
+        MemoryCandidate::new(&[("src/a.rs", source, true), ("src/b.rs", source, true)]);
+    for file in &mut candidate.files {
+        file.changed_ranges = vec![ChangedRange {
+            start_line: 1,
+            end_line: 1,
+            deletion_anchor: false,
+        }];
+    }
+    let mut request = ImpactRequest::fast_defaults();
+    request.budget.max_changed_files = 1;
+
+    let context = build_impact_context(&candidate, request).unwrap();
+
+    context.validate().unwrap();
+    assert_eq!(context.units.len(), 2);
+    assert_eq!(context.units[0].syntax_status, UnitStatus::Completed);
+    assert_eq!(context.units[1].syntax_status, UnitStatus::BudgetExhausted);
+    assert_eq!(context.coverage.resource_limited_files, 1);
+}
+
+#[test]
+fn engine_node_and_deadline_budgets_are_visible() {
+    let source = include_bytes!("fixtures/impact_context/rust-clean.rs");
+    let make_candidate = || {
+        let mut candidate = MemoryCandidate::new(&[("src/lib.rs", source, true)]);
+        candidate.files[0].changed_ranges = vec![ChangedRange {
+            start_line: 1,
+            end_line: 20,
+            deletion_anchor: false,
+        }];
+        candidate
+    };
+
+    let mut node_request = ImpactRequest::fast_defaults();
+    node_request.budget.max_nodes = 1;
+    let node_context = build_impact_context(&make_candidate(), node_request).unwrap();
+    node_context.validate().unwrap();
+    assert!(node_context
+        .limitations
+        .iter()
+        .any(|limitation| limitation.code == "node-budget-exhausted"));
+
+    let mut deadline_request = ImpactRequest::fast_defaults();
+    deadline_request.budget.deadline = Duration::ZERO;
+    let deadline_context = build_impact_context(&make_candidate(), deadline_request).unwrap();
+    deadline_context.validate().unwrap();
+    assert_eq!(deadline_context.units.len(), 1);
+    assert_eq!(
+        deadline_context.units[0].syntax_status,
+        UnitStatus::BudgetExhausted
+    );
+    assert!(deadline_context
+        .limitations
+        .iter()
+        .any(|limitation| limitation.code == "deadline-exhausted"));
+}
+
+#[test]
+fn engine_output_truncation_is_bounded_and_deterministic() {
+    let source = include_bytes!("fixtures/impact_context/rust-clean.rs");
+    let mut candidate = MemoryCandidate::new(&[("src/lib.rs", source, true)]);
+    candidate.files[0].changed_ranges = vec![ChangedRange {
+        start_line: 1,
+        end_line: std::str::from_utf8(source).unwrap().lines().count() as u32,
+        deletion_anchor: false,
+    }];
+    let mut request = ImpactRequest::fast_defaults();
+    request.budget.max_output_bytes = 5_000;
+
+    let mut first = build_impact_context(&candidate, request.clone()).unwrap();
+    let mut second = build_impact_context(&candidate, request).unwrap();
+
+    first.validate().unwrap();
+    second.validate().unwrap();
+    assert!(first.coverage.output_truncated);
+    assert!(first.metrics.output_bytes <= 5_000);
+    assert_eq!(first.units.len(), 1);
+    first.metrics.elapsed_ms = 0;
+    second.metrics.elapsed_ms = 0;
+    for provider in &mut first.providers {
+        provider.elapsed_ms = 0;
+    }
+    for provider in &mut second.providers {
+        provider.elapsed_ms = 0;
+    }
+    assert_eq!(first, second);
+}
+
+#[test]
+fn engine_reads_only_changed_units_and_candidate_configuration() {
+    let source = b"pub fn changed() {}\n";
+    let mut inner = MemoryCandidate::new(&[
+        ("src/changed.rs", source, true),
+        ("src/unchanged.rs", source, false),
+    ]);
+    inner.files[0].changed_ranges = vec![ChangedRange {
+        start_line: 1,
+        end_line: 1,
+        deletion_anchor: false,
+    }];
+    let candidate = TrackingCandidate::new(inner);
+
+    build_impact_context(&candidate, ImpactRequest::fast_defaults()).unwrap();
+
+    assert_eq!(candidate.reads.borrow().as_slice(), ["src/changed.rs"]);
+}
+
+#[test]
+fn engine_rejects_phase_a_forbidden_requests() {
+    let candidate = MemoryCandidate::new(&[]);
+
+    let mut deep = ImpactRequest::fast_defaults();
+    deep.mode = ImpactMode::Deep;
+    assert_eq!(
+        build_impact_context(&candidate, deep).unwrap_err().code(),
+        "deep-mode-unavailable"
+    );
+
+    let mut cache_write = ImpactRequest::fast_defaults();
+    cache_write.cache_write = true;
+    assert_eq!(
+        build_impact_context(&candidate, cache_write)
+            .unwrap_err()
+            .code(),
+        "cache-write-forbidden"
+    );
+
+    let mut semantic = ImpactRequest::fast_defaults();
+    semantic
+        .semantic_providers
+        .push("rust-analyzer".to_string());
+    assert_eq!(
+        build_impact_context(&candidate, semantic)
+            .unwrap_err()
+            .code(),
+        "semantic-provider-unavailable"
+    );
+}
+
+#[test]
+fn engine_applies_requested_snippet_bound_before_summarization() {
+    let source = b"token=ABCDEFGHIJKLMNOPQRSTUVWXYZ\n";
+    let mut candidate = MemoryCandidate::new(&[
+        ("config/service.custom", source, true),
+        (
+            ".pre-commit-review/context-queries",
+            b"token=[A-Z]+\n",
+            false,
+        ),
+    ]);
+    let changed = candidate
+        .files
+        .iter_mut()
+        .find(|file| file.path.as_str() == "config/service.custom")
+        .unwrap();
+    changed.changed_ranges = vec![ChangedRange {
+        start_line: 1,
+        end_line: 1,
+        deletion_anchor: false,
+    }];
+    let mut request = ImpactRequest::fast_defaults();
+    request.max_snippet_chars = 8;
+
+    let context = build_impact_context(&candidate, request).unwrap();
+
+    context.validate().unwrap();
+    let messages = context
+        .domain_summaries
+        .iter()
+        .map(|summary| summary.message.as_str())
+        .collect::<Vec<_>>();
+    assert!(messages.iter().any(|message| message.contains("token=AB")));
+    assert!(messages
+        .iter()
+        .all(|message| !message.contains("token=ABCDEFGHIJKLMNOPQRSTUVWXYZ")));
+}
+
+#[test]
+fn engine_provider_budget_exhaustion_prevents_completed_status() {
+    let source = b"pub fn changed() {}\n";
+    let mut candidate = MemoryCandidate::new(&[
+        ("src/lib.rs", source, true),
+        (
+            ".pre-commit-review/context-queries",
+            b"changed\nanother\n",
+            false,
+        ),
+    ]);
+    let changed = candidate
+        .files
+        .iter_mut()
+        .find(|file| file.path.as_str() == "src/lib.rs")
+        .unwrap();
+    changed.changed_ranges = vec![ChangedRange {
+        start_line: 1,
+        end_line: 1,
+        deletion_anchor: false,
+    }];
+    let mut request = ImpactRequest::fast_defaults();
+    request.budget.max_query_patterns = 0;
+
+    let context = build_impact_context(&candidate, request).unwrap();
+
+    context.validate().unwrap();
+    assert_eq!(context.status, ImpactStatus::Partial);
+    assert!(context
+        .limitations
+        .iter()
+        .any(|limitation| limitation.code == "query-pattern-budget-exhausted"));
+    assert!(context.providers.iter().any(|provider| {
+        provider.provider_kind == "text-adapter"
+            && provider.status
+                == collect_diff_context_cli::impact_context::contracts::ProviderStatus::BudgetExhausted
+    }));
+}
+
+#[test]
+fn engine_retains_unreadable_present_unit_with_structured_limitation() {
+    let candidate = UnreadableCandidate {
+        files: vec![CandidateFile {
+            path: RepoPath::new("src/unreadable.rs").unwrap(),
+            mode: "100644".to_string(),
+            content_identity: Some("0123456789012345678901234567890123456789".to_string()),
+            presence: CandidatePresence::Present,
+            manifest_unit_id: Some("file:src/unreadable.rs".to_string()),
+            change_status: Some("M".to_string()),
+            changed_ranges: vec![ChangedRange {
+                start_line: 1,
+                end_line: 1,
+                deletion_anchor: false,
+            }],
+        }],
+    };
+
+    let context = build_impact_context(&candidate, ImpactRequest::fast_defaults()).unwrap();
+
+    context.validate().unwrap();
+    assert_eq!(context.status, ImpactStatus::Unavailable);
+    assert_eq!(context.units.len(), 1);
+    assert_eq!(context.units[0].presence, ImpactPresence::Present);
+    assert_eq!(context.units[0].content_sha256, None);
+    assert_eq!(context.units[0].content_bytes, None);
+    assert_eq!(context.units[0].syntax_status, UnitStatus::Unavailable);
+    assert_eq!(context.units[0].text_status, UnitStatus::Unavailable);
+    assert!(context
+        .limitations
+        .iter()
+        .any(|limitation| limitation.code == "candidate-read-unavailable"));
 }
