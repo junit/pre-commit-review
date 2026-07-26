@@ -26,6 +26,26 @@ pub enum TextFactKind {
     Lifecycle,
 }
 
+impl TextFactKind {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::ConfiguredQuery => "configured-query",
+            Self::Configuration => "configuration",
+            Self::Framework => "framework",
+            Self::TestMarker => "test-marker",
+            Self::TestHint => "test-hint",
+            Self::Endpoint => "endpoint",
+            Self::Authorization => "authorization",
+            Self::Storage => "storage",
+            Self::Network => "network",
+            Self::Cache => "cache",
+            Self::Broker => "broker",
+            Self::Search => "search",
+            Self::Lifecycle => "lifecycle",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
 #[serde(rename_all = "lowercase")]
 pub enum TextProvenance {

@@ -10,6 +10,10 @@ use collect_diff_context_cli::impact_context::budget::{
     BudgetResource, BudgetTracker, ImpactBudget,
 };
 use collect_diff_context_cli::impact_context::contracts::{ParseQuality, Resolution};
+use collect_diff_context_cli::impact_context::normalizer::{
+    merge_normalized_units, normalize_unit,
+};
+use collect_diff_context_cli::impact_context::summarizer::summarize_unit;
 use collect_diff_context_cli::review_scope::ReviewSource;
 use serde_json::json;
 use sha2::{Digest, Sha256};
@@ -606,4 +610,225 @@ fn text_adapter_binary_and_syntax_budget_states_remain_independent() {
     );
     assert!(binary.facts.is_empty());
     assert_eq!(binary.limitation_codes, vec!["binary-text-unavailable"]);
+}
+
+#[test]
+fn normalizer_is_deterministic_and_preserves_unresolved_calls() {
+    let source = include_bytes!("fixtures/impact_context/rust-clean.rs");
+    let changed_line = std::str::from_utf8(source)
+        .unwrap()
+        .lines()
+        .position(|line| line.contains("helper(value)"))
+        .map(|line| line as u32 + 1)
+        .unwrap();
+    let analyze = || {
+        let mut tracker = BudgetTracker::new(ImpactBudget::fast_defaults());
+        TreeSitterRustAdapter::analyze(
+            source,
+            &[ChangedRange {
+                start_line: changed_line,
+                end_line: changed_line,
+                deletion_anchor: false,
+            }],
+            &mut tracker,
+        )
+        .unwrap()
+    };
+
+    let first = normalize_unit(
+        "src/lib.rs",
+        "rust",
+        "1111111111111111",
+        "2222222222222222",
+        Some(&analyze()),
+        None,
+    );
+    let second = normalize_unit(
+        "src/lib.rs",
+        "rust",
+        "1111111111111111",
+        "2222222222222222",
+        Some(&analyze()),
+        None,
+    );
+
+    assert_eq!(first, second);
+    assert!(first
+        .changed_symbols
+        .windows(2)
+        .all(|pair| pair[0].symbol_id < pair[1].symbol_id));
+    assert!(first
+        .impact_edges
+        .windows(2)
+        .all(|pair| pair[0].edge_id < pair[1].edge_id));
+    assert!(first
+        .impact_edges
+        .iter()
+        .filter(|edge| edge.kind
+            == collect_diff_context_cli::impact_context::contracts::EdgeKind::Calls)
+        .all(|edge| {
+            edge.to_symbol.is_none()
+                && edge.unresolved_target.is_some()
+                && edge.resolution == Resolution::Unresolved
+        }));
+}
+
+#[test]
+fn normalizer_dedupes_and_preserves_higher_confidence_claims() {
+    let source = include_bytes!("fixtures/impact_context/rust-clean.rs");
+    let line_count = std::str::from_utf8(source).unwrap().lines().count() as u32;
+    let mut tracker = BudgetTracker::new(ImpactBudget::fast_defaults());
+    let syntax = TreeSitterRustAdapter::analyze(
+        source,
+        &[ChangedRange {
+            start_line: 1,
+            end_line: line_count,
+            deletion_anchor: false,
+        }],
+        &mut tracker,
+    )
+    .unwrap();
+    let high = normalize_unit(
+        "src/lib.rs",
+        "rust",
+        "1111111111111111",
+        "2222222222222222",
+        Some(&syntax),
+        None,
+    );
+    let mut low = high.clone();
+    low.changed_symbols[0].confidence =
+        collect_diff_context_cli::impact_context::contracts::Confidence::Low;
+    low.changed_symbols[0].signature = Some("low confidence replacement".to_string());
+
+    let merged = merge_normalized_units("src/lib.rs", [low, high.clone(), high.clone()]);
+
+    assert_eq!(merged.changed_symbols.len(), high.changed_symbols.len());
+    assert_eq!(merged.impact_edges.len(), high.impact_edges.len());
+    assert_eq!(merged.facts.len(), high.facts.len());
+    assert_eq!(
+        merged.changed_symbols[0].signature,
+        high.changed_symbols[0].signature
+    );
+}
+
+#[test]
+fn normalizer_keeps_text_occurrences_out_of_symbol_edges_and_ids_out_of_snippets() {
+    let candidate = MemoryCandidate::new(&[]);
+    let mut first_tracker = BudgetTracker::new(ImpactBudget::fast_defaults());
+    let configuration = TextAdapter::load_configuration(&candidate, &mut first_tracker).unwrap();
+    let mut first_text = TextAdapter::scan(
+        &RepoPath::new("settings.txt").unwrap(),
+        b"authorization token",
+        false,
+        &configuration,
+        &mut first_tracker,
+    );
+    let first = normalize_unit(
+        "settings.txt",
+        "text",
+        "1111111111111111",
+        "2222222222222222",
+        None,
+        Some(&first_text),
+    );
+    first_text.facts[0].match_text = "redacted replacement".to_string();
+    let second = normalize_unit(
+        "settings.txt",
+        "text",
+        "1111111111111111",
+        "2222222222222222",
+        None,
+        Some(&first_text),
+    );
+
+    assert!(first.impact_edges.is_empty());
+    assert!(first.facts.iter().all(|fact| fact.provenance == "textual"));
+    assert_eq!(
+        first
+            .facts
+            .iter()
+            .map(|fact| &fact.fact_id)
+            .collect::<Vec<_>>(),
+        second
+            .facts
+            .iter()
+            .map(|fact| &fact.fact_id)
+            .collect::<Vec<_>>()
+    );
+}
+
+#[test]
+fn summarizer_emits_bounded_deterministic_domain_summaries() {
+    let source = include_bytes!("fixtures/impact_context/rust-clean.rs");
+    let line_count = std::str::from_utf8(source).unwrap().lines().count() as u32;
+    let mut syntax_tracker = BudgetTracker::new(ImpactBudget::fast_defaults());
+    let syntax = TreeSitterRustAdapter::analyze(
+        source,
+        &[ChangedRange {
+            start_line: 1,
+            end_line: line_count,
+            deletion_anchor: false,
+        }],
+        &mut syntax_tracker,
+    )
+    .unwrap();
+    let candidate = MemoryCandidate::new(&[(
+        ".pre-commit-review/context-queries",
+        b"authorization\n",
+        false,
+    )]);
+    let mut text_tracker = BudgetTracker::new(ImpactBudget::fast_defaults());
+    let configuration = TextAdapter::load_configuration(&candidate, &mut text_tracker).unwrap();
+    let text_source = b"#[test]\n#[ignore]\nfn api_test() { let authorization = \"jwt\"; let database = \"postgres\"; let endpoint = \"https://api.test\"; let lifecycle = \"shutdown\"; }";
+    let text = TextAdapter::scan(
+        &RepoPath::new("tests/api_test.rs").unwrap(),
+        text_source,
+        false,
+        &configuration,
+        &mut text_tracker,
+    );
+    let normalized = normalize_unit(
+        "tests/api_test.rs",
+        "rust",
+        "1111111111111111",
+        "2222222222222222",
+        Some(&syntax),
+        Some(&text),
+    );
+
+    let summaries = summarize_unit(&normalized, Some(std::str::from_utf8(text_source).unwrap()));
+    let kinds = summaries
+        .iter()
+        .map(|summary| summary.summary_kind)
+        .collect::<std::collections::BTreeSet<_>>();
+
+    for expected in [
+        collect_diff_context_cli::impact_context::contracts::SummaryKind::InterfaceChange,
+        collect_diff_context_cli::impact_context::contracts::SummaryKind::DependencyChange,
+        collect_diff_context_cli::impact_context::contracts::SummaryKind::TextQueryMatch,
+        collect_diff_context_cli::impact_context::contracts::SummaryKind::TestSelection,
+        collect_diff_context_cli::impact_context::contracts::SummaryKind::AuthorizationEffect,
+        collect_diff_context_cli::impact_context::contracts::SummaryKind::StorageEffect,
+        collect_diff_context_cli::impact_context::contracts::SummaryKind::NetworkEffect,
+        collect_diff_context_cli::impact_context::contracts::SummaryKind::LifecycleEffect,
+    ] {
+        assert!(
+            kinds.contains(&expected),
+            "missing summary kind {expected:?}"
+        );
+    }
+    assert!(summaries
+        .windows(2)
+        .all(|pair| pair[0].summary_id < pair[1].summary_id));
+    assert!(summaries.iter().all(|summary| {
+        summary.message.chars().count() <= 1_000
+            && summary
+                .evidence_fact_ids
+                .windows(2)
+                .all(|pair| pair[0] < pair[1])
+            && !summary.message.to_ascii_lowercase().contains("verdict")
+            && !summary.message.to_ascii_lowercase().contains("reviewed")
+            && !summary.message.contains("cargo test")
+    }));
 }

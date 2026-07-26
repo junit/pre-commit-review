@@ -946,6 +946,11 @@ fn file_content_for_diff_source(
 }
 
 fn is_test_like_path(path: &str) -> bool {
+    crate::impact_context::summarizer::is_test_like_path(path)
+}
+
+#[cfg(any())]
+fn is_test_like_path_legacy(path: &str) -> bool {
     let lower = path.to_ascii_lowercase();
     lower.starts_with("test/")
         || lower.starts_with("tests/")
@@ -1062,10 +1067,12 @@ fn configured_test_hint_for_path(
     None
 }
 
+#[cfg(any())]
 fn contains_any(haystack: &str, needles: &[&str]) -> bool {
     needles.iter().any(|needle| haystack.contains(needle))
 }
 
+#[cfg(any())]
 fn path_indicates_jvm_integration(lower_path: &str) -> bool {
     lower_path.contains("/src/it/")
         || lower_path.contains("/src/integrationtest/")
@@ -1083,6 +1090,27 @@ fn path_indicates_jvm_integration(lower_path: &str) -> bool {
 }
 
 fn classify_test_hint(
+    path: &str,
+    content: &str,
+) -> (
+    &'static str,
+    &'static str,
+    &'static str,
+    &'static str,
+    &'static str,
+) {
+    let hint = crate::impact_context::summarizer::classify_test_hint(path, content);
+    (
+        hint.rule_id,
+        hint.confidence,
+        hint.test_kind,
+        hint.environment_dependency,
+        hint.hint,
+    )
+}
+
+#[cfg(any())]
+fn classify_test_hint_legacy(
     path: &str,
     content: &str,
 ) -> (
