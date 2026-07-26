@@ -342,9 +342,20 @@ static_analysis_binary_name() {
   printf 'static_analysis-%s%s\n' "$platform" "$suffix"
 }
 
-provision_static_analysis() {
+repository_context_binary_name() {
+  local platform="$1"
+  local suffix=''
+  case "$platform" in
+    windows-*) suffix='.exe' ;;
+  esac
+  printf 'repository_context-%s%s\n' "$platform" "$suffix"
+}
+
+provision_rust_binary() {
   local runtime_root="$1"
   local binary_name="$2"
+  local local_executable="$3"
+  local display_label="$4"
   local installed_path="$runtime_root/scripts/bin/$binary_name"
   local local_suffix=''
   local local_release
@@ -352,29 +363,29 @@ provision_static_analysis() {
   case "$binary_name" in
     *.exe) local_suffix='.exe' ;;
   esac
-  local_release="$source_dir/collect-diff-context-cli/target/release/static-analysis-cli${local_suffix}"
+  local_release="$source_dir/collect-diff-context-cli/target/release/${local_executable}${local_suffix}"
 
   if [ "$dry_run" = 'yes' ]; then
     if [ -x "$source_dir/scripts/bin/$binary_name" ] || [ -x "$local_release" ]; then
-      log "Static analysis: DRY RUN include $binary_name"
+      log "$display_label: DRY RUN include $binary_name"
     else
-      log "Static analysis: bundled binary unavailable; wrappers remain installed"
+      log "$display_label: bundled binary unavailable; wrappers remain installed"
     fi
     return 0
   fi
 
   if [ -x "$installed_path" ]; then
-    log "Static analysis: installed bundled $binary_name"
+    log "$display_label: installed bundled $binary_name"
     return 0
   fi
   if [ -x "$local_release" ]; then
     mkdir -p "$runtime_root/scripts/bin"
     cp "$local_release" "$installed_path"
     chmod +x "$installed_path"
-    log "Static analysis: installed local release as $binary_name"
+    log "$display_label: installed local release as $binary_name"
     return 0
   fi
-  log "Static analysis: bundled binary unavailable; wrappers remain installed"
+  log "$display_label: bundled binary unavailable; wrappers remain installed"
 }
 
 gitleaks_is_compatible() {
@@ -457,6 +468,7 @@ copy_payload() {
   local platform="$2"
   local binary_name="$3"
   local static_binary_name="$4"
+  local repository_binary_name="$5"
   local staging_dir="${target}.tmp.$$"
 
   if [ "$dry_run" = 'yes' ]; then
@@ -466,7 +478,10 @@ copy_payload() {
     fi
     prepare_target "$target"
     log "DRY RUN copy runtime payload $source_dir -> $target"
-    provision_static_analysis "$plan_root" "$static_binary_name"
+    provision_rust_binary "$plan_root" "$static_binary_name" \
+      'static-analysis-cli' 'Static analysis'
+    provision_rust_binary "$plan_root" "$repository_binary_name" \
+      'repository-context-cli' 'Repository context'
     provision_gitleaks "$plan_root" "$platform" "$binary_name"
     return 0
   fi
@@ -486,7 +501,10 @@ copy_payload() {
     cp -R "$source_dir/THIRD_PARTY_LICENSES" "$staging_dir/"
   fi
 
-  provision_static_analysis "$staging_dir" "$static_binary_name"
+  provision_rust_binary "$staging_dir" "$static_binary_name" \
+    'static-analysis-cli' 'Static analysis'
+  provision_rust_binary "$staging_dir" "$repository_binary_name" \
+    'repository-context-cli' 'Repository context'
   provision_gitleaks "$staging_dir" "$platform" "$binary_name"
 
   prepare_target "$target"
@@ -595,12 +613,14 @@ target_dir="${skills_dir%/}/$skill_name"
 gitleaks_platform="$(resolve_gitleaks_platform)"
 gitleaks_binary="$(gitleaks_binary_name "$gitleaks_platform")"
 static_analysis_binary="$(static_analysis_binary_name "$gitleaks_platform")"
+repository_context_binary="$(repository_context_binary_name "$gitleaks_platform")"
 
 validate_target "$target_dir"
 ensure_parent_dir "$skills_dir"
 
 case "$mode" in
-  copy) copy_payload "$target_dir" "$gitleaks_platform" "$gitleaks_binary" "$static_analysis_binary" ;;
+  copy) copy_payload "$target_dir" "$gitleaks_platform" "$gitleaks_binary" \
+    "$static_analysis_binary" "$repository_context_binary" ;;
   link) link_payload "$target_dir" "$gitleaks_platform" "$gitleaks_binary" ;;
   *) die "unsupported mode: $mode" ;;
 esac

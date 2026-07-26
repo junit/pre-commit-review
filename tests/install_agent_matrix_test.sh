@@ -23,6 +23,8 @@ assert_target() {
   }
   grep -Fq 'Static analysis:' "$output_file" \
     || fail "static-analysis runtime plan missing for target: $expected"
+  grep -Fq 'Repository context:' "$output_file" \
+    || fail "repository-context runtime plan missing for target: $expected"
 }
 
 run_install_clean() (

@@ -21,6 +21,7 @@ jobs:
             target: x86_64-unknown-linux-musl
             artifact_name: collect_diff_context-linux-amd64
             static_artifact_name: static_analysis-linux-amd64
+            repository_artifact_name: repository_context-linux-amd64
             gitleaks_platform: linux-amd64
             use_musl: true
 
@@ -28,18 +29,21 @@ jobs:
             target: aarch64-apple-darwin
             artifact_name: collect_diff_context-darwin-arm64
             static_artifact_name: static_analysis-darwin-arm64
+            repository_artifact_name: repository_context-darwin-arm64
             gitleaks_platform: darwin-arm64
 
           - os: macos-13
             target: x86_64-apple-darwin
             artifact_name: collect_diff_context-darwin-amd64
             static_artifact_name: static_analysis-darwin-amd64
+            repository_artifact_name: repository_context-darwin-amd64
             gitleaks_platform: darwin-amd64
 
           - os: windows-latest
             target: x86_64-pc-windows-msvc
             artifact_name: collect_diff_context-windows-amd64.exe
             static_artifact_name: static_analysis-windows-amd64.exe
+            repository_artifact_name: repository_context-windows-amd64.exe
             gitleaks_platform: windows-amd64
 
     steps:
@@ -56,7 +60,7 @@ jobs:
         run: sudo apt-get update && sudo apt-get install -y musl-tools
 
       - name: Build release binary
-        run: cargo build --release --target ${{ matrix.target }}
+        run: cargo build --release --target ${{ matrix.target }} --bins
         working-directory: collect-diff-context-cli
 
       - name: Prepare binary artifact
@@ -66,9 +70,11 @@ jobs:
           if [ "${{ matrix.os }}" = "windows-latest" ]; then
             cp collect-diff-context-cli/target/${{ matrix.target }}/release/collect-diff-context-cli.exe dist/${{ matrix.artifact_name }}
             cp collect-diff-context-cli/target/${{ matrix.target }}/release/static-analysis-cli.exe dist/${{ matrix.static_artifact_name }}
+            cp collect-diff-context-cli/target/${{ matrix.target }}/release/repository-context-cli.exe dist/${{ matrix.repository_artifact_name }}
           else
             cp collect-diff-context-cli/target/${{ matrix.target }}/release/collect-diff-context-cli dist/${{ matrix.artifact_name }}
             cp collect-diff-context-cli/target/${{ matrix.target }}/release/static-analysis-cli dist/${{ matrix.static_artifact_name }}
+            cp collect-diff-context-cli/target/${{ matrix.target }}/release/repository-context-cli dist/${{ matrix.repository_artifact_name }}
           fi
 
       - name: Smoke-test static-analysis binary
@@ -78,6 +84,12 @@ jobs:
           "$static_binary" collect --help
           "$static_binary" run --help
           "$static_binary" orchestrate --help
+
+      - name: Smoke-test repository-context binary
+        shell: bash
+        run: |
+          repository_binary="dist/${{ matrix.repository_artifact_name }}"
+          "$repository_binary" collect --help
 
       - name: Fetch pinned Gitleaks binary
         shell: bash
@@ -103,24 +115,54 @@ jobs:
         with:
           path: artifacts
 
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@stable
+
+      - name: Install CycloneDX generator
+        run: cargo install --locked --version 0.5.9 cargo-cyclonedx
+
+      - name: Generate and verify CycloneDX SBOM
+        shell: bash
+        run: |
+          mkdir -p dist
+          cargo cyclonedx --manifest-path collect-diff-context-cli/Cargo.toml \
+            --format json --spec-version 1.5 \
+            --override-filename pre-commit-review.cdx
+          mv collect-diff-context-cli/pre-commit-review.cdx.json dist/pre-commit-review.cdx.json
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+
+          sbom = json.loads(Path('dist/pre-commit-review.cdx.json').read_text(encoding='utf-8'))
+          components = {f"{item['name']}@{item['version']}" for item in sbom['components']}
+          required = {'tree-sitter@0.26.11', 'tree-sitter-rust@0.24.2'}
+          missing = required - components
+          if missing:
+              raise SystemExit(f"SBOM missing pinned components: {sorted(missing)}")
+          PY
+
       - name: Build self-contained skill package
         shell: bash
         run: |
           mkdir -p dist/pre-commit-review
           cp SKILL.md LICENSE dist/pre-commit-review/
+          cp dist/pre-commit-review.cdx.json dist/pre-commit-review/
           cp -R agents references scripts THIRD_PARTY_LICENSES dist/pre-commit-review/
           mkdir -p dist/pre-commit-review/collect-diff-context-cli
           cp -R collect-diff-context-cli/schemas dist/pre-commit-review/collect-diff-context-cli/
           find artifacts -type f -name 'collect_diff_context-*' -exec cp {} dist/pre-commit-review/scripts/bin/ \;
           find artifacts -type f -name 'static_analysis-*' -exec cp {} dist/pre-commit-review/scripts/bin/ \;
+          find artifacts -type f -name 'repository_context-*' -exec cp {} dist/pre-commit-review/scripts/bin/ \;
           find artifacts -type f -name 'gitleaks-*' -exec cp {} dist/pre-commit-review/scripts/bin/ \;
           chmod +x dist/pre-commit-review/scripts/collect_diff_context.sh
+          chmod +x dist/pre-commit-review/scripts/collect_impact_context.sh
           chmod +x dist/pre-commit-review/scripts/collect_static_evidence.sh
           chmod +x dist/pre-commit-review/scripts/run_static_analysis.sh
           chmod +x dist/pre-commit-review/scripts/orchestrate_static_analysis.sh
           chmod +x dist/pre-commit-review/scripts/check_gitleaks.sh
           chmod +x dist/pre-commit-review/scripts/bin/collect_diff_context-* || true
           chmod +x dist/pre-commit-review/scripts/bin/static_analysis-* || true
+          chmod +x dist/pre-commit-review/scripts/bin/repository_context-* || true
           chmod +x dist/pre-commit-review/scripts/bin/gitleaks-* || true
           dist/pre-commit-review/scripts/check_gitleaks.sh
           tar -czf dist/pre-commit-review-runtime.tar.gz -C dist pre-commit-review
@@ -131,7 +173,9 @@ jobs:
           files: |
             artifacts/**/collect_diff_context-*
             artifacts/**/static_analysis-*
+            artifacts/**/repository_context-*
             artifacts/**/gitleaks-*
+            dist/pre-commit-review.cdx.json
             dist/pre-commit-review-runtime.tar.gz
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

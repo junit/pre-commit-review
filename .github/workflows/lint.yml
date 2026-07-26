@@ -73,12 +73,15 @@ jobs:
           - os: ubuntu-latest
             target: x86_64-unknown-linux-gnu
             executable: static-analysis-cli
+            repository_executable: repository-context-cli
           - os: macos-latest
             target: aarch64-apple-darwin
             executable: static-analysis-cli
+            repository_executable: repository-context-cli
           - os: windows-latest
             target: x86_64-pc-windows-msvc
             executable: static-analysis-cli.exe
+            repository_executable: repository-context-cli.exe
     steps:
       - uses: actions/checkout@v4
       - name: Set up Rust
@@ -94,16 +97,18 @@ jobs:
             ~/.cargo/git/db/
             collect-diff-context-cli/target/
           key: ${{ runner.os }}-static-analysis-${{ matrix.target }}-${{ hashFiles('collect-diff-context-cli/Cargo.lock') }}
-      - name: Build static-analysis CLI
-        run: cargo build --release --target ${{ matrix.target }} --bin static-analysis-cli
+      - name: Build analysis CLIs
+        run: cargo build --release --target ${{ matrix.target }} --bin static-analysis-cli --bin repository-context-cli
         working-directory: collect-diff-context-cli
-      - name: Smoke-test static-analysis CLI
+      - name: Smoke-test analysis CLIs
         shell: bash
         run: |
           static_binary="collect-diff-context-cli/target/${{ matrix.target }}/release/${{ matrix.executable }}"
+          repository_binary="collect-diff-context-cli/target/${{ matrix.target }}/release/${{ matrix.repository_executable }}"
           "$static_binary" collect --help
           "$static_binary" run --help
           "$static_binary" orchestrate --help
+          "$repository_binary" collect --help
       - name: Run focused Rust contracts
         run: cargo test --target ${{ matrix.target }} --test static_evidence --test static_execution --test static_execution_modes --test static_orchestration
         working-directory: collect-diff-context-cli
