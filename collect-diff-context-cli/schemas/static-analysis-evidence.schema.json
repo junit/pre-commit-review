@@ -21,14 +21,14 @@
     },
     "reports": {
       "type": "array",
-      "minItems": 1,
+      "minItems": 0,
       "items": { "$ref": "#/$defs/report" }
     },
     "counts": {
       "type": "object",
       "required": ["reports", "input_findings", "deduplicated_findings", "mapped_to_units", "added_line", "blocking_candidates", "priority_candidates", "notes", "outside_scope"],
       "properties": {
-        "reports": { "type": "integer", "minimum": 1 },
+        "reports": { "type": "integer", "minimum": 0 },
         "input_findings": { "type": "integer", "minimum": 0 },
         "deduplicated_findings": { "type": "integer", "minimum": 0 },
         "mapped_to_units": { "type": "integer", "minimum": 0 },

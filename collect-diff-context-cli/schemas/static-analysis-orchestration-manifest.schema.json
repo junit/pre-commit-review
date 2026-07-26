@@ -1,0 +1,47 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "static-analysis-orchestration-manifest.schema.json",
+  "title": "StaticAnalysisOrchestrationManifest",
+  "description": "An ordered, hash-pinned analyzer set with cumulative orchestration limits.",
+  "type": "object",
+  "required": ["schema_version", "kind", "name", "profiles", "limits"],
+  "properties": {
+    "schema_version": { "type": "integer", "const": 1 },
+    "kind": { "type": "string", "const": "static_analysis_orchestration_manifest" },
+    "name": { "type": "string", "minLength": 1, "maxLength": 200 },
+    "profiles": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 16,
+      "items": {
+        "type": "object",
+        "required": ["profile_id", "path", "sha256"],
+        "properties": {
+          "profile_id": {
+            "type": "string",
+            "pattern": "^[a-z0-9][a-z0-9._-]{0,63}$"
+          },
+          "path": { "type": "string", "minLength": 1, "maxLength": 4096 },
+          "sha256": { "$ref": "#/$defs/sha256" }
+        },
+        "additionalProperties": false
+      }
+    },
+    "limits": {
+      "type": "object",
+      "required": ["max_execution_seconds", "max_captured_output_bytes", "max_findings", "max_snapshot_bytes", "max_snapshot_files"],
+      "properties": {
+        "max_execution_seconds": { "type": "integer", "minimum": 1, "maximum": 1800 },
+        "max_captured_output_bytes": { "type": "integer", "minimum": 1024, "maximum": 100000000 },
+        "max_findings": { "type": "integer", "minimum": 1, "maximum": 5000 },
+        "max_snapshot_bytes": { "type": "integer", "minimum": 1048576, "maximum": 2147483648 },
+        "max_snapshot_files": { "type": "integer", "minimum": 1, "maximum": 200000 }
+      },
+      "additionalProperties": false
+    }
+  },
+  "$defs": {
+    "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" }
+  },
+  "additionalProperties": false
+}

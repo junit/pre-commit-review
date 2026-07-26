@@ -1,0 +1,126 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "static-analysis-orchestration.schema.json",
+  "title": "StaticAnalysisOrchestration",
+  "description": "Authoritative terminal state for one ordered multi-analyzer execution.",
+  "type": "object",
+  "required": ["schema_version", "kind", "authoritative", "orchestration_id", "scope", "manifest", "snapshot", "status", "budgets", "runs", "report_ids", "finding_ids"],
+  "properties": {
+    "schema_version": { "type": "integer", "const": 1 },
+    "kind": { "type": "string", "const": "static_analysis_orchestration" },
+    "authoritative": { "type": "boolean", "const": true },
+    "orchestration_id": { "$ref": "#/$defs/compact_id" },
+    "scope": { "$ref": "#/$defs/scope" },
+    "manifest": {
+      "type": "object",
+      "required": ["manifest_id", "name", "sha256"],
+      "properties": {
+        "manifest_id": { "$ref": "#/$defs/compact_id" },
+        "name": { "type": "string", "minLength": 1, "maxLength": 200 },
+        "sha256": { "$ref": "#/$defs/sha256" }
+      },
+      "additionalProperties": false
+    },
+    "snapshot": {
+      "type": "object",
+      "required": ["snapshot_id", "kind", "sha256", "files", "bytes"],
+      "properties": {
+        "snapshot_id": { "$ref": "#/$defs/compact_id" },
+        "kind": { "type": "string", "const": "temporary-tracked-files" },
+        "sha256": { "$ref": "#/$defs/sha256" },
+        "files": { "type": "integer", "minimum": 0 },
+        "bytes": { "type": "integer", "minimum": 0 }
+      },
+      "additionalProperties": false
+    },
+    "status": { "type": "string", "enum": ["completed", "partial", "failed"] },
+    "budgets": {
+      "type": "object",
+      "required": ["execution_millis", "captured_output_bytes", "findings", "snapshot_files", "snapshot_bytes"],
+      "properties": {
+        "execution_millis": { "$ref": "#/$defs/budget_amount" },
+        "captured_output_bytes": { "$ref": "#/$defs/budget_amount" },
+        "findings": { "$ref": "#/$defs/budget_amount" },
+        "snapshot_files": { "$ref": "#/$defs/budget_amount" },
+        "snapshot_bytes": { "$ref": "#/$defs/budget_amount" }
+      },
+      "additionalProperties": false
+    },
+    "runs": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 16,
+      "items": {
+        "oneOf": [
+          {
+            "type": "object",
+            "required": ["run_kind", "profile_id", "execution"],
+            "properties": {
+              "run_kind": { "type": "string", "const": "executed" },
+              "profile_id": { "$ref": "#/$defs/profile_id" },
+              "execution": { "$ref": "static-analysis-execution.schema.json" }
+            },
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "required": ["run_kind", "profile_id", "reason"],
+            "properties": {
+              "run_kind": { "type": "string", "const": "not-run" },
+              "profile_id": { "$ref": "#/$defs/profile_id" },
+              "reason": { "type": "string", "enum": ["budget-exhausted", "shared-integrity-failure"] }
+            },
+            "additionalProperties": false
+          },
+          {
+            "type": "object",
+            "required": ["run_kind", "profile_id", "reason"],
+            "properties": {
+              "run_kind": { "type": "string", "const": "invalidated" },
+              "profile_id": { "$ref": "#/$defs/profile_id" },
+              "reason": { "type": "string", "const": "snapshot-mutated" }
+            },
+            "additionalProperties": false
+          }
+        ]
+      }
+    },
+    "report_ids": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": { "$ref": "#/$defs/compact_id" }
+    },
+    "finding_ids": {
+      "type": "array",
+      "uniqueItems": true,
+      "items": { "$ref": "#/$defs/compact_id" }
+    }
+  },
+  "$defs": {
+    "compact_id": { "type": "string", "pattern": "^[0-9a-f]{16}$" },
+    "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "fingerprint": { "type": "string", "pattern": "^[0-9a-f]{40}([0-9a-f]{24})?$" },
+    "profile_id": { "type": "string", "pattern": "^[a-z0-9][a-z0-9._-]{0,63}$" },
+    "scope": {
+      "type": "object",
+      "required": ["source", "head", "fingerprint"],
+      "properties": {
+        "source": { "type": "string", "enum": ["staged", "unstaged", "branch"] },
+        "head": { "type": "string", "minLength": 1 },
+        "fingerprint": { "$ref": "#/$defs/fingerprint" }
+      },
+      "additionalProperties": false
+    },
+    "budget_amount": {
+      "type": "object",
+      "required": ["initial", "consumed", "remaining"],
+      "properties": {
+        "initial": { "type": "integer", "minimum": 0 },
+        "consumed": { "type": "integer", "minimum": 0 },
+        "remaining": { "type": "integer", "minimum": 0 }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}
