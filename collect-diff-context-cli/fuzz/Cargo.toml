@@ -1,0 +1,27 @@
+[package]
+name = "collect-diff-context-cli-fuzz"
+version = "0.0.0"
+publish = false
+edition = "2021"
+
+[package.metadata]
+cargo-fuzz = true
+
+[dependencies]
+libfuzzer-sys = "0.4"
+serde_json = "1.0"
+collect-diff-context-cli = { path = ".." }
+
+[[bin]]
+name = "tree_sitter_rust"
+path = "fuzz_targets/tree_sitter_rust.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "impact_contract"
+path = "fuzz_targets/impact_contract.rs"
+test = false
+doc = false
+bench = false

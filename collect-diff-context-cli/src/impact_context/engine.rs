@@ -518,6 +518,36 @@ pub fn build_impact_context(
     all_symbols.dedup_by(|left, right| left.symbol_id == right.symbol_id);
     all_edges.sort_by(|left, right| left.edge_id.cmp(&right.edge_id));
     all_edges.dedup_by(|left, right| left.edge_id == right.edge_id);
+    let mut retained_edges = Vec::with_capacity(all_edges.len().min(request.budget.max_edges));
+    let mut edge_limited_paths = BTreeSet::new();
+    for edge in all_edges {
+        if tracker.consume(BudgetResource::Edges, 1).is_ok() {
+            retained_edges.push(edge);
+        } else {
+            edge_limited_paths.insert(edge.path);
+        }
+    }
+    all_edges = retained_edges;
+    for path in edge_limited_paths {
+        let id = insert_limitation(
+            &mut limitations,
+            "edge-budget-exhausted",
+            Some(&syntax_provider_id),
+            Some(&path),
+            None,
+            "The fast-path structural edge budget was exhausted.",
+            "Earlier edges remain valid; additional structural relationships were omitted.",
+            true,
+        );
+        syntax_stats.budget_exhausted += 1;
+        syntax_stats.limitation_ids.push(id.clone());
+        if let Some(unit) = units.iter_mut().find(|unit| unit.path == path) {
+            unit.syntax_status = UnitStatus::BudgetExhausted;
+            unit.limitation_ids.push(id);
+            unit.limitation_ids.sort();
+            unit.limitation_ids.dedup();
+        }
+    }
     all_summaries.sort_by(|left, right| left.summary_id.cmp(&right.summary_id));
     all_summaries.dedup_by(|left, right| left.summary_id == right.summary_id);
     units.sort_by(|left, right| left.path.cmp(&right.path));

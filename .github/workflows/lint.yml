@@ -37,9 +37,12 @@ jobs:
             ~/.cargo/registry/cache/
             ~/.cargo/git/db/
             collect-diff-context-cli/target/
-          key: ${{ runner.os }}-cargo-${{ hashFiles('collect-diff-context-cli/Cargo.lock') }}
+          key: ${{ runner.os }}-cargo-${{ hashFiles('collect-diff-context-cli/Cargo.lock', 'collect-diff-context-cli/fuzz/Cargo.lock') }}
       - name: Check formatting
         run: cargo fmt --all -- --check
+        working-directory: collect-diff-context-cli
+      - name: Check fuzz target formatting
+        run: cargo fmt --all --manifest-path fuzz/Cargo.toml -- --check
         working-directory: collect-diff-context-cli
       - name: Run clippy
         run: cargo clippy --all-targets -- -D warnings
@@ -47,9 +50,18 @@ jobs:
       - name: Run unit tests
         run: cargo test
         working-directory: collect-diff-context-cli
+      - name: Run adversarial structural-context tests
+        run: cargo test --test impact_context_rust adversarial
+        working-directory: collect-diff-context-cli
       - name: Compile release binary
         run: cargo build --release
         working-directory: collect-diff-context-cli
+      - name: Set up nightly fuzz toolchain
+        run: rustup toolchain install nightly --profile minimal
+      - name: Install cargo-fuzz
+        run: cargo install --locked --version 0.13.2 cargo-fuzz
+      - name: Compile structural-context fuzz targets
+        run: cargo +nightly fuzz build --fuzz-dir collect-diff-context-cli/fuzz
 
   static-analysis-platforms:
     name: Static analysis (${{ matrix.target }})

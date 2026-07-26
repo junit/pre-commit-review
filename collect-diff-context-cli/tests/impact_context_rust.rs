@@ -10,7 +10,8 @@ use collect_diff_context_cli::impact_context::budget::{
     BudgetResource, BudgetTracker, ImpactBudget,
 };
 use collect_diff_context_cli::impact_context::contracts::{
-    ImpactMode, ImpactPresence, ImpactStatus, ParseQuality, Resolution, UnitStatus,
+    ImpactContext, ImpactMode, ImpactPresence, ImpactStatus, ParseQuality, Resolution, SourceRange,
+    UnitStatus,
 };
 use collect_diff_context_cli::impact_context::engine::{build_impact_context, ImpactRequest};
 use collect_diff_context_cli::impact_context::normalizer::{
@@ -402,7 +403,7 @@ fn tree_sitter_recovery_quality_tracks_changed_structure_overlap() {
 }
 
 #[test]
-fn tree_sitter_malformed_and_deeply_nested_input_never_panics() {
+fn adversarial_tree_sitter_malformed_and_deeply_nested_input_never_panics() {
     let mut malformed_budget = ImpactBudget::fast_defaults();
     malformed_budget.max_nesting_depth = 16;
     let mut tracker = BudgetTracker::new(malformed_budget);
@@ -427,6 +428,65 @@ fn tree_sitter_malformed_and_deeply_nested_input_never_panics() {
         .iter()
         .any(|code| code == "nesting-depth-budget-exhausted"));
     assert!(output.nodes_visited <= tracker.amount(BudgetResource::Nodes).initial);
+}
+
+fn assert_range_within_input(range: &SourceRange, input_bytes: usize) {
+    assert!(range.start_line > 0);
+    assert!(range.start_column > 0);
+    assert!(range.end_line > 0);
+    assert!(range.end_column > 0);
+    assert!(range.start_byte <= range.end_byte);
+    assert!(range.end_byte <= input_bytes);
+}
+
+#[test]
+fn adversarial_tree_sitter_ranges_and_counts_remain_bounded() {
+    let mut source = b"pub fn hostile() { let value = \"".to_vec();
+    source.extend(std::iter::repeat_n(b'a', 32_768));
+    source.push(0xff);
+    source.extend_from_slice(b"\"; value(); }");
+    let mut budget = ImpactBudget::fast_defaults();
+    budget.max_nodes = 128;
+    budget.max_nesting_depth = 16;
+    budget.max_facts = 16;
+    budget.max_edges = 8;
+    let limits = budget.clone();
+    let mut tracker = BudgetTracker::new(budget);
+
+    let output = TreeSitterRustAdapter::analyze(
+        &source,
+        &[ChangedRange {
+            start_line: 1,
+            end_line: 1,
+            deletion_anchor: false,
+        }],
+        &mut tracker,
+    )
+    .unwrap();
+
+    for range in &output.affected_ranges {
+        assert_range_within_input(range, source.len());
+    }
+    for range in output
+        .changed_symbols
+        .iter()
+        .map(|fact| &fact.range)
+        .chain(output.imports.iter().map(|fact| &fact.range))
+        .chain(output.macros.iter().map(|fact| &fact.range))
+        .chain(output.attributes.iter().map(|fact| &fact.range))
+        .chain(output.calls.iter().map(|fact| &fact.range))
+    {
+        assert_range_within_input(range, source.len());
+    }
+    let fact_count = output.changed_symbols.len()
+        + output.imports.len()
+        + output.calls.len()
+        + output.macros.len()
+        + output.attributes.len();
+    assert!(output.nodes_visited <= limits.max_nodes);
+    assert!(output.max_nesting_depth <= limits.max_nesting_depth);
+    assert!(fact_count <= limits.max_facts);
+    assert!(output.calls.len() <= limits.max_edges);
 }
 
 #[test]
@@ -1216,7 +1276,7 @@ fn engine_reads_only_changed_units_and_candidate_configuration() {
 }
 
 #[test]
-fn engine_rejects_phase_a_forbidden_requests() {
+fn adversarial_engine_rejects_phase_a_forbidden_requests() {
     let candidate = MemoryCandidate::new(&[]);
 
     let mut deep = ImpactRequest::fast_defaults();
@@ -1245,6 +1305,163 @@ fn engine_rejects_phase_a_forbidden_requests() {
             .code(),
         "semantic-provider-unavailable"
     );
+}
+
+#[test]
+fn adversarial_engine_ignores_repository_owned_parser_assets() {
+    let source = b"pub fn changed() {}\n";
+    let mut inner = MemoryCandidate::new(&[
+        ("src/lib.rs", source, true),
+        (
+            ".pre-commit-review/tree-sitter-rust.scm",
+            b"(function_item) @execute_repository_query\n",
+            false,
+        ),
+        (
+            "tree-sitter.json",
+            b"{\"grammars\": [\"repository\"]}\n",
+            false,
+        ),
+        (
+            "grammars/libtree-sitter-rust.dylib",
+            b"plugin\0payload",
+            false,
+        ),
+        ("scripts/repository-context-hook.sh", b"exit 99\n", false),
+    ]);
+    inner
+        .files
+        .iter_mut()
+        .find(|file| file.path.as_str() == "src/lib.rs")
+        .unwrap()
+        .changed_ranges = vec![ChangedRange {
+        start_line: 1,
+        end_line: 1,
+        deletion_anchor: false,
+    }];
+    let candidate = TrackingCandidate::new(inner);
+
+    let context = build_impact_context(&candidate, ImpactRequest::fast_defaults()).unwrap();
+
+    context.validate().unwrap();
+    assert_eq!(candidate.reads.borrow().as_slice(), ["src/lib.rs"]);
+    assert!(context
+        .changed_symbols
+        .iter()
+        .any(|symbol| symbol.name == "changed"));
+}
+
+#[test]
+fn adversarial_engine_bounds_binary_invalid_utf8_long_line_and_large_input() {
+    let invalid_utf8 = b"pub fn invalid() { let value = \"\xff\"; }\n";
+    let long_line = vec![b'a'; 4_096];
+    let mut candidate = MemoryCandidate::new(&[
+        ("src/binary.rs", b"pub fn binary() {}\0payload", true),
+        ("src/invalid.rs", invalid_utf8, true),
+        ("src/large.rs", &long_line, true),
+    ]);
+    for file in &mut candidate.files {
+        file.changed_ranges = vec![ChangedRange {
+            start_line: 1,
+            end_line: 1,
+            deletion_anchor: false,
+        }];
+    }
+    let mut request = ImpactRequest::fast_defaults();
+    request.budget.max_file_bytes = 128;
+    request.budget.max_total_bytes = 256;
+    request.budget.max_nodes = 256;
+    request.budget.max_facts = 32;
+    request.budget.max_edges = 16;
+    let limits = request.budget.clone();
+
+    let context = build_impact_context(&candidate, request).unwrap();
+
+    context.validate().unwrap();
+    assert_eq!(context.units.len(), 3);
+    assert!(context.metrics.nodes_visited <= limits.max_nodes);
+    assert!(context.metrics.facts_emitted <= limits.max_facts);
+    assert!(context.metrics.edges_emitted <= limits.max_edges);
+    assert!(context.metrics.output_bytes <= limits.max_output_bytes);
+    let codes = context
+        .limitations
+        .iter()
+        .map(|limitation| limitation.code.as_str())
+        .collect::<std::collections::BTreeSet<_>>();
+    assert!(codes.contains("binary-structure-unavailable"));
+    assert!(codes.contains("file-byte-budget-exhausted"));
+    for unit in &context.units {
+        for range in &unit.changed_ranges {
+            assert_range_within_input(range, unit.content_bytes.unwrap_or(0));
+        }
+    }
+}
+
+#[test]
+fn adversarial_engine_enforces_independent_edge_budget() {
+    let source = b"pub fn changed() { first(); second(); third(); }\n";
+    let mut candidate = MemoryCandidate::new(&[("src/lib.rs", source, true)]);
+    candidate.files[0].changed_ranges = vec![ChangedRange {
+        start_line: 1,
+        end_line: 1,
+        deletion_anchor: false,
+    }];
+    let mut request = ImpactRequest::fast_defaults();
+    request.budget.max_facts = 32;
+    request.budget.max_edges = 1;
+
+    let context = build_impact_context(&candidate, request).unwrap();
+
+    context.validate().unwrap();
+    assert!(context.impact_edges.len() <= 1);
+    assert!(context
+        .limitations
+        .iter()
+        .any(|limitation| limitation.code == "edge-budget-exhausted"));
+}
+
+#[test]
+fn adversarial_contract_fuzz_corpus_seeds_are_valid() {
+    for (name, bytes) in [
+        (
+            "completed",
+            include_bytes!("../fuzz/corpus/impact_contract/completed.json").as_slice(),
+        ),
+        (
+            "partial",
+            include_bytes!("../fuzz/corpus/impact_contract/partial.json").as_slice(),
+        ),
+        (
+            "unavailable",
+            include_bytes!("../fuzz/corpus/impact_contract/unavailable.json").as_slice(),
+        ),
+        (
+            "invalidated",
+            include_bytes!("../fuzz/corpus/impact_contract/invalidated.json").as_slice(),
+        ),
+        (
+            "failed",
+            include_bytes!("../fuzz/corpus/impact_contract/failed.json").as_slice(),
+        ),
+        (
+            "recovered",
+            include_bytes!("../fuzz/corpus/impact_contract/recovered.json").as_slice(),
+        ),
+        (
+            "degraded",
+            include_bytes!("../fuzz/corpus/impact_contract/degraded.json").as_slice(),
+        ),
+        (
+            "truncated",
+            include_bytes!("../fuzz/corpus/impact_contract/truncated.json").as_slice(),
+        ),
+    ] {
+        let context: ImpactContext = serde_json::from_slice(bytes)
+            .unwrap_or_else(|error| panic!("{name} corpus seed did not deserialize: {error}"));
+        context
+            .validate()
+            .unwrap_or_else(|error| panic!("{name} corpus seed did not validate: {error}"));
+    }
 }
 
 #[test]

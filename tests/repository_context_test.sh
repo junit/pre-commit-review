@@ -5,6 +5,9 @@ script_dir="$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd -P)"
 repo_root="$(CDPATH='' cd -- "$script_dir/.." && pwd -P)"
 resolver="$repo_root/scripts/lib/repository_context_cli.sh"
 wrapper="$repo_root/scripts/collect_impact_context.sh"
+helper="$repo_root/scripts/collect_diff_context.sh"
+rust_helper="$repo_root/collect-diff-context-cli/target/release/collect-diff-context-cli"
+context_bin="$repo_root/collect-diff-context-cli/target/release/repository-context-cli"
 tmp_dir="$(mktemp -d)"
 trap 'rm -rf "$tmp_dir"' EXIT
 
@@ -15,6 +18,8 @@ fail() {
 
 [ -r "$resolver" ] || fail 'resolver is missing'
 [ -x "$wrapper" ] || fail 'wrapper is missing or not executable'
+[ -x "$rust_helper" ] || fail 'release collect-diff-context-cli is missing'
+[ -x "$context_bin" ] || fail 'release repository-context-cli is missing'
 
 fake_bin="$tmp_dir/repository-context-cli"
 cat >"$fake_bin" <<'EOF_FAKE'
@@ -98,5 +103,136 @@ PRE_COMMIT_REVIEW_SECRET_SCAN=off \
 grep -Fq '"status":"unavailable"' "$tmp_dir/unavailable.out" \
   || fail 'missing binary did not produce unavailable context'
 [ ! -e "$legacy_sentinel" ] || fail 'missing binary invoked legacy helper'
+
+security_repo="$tmp_dir/security-repo"
+mkdir -p "$security_repo/.pre-commit-review" "$security_repo/grammars" "$security_repo/scripts"
+git -C "$security_repo" init -q
+git -C "$security_repo" config user.email review@example.test
+git -C "$security_repo" config user.name Review
+printf 'base\n' >"$security_repo/README.md"
+git -C "$security_repo" add README.md
+git -C "$security_repo" commit -qm base
+printf 'pub fn changed() {}\n' >"$security_repo/src.rs"
+printf '(function_item) @repository_query\n' >"$security_repo/.pre-commit-review/tree-sitter-rust.scm"
+printf '{"grammars":["repository"]}\n' >"$security_repo/tree-sitter.json"
+printf 'plugin\0payload' >"$security_repo/grammars/libtree-sitter-rust.so"
+repo_hook_sentinel="$tmp_dir/repository-hook-invoked"
+cat >"$security_repo/scripts/repository-context-hook.sh" <<'EOF_REPO_HOOK'
+#!/usr/bin/env bash
+touch "$PCR_REPOSITORY_HOOK_SENTINEL"
+exit 97
+EOF_REPO_HOOK
+chmod +x "$security_repo/scripts/repository-context-hook.sh"
+git -C "$security_repo" add src.rs .pre-commit-review/tree-sitter-rust.scm \
+  tree-sitter.json grammars/libtree-sitter-rust.so scripts/repository-context-hook.sh
+
+security_control="$tmp_dir/security-control.out"
+(
+  cd "$security_repo"
+  PRE_COMMIT_REVIEW_SECRET_SCAN=off \
+  PRE_COMMIT_REVIEW_RUST_BIN="$rust_helper" \
+    "$helper" --source staged --control-plane
+) >"$security_control"
+security_fingerprint="$(python3 - "$security_control" <<'PY'
+import json
+import pathlib
+import sys
+
+lines = pathlib.Path(sys.argv[1]).read_text(encoding='utf-8').splitlines()
+print(json.loads(lines[lines.index('## Review Control Plane JSON') + 1])['scope_fingerprint'])
+PY
+)"
+
+command_dir="$tmp_dir/command-shims"
+cache_dir="$tmp_dir/cache"
+exec_log="$tmp_dir/executed-commands.log"
+forbidden_log="$tmp_dir/forbidden-commands.log"
+mkdir -p "$command_dir" "$cache_dir"
+: >"$exec_log"
+: >"$forbidden_log"
+real_git="$(command -v git)"
+cat >"$command_dir/git" <<'EOF_GIT_SHIM'
+#!/usr/bin/env bash
+printf '%s\n' git >>"$PCR_EXEC_LOG"
+exec "$PCR_REAL_GIT" "$@"
+EOF_GIT_SHIM
+chmod +x "$command_dir/git"
+for forbidden_command in \
+  cargo rustc rust-analyzer curl wget nc \
+  npm npx pnpm yarn bun pip pip3 poetry uv \
+  go gradle mvn; do
+  cat >"$command_dir/$forbidden_command" <<'EOF_FORBIDDEN_SHIM'
+#!/usr/bin/env bash
+printf '%s\n' "${0##*/}" >>"$PCR_FORBIDDEN_LOG"
+exit 97
+EOF_FORBIDDEN_SHIM
+  chmod +x "$command_dir/$forbidden_command"
+done
+
+(
+  cd "$security_repo"
+  PATH="$command_dir:/usr/bin:/bin:/usr/sbin:/sbin" \
+  PCR_EXEC_LOG="$exec_log" \
+  PCR_FORBIDDEN_LOG="$forbidden_log" \
+  PCR_REAL_GIT="$real_git" \
+  PCR_REPOSITORY_HOOK_SENTINEL="$repo_hook_sentinel" \
+  PRE_COMMIT_REVIEW_CACHE_DIR="$cache_dir" \
+  PRE_COMMIT_REVIEW_SECRET_SCAN=off \
+  HTTP_PROXY='http://127.0.0.1:9' \
+  HTTPS_PROXY='http://127.0.0.1:9' \
+  ALL_PROXY='socks5://127.0.0.1:9' \
+  NO_PROXY='' \
+    "$context_bin" collect --source staged \
+      --expect-scope "$security_fingerprint" --mode fast
+) >"$tmp_dir/security-context.json"
+grep -Fq '"kind":"impact_context"' "$tmp_dir/security-context.json" \
+  || fail 'security fixture did not emit impact context'
+[ ! -s "$forbidden_log" ] || fail 'fast collection invoked a forbidden executable'
+[ ! -e "$repo_hook_sentinel" ] || fail 'fast collection invoked a repository-owned script'
+if grep -Fvx 'git' "$exec_log" >/dev/null; then
+  fail 'fast collection invoked an external process other than Git'
+fi
+if find "$cache_dir" -mindepth 1 -print -quit | grep -q .; then
+  fail 'fast collection wrote persistent cache state'
+fi
+
+malformed_repo="$tmp_dir/malformed-git-repo"
+mkdir -p "$malformed_repo"
+git -C "$malformed_repo" init -q
+git -C "$malformed_repo" config user.email review@example.test
+git -C "$malformed_repo" config user.name Review
+printf 'base\n' >"$malformed_repo/file.txt"
+git -C "$malformed_repo" add file.txt
+git -C "$malformed_repo" commit -qm base
+printf 'changed\n' >>"$malformed_repo/file.txt"
+git -C "$malformed_repo" add file.txt
+malformed_control="$tmp_dir/malformed-control.out"
+(
+  cd "$malformed_repo"
+  PRE_COMMIT_REVIEW_SECRET_SCAN=off \
+  PRE_COMMIT_REVIEW_RUST_BIN="$rust_helper" \
+    "$helper" --source staged --control-plane
+) >"$malformed_control"
+malformed_fingerprint="$(python3 - "$malformed_control" <<'PY'
+import json
+import pathlib
+import sys
+
+lines = pathlib.Path(sys.argv[1]).read_text(encoding='utf-8').splitlines()
+print(json.loads(lines[lines.index('## Review Control Plane JSON') + 1])['scope_fingerprint'])
+PY
+)"
+printf 'malformed-index' >"$malformed_repo/.git/index"
+if (
+  cd "$malformed_repo"
+  PRE_COMMIT_REVIEW_SECRET_SCAN=off \
+    "$context_bin" collect --source staged \
+      --expect-scope "$malformed_fingerprint" --mode fast
+) >"$tmp_dir/malformed.out" 2>"$tmp_dir/malformed.err"; then
+  fail 'malformed Git metadata was accepted'
+fi
+[ ! -s "$tmp_dir/malformed.out" ] || fail 'malformed Git metadata released context facts'
+grep -Fq 'repository-context-cli:' "$tmp_dir/malformed.err" \
+  || fail 'malformed Git metadata lacked a stable CLI error'
 
 printf 'repository context tests passed\n'

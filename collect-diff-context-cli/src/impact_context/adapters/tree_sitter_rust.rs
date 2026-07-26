@@ -187,15 +187,18 @@ impl TreeSitterRustAdapter {
         let mut macros = Vec::new();
         let mut attributes = Vec::new();
         for (capture, node) in captures.iter().copied() {
-            let accepted = match capture {
-                "import" => push_text_fact(&mut imports, node, source, budget),
+            let limitation_code = match capture {
+                "import" => (!push_text_fact(&mut imports, node, source, budget))
+                    .then_some("fact-budget-exhausted"),
                 "call" => {
                     let range = source_range(node);
                     let caller = innermost_caller(&changed_symbols, &range);
                     if caller.is_none() && !node_intersects_changes(range.clone(), changed_ranges) {
-                        true
+                        None
                     } else if budget.consume(BudgetResource::Facts, 1).is_err() {
-                        false
+                        Some("fact-budget-exhausted")
+                    } else if calls.len() >= budget.budget().max_edges {
+                        Some("edge-budget-exhausted")
                     } else {
                         calls.push(RustCallFact {
                             target: bounded_node_text(node, source),
@@ -203,15 +206,17 @@ impl TreeSitterRustAdapter {
                             range,
                             resolution: Resolution::Unresolved,
                         });
-                        true
+                        None
                     }
                 }
-                "macro" => push_text_fact(&mut macros, node, source, budget),
-                "attribute" => push_text_fact(&mut attributes, node, source, budget),
-                _ => true,
+                "macro" => (!push_text_fact(&mut macros, node, source, budget))
+                    .then_some("fact-budget-exhausted"),
+                "attribute" => (!push_text_fact(&mut attributes, node, source, budget))
+                    .then_some("fact-budget-exhausted"),
+                _ => None,
             };
-            if !accepted {
-                push_unique(&mut limitation_codes, "fact-budget-exhausted");
+            if let Some(code) = limitation_code {
+                push_unique(&mut limitation_codes, code);
                 break;
             }
         }
