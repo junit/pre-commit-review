@@ -10,7 +10,7 @@ use super::executor::{
     sha256_file, verify_prepared_integrity, Clock, ExecutionLimits, PreparedProfile,
     ProcessOutcome, SystemClock,
 };
-use super::snapshot::{CandidateSnapshot, SnapshotLimits};
+use crate::candidate::snapshot::{CandidateSnapshot, SnapshotLimits};
 use crate::review_scope::{
     open_authoritative_scope, revalidate_scope, AuthoritativeScope, ReviewSource, ScopeRequest,
 };

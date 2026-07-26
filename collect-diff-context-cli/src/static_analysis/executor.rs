@@ -5,7 +5,7 @@ use super::contracts::{
     StaticAnalysisProfile, ToolIdentity,
 };
 use super::evidence::{collect_evidence, CollectRequest};
-use super::snapshot::{CandidateSnapshot, SnapshotLimits};
+use crate::candidate::snapshot::{CandidateSnapshot, SnapshotLimits};
 use crate::review_scope::{
     open_authoritative_scope, revalidate_scope, AuthoritativeScope, ReviewSource, ScopeRequest,
 };

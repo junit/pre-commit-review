@@ -1,3 +1,4 @@
+use collect_diff_context_cli::candidate::snapshot::{CandidateSnapshot, SnapshotLimits};
 use collect_diff_context_cli::review_scope::ReviewSource;
 #[cfg(unix)]
 use collect_diff_context_cli::review_scope::{open_authoritative_scope, ScopeRequest};
@@ -5,7 +6,6 @@ use collect_diff_context_cli::review_scope::{open_authoritative_scope, ScopeRequ
 use collect_diff_context_cli::static_analysis::contracts::ExecutionStatus;
 #[cfg(unix)]
 use collect_diff_context_cli::static_analysis::executor::{run_analysis, RunRequest};
-use collect_diff_context_cli::static_analysis::snapshot::{CandidateSnapshot, SnapshotLimits};
 #[cfg(unix)]
 use serde_json::json;
 #[cfg(unix)]

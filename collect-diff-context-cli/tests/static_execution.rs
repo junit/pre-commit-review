@@ -1,3 +1,5 @@
+#[cfg(unix)]
+use collect_diff_context_cli::candidate::snapshot::{CandidateSnapshot, SnapshotLimits};
 use collect_diff_context_cli::static_analysis::contracts::StaticAnalysisProfile;
 #[cfg(unix)]
 use collect_diff_context_cli::static_analysis::contracts::{ExecutionStatus, FailureReason};
@@ -5,8 +7,6 @@ use collect_diff_context_cli::static_analysis::contracts::{ExecutionStatus, Fail
 use collect_diff_context_cli::static_analysis::executor::{
     execute_prepared, prepare_profile, run_analysis, ExecutionLimits, RunRequest,
 };
-#[cfg(unix)]
-use collect_diff_context_cli::static_analysis::snapshot::{CandidateSnapshot, SnapshotLimits};
 use serde_json::json;
 #[cfg(unix)]
 use sha2::{Digest, Sha256};
