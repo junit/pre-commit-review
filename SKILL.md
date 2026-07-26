@@ -92,7 +92,9 @@ When helper output contains `## Secret Scan`:
 - a secret finding is a security signal, not a review-completion condition: do not select or render the final verdict until the normal review scope is complete, and continue enumerating independent authorization, data, compatibility, reliability, and test risks after any credential blocker is found
 - never cap, merge away, or omit an independently actionable finding merely because a secret already makes the verdict blocking; for coverage-accounted reviews, every manifest unit must still reach a terminal coverage state before finalization
 
-If the helper emits `Test Selection Hints`, use them only as read-only guidance for verification planning. They do not prove test safety, do not replace CI, and must not be described as skipped or stripped tests. Built-in hints cover common JVM/Spring/Quarkus/Micronaut, pytest, Node e2e, Go, Rust, container, HTTP-stub, and external-service markers; project-specific `.pre-commit-review/test-hints` rules still take precedence for local conventions. Treat env-dependent tests such as `@SpringBootTest`, Testcontainers, or DB slices as verification that may require CI/local profile support, not as sandbox-safe unit tests. Treat `no-known-env-heavy-marker` as "no known marker matched", not as proof that the test is a pure unit test.
+When structural, text-query, dependency, framework, or test-selection context could materially affect finding verification or verification planning, invoke the control plane command template at `command_templates.impact_context` with the same `scope_fingerprint`. Accept only `impact_context/v1` whose scope fingerprint and source match the authoritative control plane. Preserve `partial`, `failed`, `invalidated`, and `unavailable` status plus every emitted limitation; do not infer missing symbols, edges, or summaries as absent behavior. Impact context never marks a manifest unit reviewed and has no coverage credit.
+
+Treat `test-selection` domain summaries from `impact_context/v1` only as read-only guidance for verification planning. They do not prove test safety, do not replace CI, and must not be described as skipped or stripped tests. Built-in hints cover common JVM/Spring/Quarkus/Micronaut, pytest, Node e2e, Go, Rust, container, HTTP-stub, and external-service markers; project-specific `.pre-commit-review/test-hints` rules still take precedence for local conventions. Treat env-dependent tests such as `@SpringBootTest`, Testcontainers, or DB slices as verification that may require CI/local profile support, not as sandbox-safe unit tests. Treat `no-known-env-heavy-marker` as "no known marker matched", not as proof that the test is a pure unit test.
 
 ### Optional Static Analysis Evidence
 
@@ -161,7 +163,7 @@ Accept only an authoritative `static_analysis_orchestration/v1` plus combined `s
 
 Keep findings from different executions independent even when rule ids, locations, messages, or fingerprints match. Every blocking or priority candidate still passes ordinary finding verification. Revalidate the final authoritative scope, manifest, every profile, and every executable before using orchestration evidence; it never marks review manifest units reviewed or replaces the final control-plane refresh.
 
-If a legacy/default helper invocation is persisted because it is too large and only returns a preview:
+If a default helper invocation is persisted because it is too large and only returns a preview:
 
 - recover the structured control plane before reviewing code
 - either read/extract the saved output sections containing `Review Plan JSON`, `Review Manifest JSONL`, and `Coverage Ledger Template`, or rerun the helper with `--plan-only` / `--include-diff never`

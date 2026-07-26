@@ -17,7 +17,6 @@ use std::sync::OnceLock;
 // Core Constants and Defaults
 const DEFAULT_MAX_DIFF_BYTES: usize = 200000;
 const DEFAULT_INLINE_DIFF_BYTES: usize = 60000;
-const DEFAULT_CONTEXT_QUERY_LIMIT: usize = 20;
 const DEFAULT_GROUP_TARGET_BYTES: usize = 120000;
 const DEFAULT_GROUP_HARD_BYTES: usize = 160000;
 
@@ -237,9 +236,16 @@ struct ReviewPlan {
     high_risk_units: usize,
     context_mode: String,
     state_snapshot_section: String,
-    semantic_context_section: String,
+    impact_context: ImpactContextReference,
     groups: Vec<PlanGroupEntry>,
     coverage_validation: CoverageValidation,
+}
+
+#[derive(Debug, Clone, Serialize)]
+struct ImpactContextReference {
+    contract: &'static str,
+    retrieval: &'static str,
+    coverage_credit: &'static str,
 }
 
 #[derive(Debug, Clone, Serialize)]
@@ -305,13 +311,6 @@ struct Hunk {
     header: String,
     content: String,
     bytes: usize,
-}
-
-struct DependencyEntry {
-    file: String,
-    change: String,
-    kind: String,
-    detail: String,
 }
 
 // Render a best-effort shell-display token for human-copyable commands.
@@ -924,585 +923,6 @@ fn emit_control_plane(scope: &AuthoritativeScope, self_exe: &str) {
     println!("{}", serde_json::to_string(&payload).unwrap_or_default());
 }
 
-fn git_show_ref_bytes(refspec: &str, cwd: &str) -> Option<Vec<u8>> {
-    let output = Command::new("git")
-        .args(["show", refspec])
-        .current_dir(cwd)
-        .output()
-        .ok()?;
-    if output.status.success() {
-        Some(output.stdout)
-    } else {
-        None
-    }
-}
-
-fn file_content_for_diff_source(
-    mode: &str,
-    _selected_ref: &str,
-    path: &str,
-    repo_root: &str,
-) -> String {
-    let refspec;
-    let bytes = match mode {
-        "staged" => {
-            refspec = format!(":{}", path);
-            git_show_ref_bytes(&refspec, repo_root)
-        }
-        "branch" => {
-            refspec = format!("HEAD:{}", path);
-            git_show_ref_bytes(&refspec, repo_root)
-        }
-        "unstaged" => fs::read(Path::new(repo_root).join(path)).ok(),
-        _ => None,
-    }
-    .or_else(|| fs::read(Path::new(repo_root).join(path)).ok())
-    .unwrap_or_default();
-
-    String::from_utf8_lossy(&bytes).into_owned()
-}
-
-fn is_test_like_path(path: &str) -> bool {
-    crate::impact_context::summarizer::is_test_like_path(path)
-}
-
-#[cfg(any())]
-fn is_test_like_path_legacy(path: &str) -> bool {
-    let lower = path.to_ascii_lowercase();
-    lower.starts_with("test/")
-        || lower.starts_with("tests/")
-        || lower.starts_with("e2e/")
-        || lower.starts_with("cypress/")
-        || lower.starts_with("playwright/")
-        || lower.starts_with("src/test/")
-        || lower.contains("/test/")
-        || lower.contains("/tests/")
-        || lower.contains("/e2e/")
-        || lower.contains("/cypress/")
-        || lower.contains("/playwright/")
-        || lower.contains("/__tests__/")
-        || lower.contains("/src/test/")
-        || lower.contains("/src/it/")
-        || lower.contains("/src/integrationtest/")
-        || lower.contains("/src/integration-test/")
-        || lower.ends_with("test.java")
-        || lower.ends_with("tests.java")
-        || lower.ends_with("it.java")
-        || lower.ends_with("itcase.java")
-        || lower.ends_with("integrationtest.java")
-        || lower.ends_with("spec.java")
-        || lower.ends_with("test.kt")
-        || lower.ends_with("tests.kt")
-        || lower.ends_with("it.kt")
-        || lower.ends_with("itcase.kt")
-        || lower.ends_with("integrationtest.kt")
-        || lower.ends_with("spec.kt")
-        || lower.ends_with("test.groovy")
-        || lower.ends_with("spec.groovy")
-        || lower.ends_with("it.groovy")
-        || lower.ends_with("integrationtest.groovy")
-        || lower.ends_with("test.scala")
-        || lower.ends_with("spec.scala")
-        || lower.ends_with("it.scala")
-        || lower.ends_with("integrationtest.scala")
-        || lower.ends_with("test.ts")
-        || lower.ends_with("spec.ts")
-        || lower.ends_with("e2e.ts")
-        || lower.ends_with("cy.ts")
-        || lower.ends_with("test.tsx")
-        || lower.ends_with("spec.tsx")
-        || lower.ends_with("e2e.tsx")
-        || lower.ends_with("cy.tsx")
-        || lower.ends_with("test.js")
-        || lower.ends_with("spec.js")
-        || lower.ends_with("e2e.js")
-        || lower.ends_with("cy.js")
-        || lower.ends_with("test.jsx")
-        || lower.ends_with("spec.jsx")
-        || lower.ends_with("e2e.jsx")
-        || lower.ends_with("cy.jsx")
-        || lower.ends_with("_test.go")
-        || lower.ends_with("_test.py")
-        || lower.ends_with(".spec.py")
-        || lower.starts_with("test_")
-        || lower.contains("/test_")
-}
-
-fn configured_test_hint_for_path(
-    path: &str,
-    content: &str,
-    repo_root: &str,
-) -> Option<[String; 5]> {
-    let hints_path = Path::new(repo_root).join(".pre-commit-review/test-hints");
-    let file = File::open(hints_path).ok()?;
-    let reader = BufReader::new(file);
-    for line_result in reader.lines() {
-        let line = line_result.ok()?;
-        let trimmed = line.trim();
-        if trimmed.is_empty() || trimmed.starts_with('#') {
-            continue;
-        }
-        let parts: Vec<&str> = line.split('\t').collect();
-        if parts.len() < 7 {
-            continue;
-        }
-        let rule_id = parts[0].trim();
-        let path_regex = parts[1].trim();
-        let content_regex = parts[2].trim();
-        let test_kind = parts[3].trim();
-        let dependency = parts[4].trim();
-        let confidence = parts[5].trim();
-        let hint = parts[6..].join(" ").trim().to_string();
-
-        if rule_id.is_empty()
-            || test_kind.is_empty()
-            || dependency.is_empty()
-            || confidence.is_empty()
-            || hint.is_empty()
-        {
-            continue;
-        }
-
-        let path_match = !path_regex.is_empty()
-            && Regex::new(path_regex)
-                .map(|re| re.is_match(path))
-                .unwrap_or(false);
-        let content_match = !content_regex.is_empty()
-            && Regex::new(content_regex)
-                .map(|re| re.is_match(content))
-                .unwrap_or(false);
-        if path_match || content_match {
-            return Some([
-                rule_id.to_string(),
-                confidence.to_string(),
-                test_kind.to_string(),
-                dependency.to_string(),
-                hint,
-            ]);
-        }
-    }
-    None
-}
-
-#[cfg(any())]
-fn contains_any(haystack: &str, needles: &[&str]) -> bool {
-    needles.iter().any(|needle| haystack.contains(needle))
-}
-
-#[cfg(any())]
-fn path_indicates_jvm_integration(lower_path: &str) -> bool {
-    lower_path.contains("/src/it/")
-        || lower_path.contains("/src/integrationtest/")
-        || lower_path.contains("/src/integration-test/")
-        || lower_path.ends_with("it.java")
-        || lower_path.ends_with("itcase.java")
-        || lower_path.ends_with("integrationtest.java")
-        || lower_path.ends_with("it.kt")
-        || lower_path.ends_with("itcase.kt")
-        || lower_path.ends_with("integrationtest.kt")
-        || lower_path.ends_with("it.groovy")
-        || lower_path.ends_with("integrationtest.groovy")
-        || lower_path.ends_with("it.scala")
-        || lower_path.ends_with("integrationtest.scala")
-}
-
-fn classify_test_hint(
-    path: &str,
-    content: &str,
-) -> (
-    &'static str,
-    &'static str,
-    &'static str,
-    &'static str,
-    &'static str,
-) {
-    let hint = crate::impact_context::summarizer::classify_test_hint(path, content);
-    (
-        hint.rule_id,
-        hint.confidence,
-        hint.test_kind,
-        hint.environment_dependency,
-        hint.hint,
-    )
-}
-
-#[cfg(any())]
-fn classify_test_hint_legacy(
-    path: &str,
-    content: &str,
-) -> (
-    &'static str,
-    &'static str,
-    &'static str,
-    &'static str,
-    &'static str,
-) {
-    let lower_path = path.to_ascii_lowercase();
-    let lower_content = content.to_ascii_lowercase();
-
-    if contains_any(
-        &lower_content,
-        &[
-            "org.testcontainers",
-            "@testcontainers",
-            "@container",
-            "testcontainers-go",
-        ],
-    ) {
-        (
-            "testcontainers",
-            "high",
-            "container-integration",
-            "docker-or-testcontainers",
-            "Requires Docker/Testcontainers; do not treat failure in a sandbox as a pure code failure without environment evidence.",
-        )
-    } else if contains_any(
-        &lower_content,
-        &[
-            "dockercomposecontainer",
-            "docker-compose",
-            "docker compose",
-            "compose.yml",
-            "compose.yaml",
-        ],
-    ) {
-        (
-            "docker-compose-test",
-            "high",
-            "compose-backed-integration",
-            "docker-compose-runtime",
-            "Uses Docker Compose or compose-backed services; verify in an environment with Docker and required service images.",
-        )
-    } else if contains_any(
-        &lower_content,
-        &[
-            "wiremockserver",
-            "wiremockextension",
-            "@autoconfigurewiremock",
-            "com.github.tomakehurst.wiremock",
-            "wiremock.org",
-        ],
-    ) {
-        (
-            "wiremock-test",
-            "high",
-            "http-stub-integration",
-            "wiremock-runtime",
-            "Uses WireMock HTTP stubs; sandbox failures may reflect port/runtime setup rather than the changed code.",
-        )
-    } else if contains_any(
-        &lower_content,
-        &["org.mockserver", "mockservercontainer", "clientandserver"],
-    ) {
-        (
-            "mockserver-test",
-            "high",
-            "http-stub-integration",
-            "mockserver-runtime",
-            "Uses MockServer or its container runtime; verify with the required local or CI service setup.",
-        )
-    } else if contains_any(
-        &lower_content,
-        &[
-            "@autoconfigurestubrunner",
-            "stubrunner",
-            "spring-cloud-contract",
-            "org.springframework.cloud.contract",
-        ],
-    ) {
-        (
-            "spring-cloud-contract",
-            "high",
-            "contract-integration",
-            "spring-cloud-contract-runtime",
-            "Uses Spring Cloud Contract or Stub Runner; may require generated stubs, broker settings, or CI contract artifacts.",
-        )
-    } else if contains_any(
-        &lower_content,
-        &[
-            "jdbc:",
-            "r2dbc:",
-            "spring.datasource.url",
-            "datasource.url",
-            "postgresql",
-            "mysql",
-            "mariadb",
-            "oracle.jdbc",
-            "mongodb://",
-            "redis://",
-            "spring.redis",
-            "spring.data.redis",
-            "kafka.bootstrap",
-            "bootstrap.servers",
-            "spring.kafka",
-            "elasticsearch",
-            "opensearch",
-            "rabbitmq",
-            "amqp://",
-            "localstack",
-            "minio",
-        ],
-    ) {
-        (
-            "external-service-config",
-            "high",
-            "service-backed-integration",
-            "database-cache-broker-or-search-service",
-            "References database, cache, broker, search, or object-storage service configuration; run with the expected local profile or CI services.",
-        )
-    } else if contains_any(
-        &lower_content,
-        &["@quarkustest", "@quarkusintegrationtest", "io.quarkus.test"],
-    ) {
-        (
-            "quarkus-test-context",
-            "high",
-            "quarkus-integration",
-            "quarkus-test-runtime",
-            "Loads a Quarkus test context; may require Quarkus profiles, dev services, containers, or CI runtime support.",
-        )
-    } else if contains_any(&lower_content, &["@micronauttest", "io.micronaut.test"]) {
-        (
-            "micronaut-test-context",
-            "high",
-            "micronaut-integration",
-            "micronaut-test-runtime",
-            "Loads a Micronaut test context; may require application context configuration or service-backed test resources.",
-        )
-    } else if content.contains("@SpringBootTest") {
-        (
-            "spring-boot-context",
-            "high",
-            "spring-boot-integration",
-            "spring-context",
-            "Loads a Spring Boot application context; may require local profiles, DB, middleware, or CI-provided services.",
-        )
-    } else if content.contains("@DataJpaTest")
-        || content.contains("@JdbcTest")
-        || content.contains("@JooqTest")
-        || content.contains("@MybatisTest")
-    {
-        (
-            "spring-data-slice",
-            "high",
-            "data-slice-integration",
-            "database-or-spring-test-slice",
-            "Loads a data test slice; may require an embedded or configured database.",
-        )
-    } else if content.contains("@WebMvcTest") || content.contains("@AutoConfigureMockMvc") {
-        (
-            "spring-web-slice",
-            "high",
-            "spring-web-slice",
-            "spring-test-context",
-            "Loads a Spring web test slice; usually narrower than full integration but not a pure unit test.",
-        )
-    } else if contains_any(
-        &lower_content,
-        &[
-            "@activeprofiles",
-            "spring_profiles_active",
-            "quarkus.test.profile",
-            "micronaut.environments",
-        ],
-    ) {
-        (
-            "jvm-test-profile",
-            "high",
-            "profile-backed-test",
-            "maven-gradle-or-framework-profile",
-            "Selects framework test profiles or environments; use the matching Maven/Gradle profile or CI profile configuration.",
-        )
-    } else if contains_any(
-        &lower_content,
-        &[
-            "@tag(\"integration\")",
-            "@tag(\"e2e\")",
-            "@tag(\"contract\")",
-            "@tag(\"slow\")",
-            "@category(integrationtest",
-            "@category(e2etest",
-        ],
-    ) {
-        (
-            "junit-integration-tag",
-            "high",
-            "tagged-jvm-integration",
-            "junit-tag-or-category-selection",
-            "Uses JUnit integration/e2e/contract tags; run with the tag expression and environment expected by the project.",
-        )
-    } else if path_indicates_jvm_integration(&lower_path) {
-        (
-            "jvm-integration-naming",
-            "medium",
-            "jvm-integration-by-convention",
-            "maven-failsafe-or-gradle-integration-profile",
-            "Path or class name follows common JVM integration-test conventions such as *IT or src/integrationTest; run the project integration-test profile if available.",
-        )
-    } else if contains_any(
-        &lower_content,
-        &[
-            "pytest.mark.integration",
-            "pytest.mark.e2e",
-            "pytest.mark.contract",
-            "pytest.mark.system",
-            "pytest.mark.django_db",
-            "pytest.mark.db",
-            "pytest.mark.redis",
-            "pytest.mark.kafka",
-            "pytest.mark.elasticsearch",
-        ],
-    ) {
-        (
-            "pytest-env-marker",
-            "high",
-            "pytest-marked-integration",
-            "pytest-marker-or-service-runtime",
-            "Uses pytest markers that usually select integration/e2e/database/service tests; run with the matching marker and required services.",
-        )
-    } else if contains_any(&lower_content, &["@playwright/test", "playwright/test"])
-        || lower_path.ends_with(".pw.ts")
-        || lower_path.ends_with(".pw.js")
-    {
-        (
-            "playwright-e2e",
-            "high",
-            "browser-e2e",
-            "browser-runtime-and-app-server",
-            "Uses Playwright; requires browser runtime and usually a running app server or configured webServer.",
-        )
-    } else if lower_path.contains("/cypress/")
-        || lower_path.ends_with(".cy.ts")
-        || lower_path.ends_with(".cy.tsx")
-        || lower_path.ends_with(".cy.js")
-        || lower_path.ends_with(".cy.jsx")
-        || contains_any(&lower_content, &["cy.visit(", "cypress."])
-    {
-        (
-            "cypress-e2e",
-            "high",
-            "browser-e2e",
-            "browser-runtime-and-app-server",
-            "Uses Cypress; requires browser runtime and usually a running app server.",
-        )
-    } else if (lower_path.contains("/e2e/")
-        || lower_path.contains(".e2e.")
-        || lower_path.contains("/integration/"))
-        && contains_any(&lower_content, &["vitest", "jest", "describe(", "test("])
-    {
-        (
-            "node-e2e-or-integration",
-            "medium",
-            "node-e2e-or-integration",
-            "node-runtime-and-possibly-app-server",
-            "Path/content follows common Node e2e or integration-test conventions; verify with the project test script and required runtime services.",
-        )
-    } else if contains_any(
-        &lower_content,
-        &[
-            "//go:build integration",
-            "//go:build e2e",
-            "//go:build docker",
-            "// +build integration",
-            "// +build e2e",
-            "// +build docker",
-        ],
-    ) {
-        (
-            "go-integration-build-tag",
-            "high",
-            "go-tagged-integration",
-            "go-build-tags-and-service-runtime",
-            "Uses Go integration/e2e/docker build tags; run go test with the matching tags and required services.",
-        )
-    } else if lower_path.ends_with("_test.go")
-        && (lower_path.contains("integration") || lower_path.contains("/e2e/"))
-    {
-        (
-            "go-integration-naming",
-            "medium",
-            "go-integration-by-convention",
-            "go-test-selection-or-service-runtime",
-            "Go test path suggests integration coverage; check project docs for tags, env vars, or service dependencies.",
-        )
-    } else if lower_content.contains("#[ignore]") {
-        (
-            "rust-ignored-test",
-            "medium",
-            "rust-ignored-or-slow-test",
-            "cargo-test-ignored-selection",
-            "Rust ignored tests are not run by default and often need explicit `cargo test -- --ignored` plus external setup.",
-        )
-    } else if lower_path.ends_with(".rs")
-        && (lower_path.starts_with("tests/")
-            || lower_path.contains("/tests/")
-            || lower_path.contains("/integration/"))
-    {
-        (
-            "rust-integration-path",
-            "low",
-            "rust-integration-by-convention",
-            "cargo-test-selection-or-project-specific-runtime",
-            "Rust test path follows Cargo integration-test layout; treat as a planning hint and verify whether external setup is required.",
-        )
-    } else {
-        (
-            "no-known-env-heavy-marker",
-            "low",
-            "unit-or-unknown",
-            "not-proven-isolated",
-            "No known env-heavy marker detected; this is not proof of unit-test isolation. Prefer the narrowest focused test command for this file.",
-        )
-    }
-}
-
-fn emit_test_selection_hints(
-    name_status_entries: &[NameStatusEntry],
-    mode: &str,
-    selected_ref: &str,
-    repo_root: &str,
-) {
-    println!("## Test Selection Hints");
-    println!("path\trule_id\tconfidence\ttest_kind\tenvironment_dependency\thint");
-    let mut emitted = false;
-    for entry in name_status_entries {
-        let path = &entry.path;
-        if !is_test_like_path(path) {
-            continue;
-        }
-        let content = file_content_for_diff_source(mode, selected_ref, path, repo_root);
-        if let Some([rule_id, confidence, kind, dependency, hint]) =
-            configured_test_hint_for_path(path, &content, repo_root)
-        {
-            println!(
-                "{}\t{}\t{}\t{}\t{}\t{}",
-                sanitize_tsv_field(path),
-                sanitize_tsv_field(&rule_id),
-                sanitize_tsv_field(&confidence),
-                sanitize_tsv_field(&kind),
-                sanitize_tsv_field(&dependency),
-                sanitize_tsv_field(&hint)
-            );
-            emitted = true;
-            continue;
-        }
-        let (rule_id, confidence, kind, dependency, hint) = classify_test_hint(path, &content);
-        println!(
-            "{}\t{}\t{}\t{}\t{}\t{}",
-            sanitize_tsv_field(path),
-            sanitize_tsv_field(rule_id),
-            sanitize_tsv_field(confidence),
-            sanitize_tsv_field(kind),
-            sanitize_tsv_field(dependency),
-            sanitize_tsv_field(hint)
-        );
-        emitted = true;
-    }
-    if !emitted {
-        println!("none\tnone\tnone\tnone\tnone\tno changed test files detected");
-    }
-}
-
 // Thread-Safe OnceLock Classifiers for Tier-1 Quality
 fn get_path_risk_regexes() -> &'static [Regex] {
     static RE: OnceLock<Vec<Regex>> = OnceLock::new();
@@ -1764,101 +1184,6 @@ fn split_diff_into_hunks(diff: &str) -> Vec<Hunk> {
     hunks
 }
 
-fn generate_dependency_summary(diff: &str) -> Vec<DependencyEntry> {
-    let mut entries = Vec::new();
-    let mut current_file = String::new();
-
-    let re_import = Regex::new(r"(?i)^(import\s.*|from\s.*\simport\s.*|.*require\(.+\).*|use\s.*;|package\s.*|#include\s.*)$").unwrap();
-    let re_export = Regex::new(r"^(export\s.*|pub\s.*)$").unwrap();
-    let re_sig = Regex::new(r"^(?:(?:(?:export\s+|async\s+|pub\s+|static\s+)*function\s+[A-Za-z0-9_$]+\s*\()|(?:(?:export\s+|pub\s+)*(?:class|struct|interface|enum|impl|type)\s+[A-Za-z0-9_$]+)|(?:def\s+[A-Za-z0-9_]+\s*\()|(?:fn\s+[A-Za-z0-9_]+\s*\()|(?:func\s+[A-Za-z0-9_]+\s*\()|(?:[A-Za-z0-9_$]+\s+[A-Za-z0-9_$]+\s*\()|(?:[A-Za-z0-9_$]+\s*\(\s*\)\s*\{))").unwrap();
-    let re_schema = Regex::new(r"(?i)^(alter\s+table|create\s+table|drop\s+table|create\s+index|drop\s+index|grant\s+|revoke\s+|add\s+column|drop\s+column)").unwrap();
-
-    for line in diff.lines() {
-        if let Some(stripped) = line.strip_prefix("+++ b/") {
-            current_file = unquote_git_path(stripped);
-            continue;
-        } else if let Some(stripped) = line.strip_prefix("+++ \"b/") {
-            let unquoted = unquote_git_path(&format!("\"{}", stripped));
-            current_file = unquoted.strip_prefix("b/").unwrap_or(&unquoted).to_string();
-            continue;
-        } else if line.starts_with("+++ ") {
-            current_file = String::new();
-            continue;
-        }
-
-        if (line.starts_with('+') || line.starts_with('-'))
-            && !line.starts_with("+++")
-            && !line.starts_with("---")
-        {
-            if current_file.is_empty() {
-                continue;
-            }
-            let change = if line.starts_with('+') {
-                "added"
-            } else {
-                "removed"
-            };
-            let raw_content = &line[1..];
-            let clean = raw_content.trim();
-            if clean.is_empty() {
-                continue;
-            }
-
-            let emit = |kind: &str, entries: &mut Vec<DependencyEntry>| {
-                let safe_current = quote_git_path(&current_file);
-                let detail = clean.replace('\t', " ");
-                entries.push(DependencyEntry {
-                    file: safe_current,
-                    change: change.to_string(),
-                    kind: kind.to_string(),
-                    detail,
-                });
-            };
-
-            if re_import.is_match(clean) {
-                emit("import", &mut entries);
-            }
-            if re_export.is_match(clean) {
-                emit("export", &mut entries);
-            }
-            if re_sig.is_match(clean) {
-                let is_control_flow = {
-                    let s = clean.trim();
-                    s.starts_with("if ")
-                        || s.starts_with("if(")
-                        || s.starts_with("while ")
-                        || s.starts_with("while(")
-                        || s.starts_with("for ")
-                        || s.starts_with("for(")
-                        || s.starts_with("switch ")
-                        || s.starts_with("switch(")
-                        || s.starts_with("catch ")
-                        || s.starts_with("catch(")
-                        || s.starts_with("return ")
-                        || s.starts_with("return(")
-                        || s.starts_with("else ")
-                        || s.starts_with("else{")
-                        || s.starts_with("else {")
-                        || s.starts_with("elif ")
-                        || s.starts_with("elif(")
-                        || s.starts_with("gsub(")
-                        || s.starts_with("printf ")
-                        || s.starts_with("printf(")
-                        || s.starts_with("print ")
-                        || s.starts_with("print(")
-                };
-                if !is_control_flow {
-                    emit("signature", &mut entries);
-                }
-            }
-            if re_schema.is_match(clean) {
-                emit("schema", &mut entries);
-            }
-        }
-    }
-    entries
-}
-
 fn fail_no_repo() {
     println!("# Pre-Commit Review Diff Context\n");
     println!("repository: not a git repository");
@@ -2073,7 +1398,7 @@ fn build_review_plan(
 
     (
         ReviewPlan {
-            schema_version: 1,
+            schema_version: 2,
             source: mode.to_string(),
             group_target_bytes,
             group_hard_bytes,
@@ -2083,7 +1408,11 @@ fn build_review_plan(
             high_risk_units,
             context_mode: "group".to_string(),
             state_snapshot_section: "Reducer State Snapshot Template".to_string(),
-            semantic_context_section: "Semantic Context Queries".to_string(),
+            impact_context: ImpactContextReference {
+                contract: "impact_context/v1",
+                retrieval: "review_control_plane.command_templates.impact_context",
+                coverage_credit: "none",
+            },
             groups: plan_groups,
             coverage_validation: CoverageValidation {
                 rule: "manifest_units - reviewed_units must be empty before claiming full review",
@@ -2493,11 +1822,6 @@ fn run_app() -> Result<(), AppError> {
         .ok()
         .and_then(|val| val.parse::<usize>().ok())
         .unwrap_or(DEFAULT_INLINE_DIFF_BYTES);
-
-    let context_query_limit = env::var("PRE_COMMIT_REVIEW_CONTEXT_QUERY_LIMIT")
-        .ok()
-        .and_then(|val| val.parse::<usize>().ok())
-        .unwrap_or(DEFAULT_CONTEXT_QUERY_LIMIT);
 
     let mut group_target_bytes = env::var("PRE_COMMIT_REVIEW_GROUP_TARGET_BYTES")
         .ok()
@@ -3856,7 +3180,7 @@ fn run_app() -> Result<(), AppError> {
         });
 
         let plan = ReviewPlan {
-            schema_version: 1,
+            schema_version: 2,
             source: mode.to_string(),
             group_target_bytes,
             group_hard_bytes,
@@ -3866,7 +3190,11 @@ fn run_app() -> Result<(), AppError> {
             high_risk_units,
             context_mode: "group".to_string(),
             state_snapshot_section: "Reducer State Snapshot Template".to_string(),
-            semantic_context_section: "Semantic Context Queries".to_string(),
+            impact_context: ImpactContextReference {
+                contract: "impact_context/v1",
+                retrieval: "review_control_plane.command_templates.impact_context",
+                coverage_credit: "none",
+            },
             groups: plan_groups,
             coverage_validation: CoverageValidation {
                 rule: "manifest_units - reviewed_units must be empty before claiming full review",
@@ -4169,146 +3497,6 @@ fn run_app() -> Result<(), AppError> {
         }
         println!();
     }
-
-    // Dependency Summary
-    println!("## Dependency Summary");
-    println!("file\tchange\tkind\tdetail");
-    let dep_entries = generate_dependency_summary(&global_diff);
-    if dep_entries.is_empty() {
-        println!("none\tnone\tnone\tnone");
-    } else {
-        for entry in &dep_entries {
-            println!(
-                "{}\t{}\t{}\t{}",
-                sanitize_tsv_field(&entry.file),
-                sanitize_tsv_field(&entry.change),
-                sanitize_tsv_field(&entry.kind),
-                sanitize_tsv_field(&entry.detail)
-            );
-        }
-    }
-    println!();
-
-    // Semantic Context Queries - protected against colons in file paths and matches using splitn
-    println!("## Semantic Context Queries");
-    println!("query\tfile\tline\tmatch");
-
-    let queries_file = Path::new(&repo_root).join(".pre-commit-review/context-queries");
-    let custom_queries = if queries_file.exists() {
-        let mut list = Vec::new();
-        if let Ok(file) = File::open(&queries_file) {
-            let reader = BufReader::new(file);
-            for line in reader.lines().map_while(Result::ok) {
-                let trimmed = line.trim();
-                if !trimmed.is_empty() && !trimmed.starts_with('#') {
-                    list.push(trimmed.to_string());
-                }
-            }
-        }
-        list
-    } else {
-        Vec::new()
-    };
-
-    if custom_queries.is_empty() {
-        println!("none\tnone\t0\tno context queries configured");
-    } else {
-        for query in &custom_queries {
-            let safe_query = query.replace('\t', " ");
-
-            // Execute git grep with NUL delimiters for path and line numbers
-            let mut grep_args = vec!["grep", "-n", "-z", "-I", "-E", "-e", query];
-
-            let ref_expr;
-            if mode == "staged" {
-                grep_args.push("--cached");
-            } else if mode == "branch" {
-                ref_expr = "HEAD".to_string();
-                grep_args.push(&ref_expr);
-            }
-            grep_args.push("--");
-            grep_args.push(".");
-
-            let mut cmd = Command::new("git");
-            cmd.args(&grep_args);
-            cmd.current_dir(&repo_root);
-
-            let mut count = 0;
-            match cmd.output() {
-                Ok(out) => {
-                    let status_code = out.status.code();
-                    if out.status.success() {
-                        // exit 0: matches found, parse output
-                        // NOTE: git grep -z replaces field separators (file:line:match)
-                        // with NUL bytes, but records are still newline-separated.
-                        // This means filenames containing literal newlines would be
-                        // mis-parsed. This is an accepted limitation matching the
-                        // legacy shell behavior.
-                        for line_bytes in out.stdout.split(|&b| b == b'\n') {
-                            if line_bytes.is_empty() {
-                                continue;
-                            }
-                            if count >= context_query_limit {
-                                break;
-                            }
-                            if let Some(first_nul) = line_bytes.iter().position(|&b| b == 0) {
-                                let file_bytes = &line_bytes[..first_nul];
-                                let rest = &line_bytes[first_nul + 1..];
-                                if let Some(second_nul) = rest.iter().position(|&b| b == 0) {
-                                    let line_num_bytes = &rest[..second_nul];
-                                    let match_bytes = &rest[second_nul + 1..];
-
-                                    let file_str = String::from_utf8_lossy(file_bytes);
-                                    let line_num_str = String::from_utf8_lossy(line_num_bytes);
-                                    let match_str = String::from_utf8_lossy(match_bytes);
-
-                                    let file_parsed =
-                                        if mode == "branch" && file_str.starts_with("HEAD:") {
-                                            file_str.strip_prefix("HEAD:").unwrap().to_string()
-                                        } else {
-                                            file_str.into_owned()
-                                        };
-
-                                    if file_parsed == ".pre-commit-review/context-queries" {
-                                        continue;
-                                    }
-
-                                    let line_num = line_num_str.parse::<usize>().unwrap_or(0);
-                                    let safe_file = file_parsed.replace('\t', " ");
-                                    let safe_match_text = match_str.replace('\t', " ");
-
-                                    println!(
-                                        "{}\t{}\t{}\t{}",
-                                        safe_query, safe_file, line_num, safe_match_text
-                                    );
-                                    count += 1;
-                                }
-                            }
-                        }
-                    } else if status_code == Some(1) {
-                        // exit 1: no matches found — this is normal, not an error
-                    } else {
-                        // exit >1: actual error (bad regex, permission denied, etc.)
-                        return Err(AppError::GitError {
-                            cmd: format!("git grep {:?}", grep_args),
-                            details: String::from_utf8_lossy(&out.stderr).into_owned(),
-                        });
-                    }
-                }
-                Err(e) => {
-                    return Err(AppError::IoError(e));
-                }
-            }
-
-            if count == 0 {
-                println!("{}\tnone\t0\tno matches", safe_query);
-            }
-        }
-    }
-    println!();
-
-    emit_test_selection_hints(&name_status_entries, mode, &selected_ref, &repo_root);
-    println!();
 
     // Suggested Review Queue
     println!("## Suggested Review Queue");

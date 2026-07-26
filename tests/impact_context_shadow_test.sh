@@ -43,8 +43,13 @@ stdout_file="$tmp_dir/stdout"
     "$runner" --source staged --output "$metrics"
 ) >"$stdout_file"
 
-grep -Fq '## Dependency Summary' "$stdout_file" \
-  || fail 'legacy Rust report was not preserved on stdout'
+grep -Fq '## Review Plan JSON' "$stdout_file" \
+  || fail 'Rust review report was not preserved on stdout'
+if grep -Fq '## Dependency Summary' "$stdout_file" \
+  || grep -Fq '## Semantic Context Queries' "$stdout_file" \
+  || grep -Fq '## Test Selection Hints' "$stdout_file"; then
+  fail 'retired context sections leaked into production stdout'
+fi
 if grep -Fq '## Impact Context JSON' "$stdout_file" \
   || grep -Fq '"kind":"impact_context"' "$stdout_file"; then
   fail 'new impact context leaked into production stdout'
@@ -54,8 +59,10 @@ jq -e '
   .schema_version == 1 and
   .kind == "impact_context_shadow_metrics" and
   (.scope_fingerprint | test("^[0-9a-f]{40}([0-9a-f]{24})?$")) and
-  .legacy_dependency_rows >= 1 and
-  .legacy_semantic_query_matches >= 1 and
+  .report_review_plan_schema_version == 2 and
+  .report_impact_context_contract == "impact_context/v1" and
+  .report_impact_context_retrieval == "review_control_plane.command_templates.impact_context" and
+  .report_impact_context_coverage_credit == "none" and
   .new_changed_symbols >= 1 and
   .new_impact_edges >= 1 and
   .new_domain_summaries >= 1 and

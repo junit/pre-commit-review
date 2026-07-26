@@ -356,7 +356,7 @@
 
 1. **diff 来源解析** —— 判断当前目录是否是 Git 仓库，存在 staged 时优先使用 staged，否则回退到 unstaged 或 branch-vs-base；输出 diff 统计、文件列表、状态、截断状态、基于路径/内容的高风险候选、疑似生成文件、lockfile 和高 churn 文件。rename、delete、binary、mode-only 和 submodule 指针更新都会记录为 manifest units。
 2. **有界 control plane** —— 通过 `--control-plane` 输出紧凑 JSON gateway，包含完整 scope 内容指纹、逐单元指纹、有界 units/groups、work order 与可复用命令模板；后续补取支持 `--expect-scope <fingerprint>`，快照过期时 fail closed；指纹和实际审查字节都会禁用外部 diff/textconv driver，确保快照身份与模型检查到的内容保持同一语义。
-3. **coverage-led 与测试选择提示** —— 输出 Review Manifest/Groups 以及 reducer 友好的结构化段落（Review Plan JSON、split 建议、ledgers、work packets、finalization 模板）、有界只读 Semantic Context Queries，以及对变更中测试文件的 Test Selection Hints，用于识别常见 JVM/Spring/Quarkus/Micronaut、Maven/Gradle 集成测试命名、JUnit tags、Testcontainers、Docker Compose、WireMock/MockServer、pytest markers、Playwright/Cypress/Node e2e、Go build tags、Rust ignored/integration tests，以及数据库/缓存/消息/搜索服务配置等环境依赖测试。
+3. **coverage-led 规划与按需影响上下文** —— 输出 Review Manifest/Groups 以及 reducer 友好的结构化段落（Review Plan JSON v2、split 建议、ledgers、work packets、finalization 模板）。Review Plan v2 指向 authoritative control plane 中绑定 fingerprint 的 `impact_context/v1` 命令；结构、文本查询、依赖、框架、配置和测试选择上下文只在需要时单独获取。
 4. **可选的本地密钥打码** —— 可信 Gitleaks 可用时，先扫描和打码完整的所选 diff，再应用输出字节上限，将命中范围替换为 `[redacted:<rule-id>]` 后复扫，并对 wrapper 捕获的完整 stdout/stderr 做打码。这个顺序能防止已检测到的密钥跨越截断边界时以无法匹配的前缀泄露。scanner 被关闭、不可用、超时或没有返回命中时，审查继续使用原始输出。若 Gitleaks 已返回命中，但本地坐标映射或复核失败，helper 会明确报告 `status: redaction-failed`，而不是把它说成 scanner 不可用；此路径同样继续输出原始内容，不暂扣审查材料。
 
 可选的 `scripts/collect_static_evidence.sh` 通道会在 control plane 打开后接收显式提供的 SARIF 2.1.0 或规范化 JSON。它要求同一个 scope fingerprint，把 findings 映射到 manifest units 和新增行，输出可供 reducer 使用的 disposition，并在返回前再次验证快照。它绝不会执行分析器。协议与命令示例见 [`docs/static-analysis-evidence.md`](./docs/static-analysis-evidence.md)。
@@ -368,9 +368,9 @@
 完整输出段落清单（Coverage Ledger Template、Group Review Work Packets、Reducer State Snapshot 等）见 [`docs/helper-capabilities.md`](./docs/helper-capabilities.md)，供构建 reducer/subagent 自动化的集成者参考。
 
 普通审查入口不会执行 fetch、stage、reset、install，也不会修改任何文件。受控静态分析只有通过独立的 profile 路径与精确 SHA256 授权门后才运行，并在临时候选快照而非业务仓库上工作。用户显式执行安装时，如果当前平台二进制尚未 bundled，`install.sh` 会调用 `scripts/fetch_gitleaks.sh`；该脚本只下载仓库固定的上游 release asset，并同时校验 archive 与解压后 executable 的固定 SHA256。交互式终端默认显示下载进度；输出被宿主捕获时可设置 `PRE_COMMIT_REVIEW_FETCH_PROGRESS=always` 强制显示，或设为 `never` 关闭。`--dry-run` 不会下载，`--no-download` 会跳过这项可选安装行为，Agent 审查期间也绝不会联网安装 Gitleaks。可运行 `./install.sh --doctor` 诊断本地打码是否可用。
-它不会运行、改写或跳过测试。Test Selection Hints 只是只读提示，用于选择更聚焦的验证命令，并区分沙箱环境失败和代码失败。`no-known-env-heavy-marker` 并不证明测试是隔离单测，只表示 helper 没匹配到已知的重环境标记。
+它不会运行、改写或跳过测试。`impact_context/v1` 中的 `test-selection` 摘要只是只读提示，用于选择更聚焦的验证命令，并区分环境失败和代码失败。内置摘要覆盖常见 JVM/Spring/Quarkus/Micronaut、Maven/Gradle 集成测试命名、JUnit tags、Testcontainers、Docker Compose、WireMock/MockServer、pytest markers、Playwright/Cypress/Node e2e、Go build tags、Rust ignored/integration tests，以及数据库/缓存/消息/搜索服务配置。`no-known-env-heavy-marker` 并不证明测试是隔离单测，只表示没有匹配到已知的重环境标记。
 
-审查流程首先运行 `scripts/collect_diff_context.sh --control-plane`。这个有界 gateway 不输出 raw diff，且只有 collection-start 与 collection-end 指纹一致时才标记为 authoritative。兼容用的默认输出仍是 plan-first，并可能省略全局 raw diff。`PRE_COMMIT_REVIEW_INLINE_DIFF_BYTES`（默认 `60000`）控制该默认输出何时内联全局 diff。`PRE_COMMIT_REVIEW_MAX_DIFF_BYTES`（默认 `200000`）只控制已经被选择输出的 diff 如何截断；只有在确认完整的已打码 diff 输出安全时才设为 `0`。
+审查流程首先运行 `scripts/collect_diff_context.sh --control-plane`。这个有界 gateway 不输出 raw diff，且只有 collection-start 与 collection-end 指纹一致时才标记为 authoritative。默认报告仍是 plan-first，并可能省略全局 raw diff。`PRE_COMMIT_REVIEW_INLINE_DIFF_BYTES`（默认 `60000`）控制该默认输出何时内联全局 diff。`PRE_COMMIT_REVIEW_MAX_DIFF_BYTES`（默认 `200000`）只控制已经被选择输出的 diff 如何截断；只有在确认完整的已打码 diff 输出安全时才设为 `0`。
 
 即使所选模型标称支持 200K 以上上下文，默认预算仍然有意保持保守。CLI 宿主可能在内容进入模型之前就把大型工具 stdout 持久化或只返回 preview；大段 raw diff 还会增加延迟和多轮 token 成本，并削弱审查焦点。请把默认值视为跨宿主稳定基线，而不是模型上下文上限。
 
@@ -402,9 +402,11 @@ Review group 预算默认目标值为 120KB，硬上限为 160KB。可通过 `PR
 
 打开控制面后，可用 `scripts/collect_diff_context.sh --source <staged|unstaged|branch> --group <group_id> --expect-scope <fingerprint>` 只输出一个未超硬预算 review group 的 diff。需要更窄上下文或 group 已拆分时，用带同一 fingerprint 的 `--path <path>` 补取。最终 verdict 前必须重跑 `--control-plane`；快照漂移会使旧 ledger 失效，不能把两个版本拼成一次“完整审查”。`split-required` group 必须通过有界 replacement 审查，不能作为一个整体 group 审查。
 
+当结构或跨文件上下文可能实质影响审查时，使用 `scripts/collect_impact_context.sh --source <staged|unstaged|branch> --expect-scope <fingerprint> --mode fast`。Fast 模式用 Tree-sitter 解析完整的变更 Rust 文件，并只对变更候选文件应用有界文本/配置规则。返回的 `impact_context/v1` 必须匹配 authoritative scope fingerprint；partial 或 unavailable 状态必须保留，且永远不能满足 manifest coverage。
+
 项目级风险提示可以放在 `.pre-commit-review/risk-paths` 和 `.pre-commit-review/risk-content`。每个非空、非注释行都是一个扩展正则表达式；匹配项只会提升到 high-risk 审查顺序，不会改变覆盖要求。
 
-项目级语义上下文提示可以放在 `.pre-commit-review/context-queries`。每个非空、非注释行都是一个扩展正则表达式，只会通过有界、只读的 `git grep` 执行；匹配结果可辅助依赖或调用方检查，但永远不能满足审查覆盖。
+项目级文本上下文提示可以放在 `.pre-commit-review/context-queries`。每个非空、非注释行都是一个扩展正则表达式，由有界 text adapter 在变更候选文件上执行；匹配结果可辅助依赖或调用方检查，但永远不能满足审查覆盖。
 
 项目级测试选择提示可以放在 `.pre-commit-review/test-hints`。每个非注释行是一条 TSV 规则：
 
@@ -412,15 +414,15 @@ Review group 预算默认目标值为 120KB，硬上限为 160KB。可通过 `PR
 rule_id<TAB>path_regex<TAB>content_regex<TAB>test_kind<TAB>environment_dependency<TAB>confidence<TAB>hint
 ```
 
-helper 会优先输出第一条路径或内容正则匹配变更测试文件的自定义提示，再回退到内置提示。内置规则覆盖热门跨生态约定，但项目级配置仍应用于本地 profile、命名约定、私有测试框架，以及无法仅从路径/内容标记稳定识别的服务依赖测试套件。
+impact-context collector 会输出第一条路径或内容正则匹配变更测试文件的自定义提示，并结合内置分类。内置规则覆盖热门跨生态约定，但项目级配置仍应用于本地 profile、命名约定、私有测试框架，以及无法仅从路径/内容标记稳定识别的服务依赖测试套件。
 
-Review-planning 表和 `Dependency Summary` 使用 TSV，因为路径、命令和依赖详情中可能包含逗号。
+面向人工阅读的 Review-planning 表使用 TSV，因为路径和命令中可能包含逗号。
 
-Reducer 和 subagent 自动化应优先使用 authoritative `Review Control Plane JSON`；旧的 Review Plan/Manifest/Ledger section 继续作为兼容输出。TSV 表主要用于人工快速浏览。helper 已输出 manifest 后，自动化不得再通过直接 `git status` 或 `git diff --name-only` 重建审查范围。
+Reducer 和 subagent 自动化必须使用 authoritative `Review Control Plane JSON` 确定 scope。Review Plan/Manifest/Ledger section 是该 scope 的报告视图；`impact_context/v1` 是 `coverage_credit: none` 的可选证据。TSV 表主要用于人工快速浏览。helper 已输出 manifest 后，自动化不得再通过直接 `git status` 或 `git diff --name-only` 重建审查范围。
 
 ### `tests/`
 
-确定性 shell 测试，不依赖模型。`skill_contract_test.sh` 固化 `SKILL.md` 与 `references/` 之间的跨文档契约（禁止的占位符、必需的标签、不可翻译的 `VERDICT` 字段）。`collect_diff_context_test.sh`、`control_plane_test.sh` 和 `full_review_workflow_test.sh` 针对临时真实 Git 仓库验证普通输出、权威快照 pinning/漂移 fail-closed、schema 与完整 reduction。`static_analysis_evidence_test.sh`、`static_analysis_execution_test.sh`、`static_analysis_execution_modes_test.sh` 与 `static_analysis_orchestration_test.sh` 覆盖报告接入、精确授权、有界单/多分析器执行、共享快照、累计预算、终态、三种候选快照模式与 gitlink 省略。`parity_golden_test.sh` 复用共享 parity 夹具和专用 normalize 脚本，确保 legacy 与 Rust 的比对结果稳定。`install_smoke_test.sh` 和 `install_agent_matrix_test.sh` 在 copy/link/dry-run 模式和受支持的 agent 矩阵上验证安装器。它们不调用模型，可在 CI 中安全运行。
+确定性 shell 测试，不依赖模型。`skill_contract_test.sh` 固化 `SKILL.md` 与 `references/` 之间的跨文档契约（禁止的占位符、必需的标签、不可翻译的 `VERDICT` 字段）。`collect_diff_context_test.sh`、`control_plane_test.sh` 和 `full_review_workflow_test.sh` 针对临时真实 Git 仓库验证普通输出、权威快照 pinning/漂移 fail-closed、schema 与完整 reduction。`static_analysis_evidence_test.sh`、`static_analysis_execution_test.sh`、`static_analysis_execution_modes_test.sh` 与 `static_analysis_orchestration_test.sh` 覆盖报告接入、精确授权、有界单/多分析器执行、共享快照、累计预算、终态、三种候选快照模式与 gitlink 省略。`parity_golden_test.sh` 复用共享 parity 夹具和专用 normalize 脚本，严格比较 legacy 与 Rust 仍共同保留的报告契约，同时排除已迁移的 context section。`install_smoke_test.sh` 和 `install_agent_matrix_test.sh` 在 copy/link/dry-run 模式和受支持的 agent 矩阵上验证安装器。它们不调用模型，可在 CI 中安全运行。
 
 ### `evals/`
 

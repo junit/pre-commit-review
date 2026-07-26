@@ -27,7 +27,7 @@ The review workflow starts with `scripts/collect_diff_context.sh --control-plane
 For large or fragmented diffs, the helper emits structured sections so a reducer or subagent can review every unit without Markdown table parsing:
 
 - Review Manifest and Review Groups for coverage-led commit-readiness workflows
-- Review Plan JSON for reducer-friendly automation
+- Review Plan JSON v2 for reducer-friendly automation, including an `impact_context/v1` retrieval reference with `coverage_credit: none`
 - Split Suggestions for review groups that exceed the hard budget
 - Split Unit Diff Preview blocks for hunk-level review
 - Coverage Ledger Template with pending review units
@@ -37,10 +37,10 @@ For large or fragmented diffs, the helper emits structured sections so a reducer
 - Full Review Execution Plan with ordered split/review steps
 - Group Review Work Packets for serial or delegated group review
 - Reducer Finalization Template for final synthesis gates
-- best-effort Dependency Summary for cross-file reduction
-- bounded Semantic Context Queries from project-provided read-only grep patterns
-- Test Selection Hints for changed test files that look environment-dependent, including common JVM/Spring/Quarkus/Micronaut, Maven/Gradle integration naming, JUnit tags, Testcontainers, Docker Compose, WireMock/MockServer, pytest markers, Playwright/Cypress/Node e2e, Go build tags, Rust ignored/integration tests, and database/cache/broker/search service configuration
+- a fingerprint-bound `command_templates.impact_context` command for optional `impact_context/v1` retrieval through `scripts/collect_impact_context.sh`
 - a suggested review queue for large or truncated diffs
+
+The default report no longer emits `Dependency Summary`, `Semantic Context Queries`, or `Test Selection Hints`. The separate fast impact-context collector parses complete changed Rust files with Tree-sitter, scans changed candidate files with the bounded text adapter, and returns normalized dependency, configured-query, framework, configuration, and test-selection summaries. It does not parse unrelated repository files, run builds, invoke the network, or grant review coverage.
 
 ## Safety Semantics
 
@@ -57,11 +57,11 @@ For large or fragmented diffs, the helper emits structured sections so a reducer
 - uses the skill-owned `references/security/gitleaks.toml`; repository `.gitleaks.toml`, `.gitleaksignore`, and `gitleaks:allow` cannot relax the scanner configuration
 - accepts the default bundled scanner only when its executable SHA256 and version match the skill-owned manifests, then performs an empty-stdin JSON capability check before scanning content
 - never searches `PATH` for a scanner; `PRE_COMMIT_REVIEW_GITLEAKS_BIN` is the only external scanner path, must be absolute, and represents explicit user trust while still requiring the pinned version and capability check
-- Test Selection Hints are read-only guidance for choosing focused verification commands and for distinguishing sandbox failures from code failures. A `no-known-env-heavy-marker` hint is not proof that a test is isolated; it only means the helper did not match a known environment-heavy marker.
+- `test-selection` domain summaries are read-only guidance for choosing focused verification commands and for distinguishing environment failures from code failures. A `no-known-env-heavy-marker` summary is not proof that a test is isolated; it only means the collector did not match a known environment-heavy marker.
 
 When updating `scripts/gitleaks.version`, regenerate both `scripts/gitleaks-assets.sha256` from the upstream release archives and `scripts/gitleaks-binaries.sha256` from the corresponding extracted executables. Fetch, doctor, and release checks reject inconsistent artifacts; installer and runtime review degrade without redaction rather than becoming unavailable.
 
-Reducer and subagent automation should prefer authoritative `Review Control Plane JSON`; the older Review Plan/Manifest/Ledger sections remain compatibility output. Automation must not reconstruct scope from direct `git status` or `git diff --name-only` after the helper has emitted a manifest.
+Reducer and subagent automation must use authoritative `Review Control Plane JSON` for scope. Review Plan/Manifest/Ledger sections are report views over that scope, while `impact_context/v1` is optional evidence with no coverage credit. Automation must not reconstruct scope from direct `git status` or `git diff --name-only` after the helper has emitted a manifest.
 
 ## Optional Static Analysis Evidence
 

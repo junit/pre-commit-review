@@ -110,24 +110,18 @@ legacy_path, context_path, fingerprint, started_ns, output_path = sys.argv[1:]
 legacy_lines = pathlib.Path(legacy_path).read_text(encoding='utf-8').splitlines()
 context_lines = pathlib.Path(context_path).read_text(encoding='utf-8').splitlines()
 
-def section_rows(title):
+def section_json(title):
     marker = legacy_lines.index(title)
-    rows = []
+    lines = []
     for line in legacy_lines[marker + 1:]:
         if line.startswith('## '):
             break
         if line:
-            rows.append(line)
-    return rows
+            lines.append(line)
+    return json.loads('\n'.join(lines))
 
-dependency_rows = section_rows('## Dependency Summary')[1:]
-legacy_dependency_rows = sum(1 for row in dependency_rows if not row.startswith('none\t'))
-query_rows = section_rows('## Semantic Context Queries')[1:]
-legacy_query_matches = 0
-for row in query_rows:
-    fields = row.split('\t')
-    if len(fields) >= 4 and fields[1] != 'none' and fields[2] not in {'0', ''}:
-        legacy_query_matches += 1
+review_plan = section_json('## Review Plan JSON')
+impact_reference = review_plan['impact_context']
 
 marker = context_lines.index('## Impact Context JSON')
 context = json.loads(context_lines[marker + 1])
@@ -138,8 +132,10 @@ metrics = {
     'schema_version': 1,
     'kind': 'impact_context_shadow_metrics',
     'scope_fingerprint': fingerprint,
-    'legacy_dependency_rows': legacy_dependency_rows,
-    'legacy_semantic_query_matches': legacy_query_matches,
+    'report_review_plan_schema_version': review_plan['schema_version'],
+    'report_impact_context_contract': impact_reference['contract'],
+    'report_impact_context_retrieval': impact_reference['retrieval'],
+    'report_impact_context_coverage_credit': impact_reference['coverage_credit'],
     'new_changed_symbols': len(context['changed_symbols']),
     'new_impact_edges': len(context['impact_edges']),
     'new_domain_summaries': len(context['domain_summaries']),

@@ -56,15 +56,42 @@ pub fn summarize_unit(unit: &NormalizedUnitFacts, source: Option<&str>) -> Vec<D
                 fact.rule_id, fact.path, fact.range.start_line, fact.text
             ),
             SummaryKind::TestSelection => format!(
-                "Configured test selection rule {} matched {}.",
-                fact.rule_id, fact.path
+                "Configured test selection rule {} matched {}: test kind {}, environment dependency {}, hint {}.",
+                fact.rule_id,
+                fact.path,
+                fact.details
+                    .get("test_kind")
+                    .map(String::as_str)
+                    .unwrap_or("unknown"),
+                fact.details
+                    .get("environment_dependency")
+                    .map(String::as_str)
+                    .unwrap_or("unknown"),
+                fact.text
             ),
             _ => format!(
                 "{} evidence changed at line {}: {}.",
                 fact.kind, fact.range.start_line, fact.text
             ),
         };
-        insert_summary(&mut summaries, make_fact_summary(kind, fact, message));
+        let summary = if kind == SummaryKind::TestSelection {
+            make_summary(
+                kind,
+                &fact.path,
+                None,
+                fact.details
+                    .get("confidence")
+                    .map(String::as_str)
+                    .map(confidence_from_text)
+                    .unwrap_or(fact.confidence),
+                message,
+                vec![fact.fact_id.clone()],
+                &fact.rule_id,
+            )
+        } else {
+            make_fact_summary(kind, fact, message)
+        };
+        insert_summary(&mut summaries, summary);
     }
 
     if is_test_like_path(&unit.path) {

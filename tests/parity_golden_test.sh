@@ -2,8 +2,8 @@
 # shellcheck disable=SC2016
 set -euo pipefail
 
-# Parity Golden Test to ensure 100% functional equivalence between the
-# legacy shell script and the hardened Rust implementation.
+# Parity Golden Test for retained report contracts shared by the legacy Shell
+# script and the hardened Rust implementation.
 
 SCRIPT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 REPO_ROOT="$(cd "$SCRIPT_DIR/.." && pwd)"
@@ -86,7 +86,7 @@ compare_output() {
     fi
   done
 
-  # Perform strict diff comparison
+  # Perform a strict comparison after excluding intentionally migrated context contracts.
   if ! diff -u output_legacy.txt output_rust.txt; then
     echo "❌ ERROR: Parity mismatch in scenario: $scenario"
     if [ -f stderr_rust.txt ]; then
@@ -95,7 +95,7 @@ compare_output() {
     fi
     exit 1
   fi
-  echo "✅ SUCCESS: Scenario $scenario matched perfectly."
+  echo "✅ SUCCESS: Scenario $scenario matched retained contracts."
 }
 
 # -----------------------------------------------------------------------------
@@ -238,5 +238,5 @@ rm -f "$LEGACY_SH"
 rm -rf "$TEST_DIR"
 
 echo "=================================================="
-echo "🎉 ALL PARITY GOLDEN TEST SCENARIOS PASSED PERFECTLY!"
+echo "🎉 ALL PARITY GOLDEN TEST SCENARIOS PASSED RETAINED CONTRACTS!"
 echo "=================================================="

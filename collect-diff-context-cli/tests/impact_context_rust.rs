@@ -1189,6 +1189,10 @@ fn engine_output_truncation_is_bounded_and_deterministic() {
     for provider in &mut second.providers {
         provider.elapsed_ms = 0;
     }
+    for _ in 0..3 {
+        first.metrics.output_bytes = serde_json::to_vec(&first).unwrap().len();
+        second.metrics.output_bytes = serde_json::to_vec(&second).unwrap().len();
+    }
     assert_eq!(first, second);
 }
 

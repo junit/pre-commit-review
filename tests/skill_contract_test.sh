@@ -206,8 +206,12 @@ grep -Fq 'Before writing `Unreviewed changes: none` / `未审查变更：无`, r
   || fail 'SKILL.md must require scope honesty before claiming no unreviewed changes'
 grep -Fq 'Verification recommendations must preserve the specific behavioral assertion that makes the concern meaningful.' "$skill_file" \
   || fail 'SKILL.md must preserve specific behavioral verification assertions'
-grep -Fq 'If the helper emits `Test Selection Hints`, use them only as read-only guidance for verification planning.' "$skill_file" \
-  || fail 'SKILL.md must treat helper test hints as read-only verification guidance'
+grep -Fq 'Treat `test-selection` domain summaries from `impact_context/v1` only as read-only guidance for verification planning.' "$skill_file" \
+  || fail 'SKILL.md must treat impact-context test hints as read-only verification guidance'
+grep -Fq 'invoke the control plane command template at `command_templates.impact_context` with the same `scope_fingerprint`' "$skill_file" \
+  || fail 'SKILL.md must bind impact-context retrieval to the authoritative scope'
+grep -Fq 'Impact context never marks a manifest unit reviewed and has no coverage credit.' "$skill_file" \
+  || fail 'SKILL.md must deny impact-context coverage credit'
 grep -Fq 'Treat `no-known-env-heavy-marker` as "no known marker matched", not as proof that the test is a pure unit test.' "$skill_file" \
   || fail 'SKILL.md must keep no-known test hints conservative'
 if grep -Fq 'prefer `scripts/collect_diff_context.sh`' "$skill_file"; then
@@ -459,6 +463,8 @@ grep -Fq 'readme_host_entrypoints_test.sh' "$readme_file" \
   || fail 'README.md must document the README host entrypoints surface test'
 grep -Fq '.pre-commit-review/test-hints' "$readme_file" \
   || fail 'README.md must document project-specific test selection hints'
+grep -Fq 'scripts/collect_impact_context.sh' "$readme_file" \
+  || fail 'README.md must document on-demand impact-context retrieval'
 grep -Fq 'no-known-env-heavy-marker' "$readme_file" \
   || fail 'README.md must document conservative no-known test hint semantics'
 grep -Fq 'Playwright/Cypress/Node e2e' "$readme_file" \
@@ -477,6 +483,8 @@ grep -Fq 'readme_host_entrypoints_test.sh' "$readme_zh_file" \
   || fail 'README.zh-CN.md must document the README host entrypoints surface test'
 grep -Fq '.pre-commit-review/test-hints' "$readme_zh_file" \
   || fail 'README.zh-CN.md must document project-specific test selection hints'
+grep -Fq 'scripts/collect_impact_context.sh' "$readme_zh_file" \
+  || fail 'README.zh-CN.md must document on-demand impact-context retrieval'
 grep -Fq 'no-known-env-heavy-marker' "$readme_zh_file" \
   || fail 'README.zh-CN.md must document conservative no-known test hint semantics'
 grep -Fq 'Playwright/Cypress/Node e2e' "$readme_zh_file" \
