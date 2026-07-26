@@ -74,7 +74,14 @@ pub struct TextOutput {
 pub struct TextConfiguration {
     queries: Vec<ConfiguredQuery>,
     test_hints: Vec<TestHint>,
+    input_sizes: BTreeMap<String, usize>,
     pub limitation_codes: Vec<String>,
+}
+
+impl TextConfiguration {
+    pub fn input_sizes(&self) -> &BTreeMap<String, usize> {
+        &self.input_sizes
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -124,8 +131,19 @@ impl TextAdapter {
     ) -> Result<TextConfiguration, TextAdapterError> {
         let mut limitation_codes = Vec::new();
         let mut queries = Vec::new();
-        if let Some(bytes) = read_optional_candidate(candidate, CONTEXT_QUERIES_PATH)? {
-            if bytes.iter().take(8192).any(|byte| *byte == 0) {
+        let mut input_sizes = BTreeMap::new();
+        let context_query_bytes = match read_optional_candidate(candidate, CONTEXT_QUERIES_PATH) {
+            Ok(bytes) => bytes,
+            Err(_) => {
+                push_unique(&mut limitation_codes, "context-query-config-unavailable");
+                None
+            }
+        };
+        if let Some(bytes) = context_query_bytes {
+            input_sizes.insert(CONTEXT_QUERIES_PATH.to_string(), bytes.len());
+            if !configuration_bytes_allowed(bytes.len(), budget, &mut limitation_codes) {
+                // Keep identity and metrics, but do not interpret over-budget configuration.
+            } else if bytes.iter().take(8192).any(|byte| *byte == 0) {
                 push_unique(&mut limitation_codes, "binary-context-query-config");
             } else {
                 for (index, line) in String::from_utf8_lossy(&bytes).lines().enumerate() {
@@ -154,8 +172,18 @@ impl TextAdapter {
         }
 
         let mut test_hints = Vec::new();
-        if let Some(bytes) = read_optional_candidate(candidate, TEST_HINTS_PATH)? {
-            if bytes.iter().take(8192).any(|byte| *byte == 0) {
+        let test_hint_bytes = match read_optional_candidate(candidate, TEST_HINTS_PATH) {
+            Ok(bytes) => bytes,
+            Err(_) => {
+                push_unique(&mut limitation_codes, "test-hint-config-unavailable");
+                None
+            }
+        };
+        if let Some(bytes) = test_hint_bytes {
+            input_sizes.insert(TEST_HINTS_PATH.to_string(), bytes.len());
+            if !configuration_bytes_allowed(bytes.len(), budget, &mut limitation_codes) {
+                // Keep identity and metrics, but do not interpret over-budget configuration.
+            } else if bytes.iter().take(8192).any(|byte| *byte == 0) {
                 push_unique(&mut limitation_codes, "binary-test-hint-config");
             } else {
                 for line in String::from_utf8_lossy(&bytes).lines() {
@@ -172,9 +200,19 @@ impl TextAdapter {
                         push_unique(&mut limitation_codes, "invalid-test-hint");
                         continue;
                     }
-                    let path_regex = compile_optional_regex(parts[1].trim());
-                    let content_regex = compile_optional_regex(parts[2].trim());
-                    if path_regex.is_err() || content_regex.is_err() {
+                    let path_pattern = parts[1].trim();
+                    let content_pattern = parts[2].trim();
+                    if path_pattern.chars().count() > 500 || content_pattern.chars().count() > 500 {
+                        push_unique(&mut limitation_codes, "invalid-test-hint");
+                        continue;
+                    }
+                    let path_regex = compile_optional_regex(path_pattern);
+                    let content_regex = compile_optional_regex(content_pattern);
+                    let (Ok(path_regex), Ok(content_regex)) = (path_regex, content_regex) else {
+                        push_unique(&mut limitation_codes, "invalid-test-hint");
+                        continue;
+                    };
+                    if path_regex.is_none() && content_regex.is_none() {
                         push_unique(&mut limitation_codes, "invalid-test-hint");
                         continue;
                     }
@@ -190,8 +228,8 @@ impl TextAdapter {
                     }
                     test_hints.push(TestHint {
                         rule_id: bounded_text(parts[0].trim()),
-                        path_regex: path_regex.unwrap(),
-                        content_regex: content_regex.unwrap(),
+                        path_regex,
+                        content_regex,
                         test_kind: bounded_text(parts[3].trim()),
                         environment_dependency: bounded_text(parts[4].trim()),
                         confidence: bounded_text(parts[5].trim()),
@@ -204,6 +242,7 @@ impl TextAdapter {
         Ok(TextConfiguration {
             queries,
             test_hints,
+            input_sizes,
             limitation_codes,
         })
     }
@@ -341,8 +380,8 @@ impl TextAdapter {
             if !push_fact(&mut facts, fact, budget) {
                 push_unique(&mut limitations, "fact-budget-exhausted");
                 status = UnitStatus::BudgetExhausted;
-                break;
             }
+            break;
         }
 
         facts.sort_by(|left, right| {
@@ -372,6 +411,22 @@ impl TextAdapter {
             limitation_codes: limitations,
         }
     }
+}
+
+fn configuration_bytes_allowed(
+    bytes: usize,
+    budget: &mut BudgetTracker,
+    limitations: &mut Vec<String>,
+) -> bool {
+    if let Err(exhaustion) = budget.observe(BudgetResource::FileBytes, bytes) {
+        push_unique(limitations, exhaustion.code());
+        return false;
+    }
+    if let Err(exhaustion) = budget.consume(BudgetResource::TotalBytes, bytes) {
+        push_unique(limitations, exhaustion.code());
+        return false;
+    }
+    true
 }
 
 fn read_optional_candidate(

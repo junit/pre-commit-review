@@ -3,7 +3,9 @@ use collect_diff_context_cli::impact_context::budget::ImpactBudget;
 use collect_diff_context_cli::impact_context::contracts::{
     Completeness, ImpactContext, ImpactMode, ImpactStatus, Limitation, ProviderStatus, UnitStatus,
 };
-use collect_diff_context_cli::impact_context::engine::{build_impact_context, ImpactRequest};
+use collect_diff_context_cli::impact_context::engine::{
+    build_impact_context, enforce_presentation_budget, ImpactRequest,
+};
 use collect_diff_context_cli::impact_context::normalizer::stable_id;
 use collect_diff_context_cli::review_scope::{
     open_authoritative_scope, revalidate_scope, ReviewSource, ScopeRequest,
@@ -168,6 +170,7 @@ fn parse_fingerprint(value: &str) -> Result<String, String> {
 }
 
 fn run_collect(arguments: CollectArgs) -> i32 {
+    let maximum_output_bytes = arguments.budget.max_output_bytes;
     let repository = match env::current_dir() {
         Ok(repository) => repository,
         Err(error) => return cli_error(&format!("cannot resolve current directory: {error}"), 2),
@@ -192,7 +195,10 @@ fn run_collect(arguments: CollectArgs) -> i32 {
     };
 
     if let Err(error) = revalidate_scope(&scope) {
-        return match render_context(invalidated_context(context, &error.to_string())) {
+        return match render_context(
+            invalidated_context(context, &error.to_string()),
+            maximum_output_bytes,
+        ) {
             Ok(output) => {
                 print!("{output}");
                 3
@@ -201,7 +207,7 @@ fn run_collect(arguments: CollectArgs) -> i32 {
         };
     }
 
-    match render_context(context) {
+    match render_context(context, maximum_output_bytes) {
         Ok(output) => {
             print!("{output}");
             0
@@ -210,7 +216,12 @@ fn run_collect(arguments: CollectArgs) -> i32 {
     }
 }
 
-fn render_context(context: ImpactContext) -> Result<String, String> {
+fn render_context(
+    mut context: ImpactContext,
+    maximum_output_bytes: usize,
+) -> Result<String, String> {
+    enforce_presentation_budget(&mut context, maximum_output_bytes)
+        .map_err(|error| error.to_string())?;
     context.validate().map_err(|error| error.to_string())?;
     let compact = serde_json::to_string(&context).map_err(|error| error.to_string())?;
     if env::var("PRE_COMMIT_REVIEW_SECRET_SCAN").as_deref() == Ok("off") {
@@ -218,8 +229,10 @@ fn render_context(context: ImpactContext) -> Result<String, String> {
     }
     match secret_scan::sanitize_for_model(&compact) {
         Ok(sanitized) => {
-            let sanitized_context: ImpactContext =
+            let mut sanitized_context: ImpactContext =
                 serde_json::from_str(&sanitized.content).map_err(|error| error.to_string())?;
+            enforce_presentation_budget(&mut sanitized_context, maximum_output_bytes)
+                .map_err(|error| error.to_string())?;
             sanitized_context
                 .validate()
                 .map_err(|error| error.to_string())?;
@@ -234,7 +247,9 @@ fn render_context(context: ImpactContext) -> Result<String, String> {
             Ok(compact)
         }
         Err(error) => {
-            let failed = failed_sanitization_context(context, error.reason_code());
+            let mut failed = failed_sanitization_context(context, error.reason_code());
+            enforce_presentation_budget(&mut failed, maximum_output_bytes)
+                .map_err(|error| error.to_string())?;
             failed.validate().map_err(|error| error.to_string())?;
             serde_json::to_string(&failed).map_err(|error| error.to_string())
         }

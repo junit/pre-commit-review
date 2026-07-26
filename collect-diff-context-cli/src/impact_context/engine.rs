@@ -1,4 +1,4 @@
-use crate::candidate::{CandidateContent, CandidatePresence, ChangedRange, RepoPath};
+use crate::candidate::{CandidateContent, CandidatePresence, ChangedRange};
 use crate::impact_context::adapters::text::TextAdapter;
 use crate::impact_context::adapters::tree_sitter_rust::TreeSitterRustAdapter;
 use crate::impact_context::budget::{BudgetResource, BudgetTracker, ImpactBudget};
@@ -108,6 +108,8 @@ pub fn build_impact_context(
     for code in &text_configuration.limitation_codes {
         if code.ends_with("budget-exhausted") {
             text_stats.budget_exhausted += 1;
+        } else if code != "text-query-scope-changed-files" {
+            text_stats.partial += 1;
         }
         let id = insert_limitation(
             &mut limitations,
@@ -122,25 +124,9 @@ pub fn build_impact_context(
         text_stats.limitation_ids.push(id);
     }
 
-    let mut candidate_input_sizes = BTreeMap::new();
-    for path in [
-        ".pre-commit-review/context-queries",
-        ".pre-commit-review/test-hints",
-    ] {
-        let repo_path = RepoPath::new(path)
-            .map_err(|error| ImpactContextError::new("invalid-config-path", error.to_string()))?;
-        if candidate
-            .files()
-            .iter()
-            .any(|file| file.path == repo_path && file.presence == CandidatePresence::Present)
-        {
-            if let Ok(content) = candidate.read(&repo_path) {
-                text_stats.input_files += 1;
-                text_stats.input_bytes += content.bytes.len() as u64;
-                candidate_input_sizes.insert(path.to_string(), content.bytes.len());
-            }
-        }
-    }
+    let mut candidate_input_sizes = text_configuration.input_sizes().clone();
+    text_stats.input_files += candidate_input_sizes.len();
+    text_stats.input_bytes += candidate_input_sizes.values().sum::<usize>() as u64;
 
     let mut changed_files = candidate
         .files()
@@ -628,8 +614,7 @@ pub fn build_impact_context(
         .sort_by(|left, right| left.limitation_id.cmp(&right.limitation_id));
     context.metrics.edges_emitted = context.impact_edges.len();
     context.metrics.summaries_emitted = context.domain_summaries.len();
-    apply_presentation_budget(&mut context, request.budget.max_output_bytes);
-    update_output_bytes(&mut context);
+    enforce_presentation_budget(&mut context, request.budget.max_output_bytes)?;
     context
         .validate()
         .map_err(contract_error_to_context_error)?;
@@ -831,36 +816,41 @@ fn resource_limitation(
     )
 }
 
-fn apply_presentation_budget(context: &mut ImpactContext, maximum: usize) {
-    update_output_bytes(context);
-    if context.metrics.output_bytes <= maximum {
-        return;
+pub fn enforce_presentation_budget(
+    context: &mut ImpactContext,
+    maximum: usize,
+) -> Result<(), ImpactContextError> {
+    if !output_exceeds_budget(context, maximum) {
+        return Ok(());
     }
     context.coverage.output_truncated = true;
-    context.status = if context.status == ImpactStatus::Unavailable {
-        ImpactStatus::Unavailable
-    } else {
-        ImpactStatus::Partial
-    };
-    let limitation = Limitation {
-        limitation_id: stable_id("impact-limitation/v1", &["output-truncated", "", "", ""]),
-        code: "output-truncated".to_string(),
-        provider_id: None,
-        path: None,
-        symbol_id: None,
-        reason: "Presentation output exceeded the configured byte budget.".to_string(),
-        interpretation: "Lower-ranked context was omitted; unit visibility is retained."
-            .to_string(),
-        improvable_in_deep_mode: false,
-    };
-    context.limitations.push(limitation);
+    if context.status == ImpactStatus::Completed {
+        context.status = ImpactStatus::Partial;
+    }
+    if !context
+        .limitations
+        .iter()
+        .any(|limitation| limitation.code == "output-truncated")
+    {
+        context.limitations.push(Limitation {
+            limitation_id: stable_id("impact-limitation/v1", &["output-truncated", "", "", ""]),
+            code: "output-truncated".to_string(),
+            provider_id: None,
+            path: None,
+            symbol_id: None,
+            reason: "Presentation output exceeded the configured byte budget.".to_string(),
+            interpretation: "Lower-ranked context was omitted; unit visibility is retained."
+                .to_string(),
+            improvable_in_deep_mode: false,
+        });
+    }
     context
         .limitations
         .sort_by(|left, right| left.limitation_id.cmp(&right.limitation_id));
-    while serialized_len(context) > maximum && !context.impact_edges.is_empty() {
+    while output_exceeds_budget(context, maximum) && !context.impact_edges.is_empty() {
         context.impact_edges.pop();
     }
-    while serialized_len(context) > maximum && !context.domain_summaries.is_empty() {
+    while output_exceeds_budget(context, maximum) && !context.domain_summaries.is_empty() {
         let index = context
             .domain_summaries
             .iter()
@@ -870,8 +860,10 @@ fn apply_presentation_budget(context: &mut ImpactContext, maximum: usize) {
             .unwrap_or(0);
         context.domain_summaries.remove(index);
     }
-    while serialized_len(context) > maximum && !context.changed_symbols.is_empty() {
-        let removed = context.changed_symbols.pop().unwrap();
+    while output_exceeds_budget(context, maximum) && !context.changed_symbols.is_empty() {
+        let Some(removed) = context.changed_symbols.pop() else {
+            break;
+        };
         for unit in &mut context.units {
             unit.changed_symbol_ids
                 .retain(|symbol_id| symbol_id != &removed.symbol_id);
@@ -887,6 +879,18 @@ fn apply_presentation_budget(context: &mut ImpactContext, maximum: usize) {
     }
     context.metrics.edges_emitted = context.impact_edges.len();
     context.metrics.summaries_emitted = context.domain_summaries.len();
+    if output_exceeds_budget(context, maximum) {
+        return Err(ImpactContextError::new(
+            "output-budget-too-small",
+            "max_output_bytes cannot retain the mandatory impact-context records",
+        ));
+    }
+    Ok(())
+}
+
+fn output_exceeds_budget(context: &mut ImpactContext, maximum: usize) -> bool {
+    update_output_bytes(context);
+    context.metrics.output_bytes > maximum
 }
 
 fn update_output_bytes(context: &mut ImpactContext) {

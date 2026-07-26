@@ -10,8 +10,8 @@ use collect_diff_context_cli::impact_context::budget::{
     BudgetResource, BudgetTracker, ImpactBudget,
 };
 use collect_diff_context_cli::impact_context::contracts::{
-    ImpactContext, ImpactMode, ImpactPresence, ImpactStatus, ParseQuality, Resolution, SourceRange,
-    UnitStatus,
+    ImpactContext, ImpactMode, ImpactPresence, ImpactStatus, ParseQuality, ProviderStatus,
+    Resolution, SourceRange, UnitStatus,
 };
 use collect_diff_context_cli::impact_context::engine::{build_impact_context, ImpactRequest};
 use collect_diff_context_cli::impact_context::normalizer::{
@@ -87,6 +87,10 @@ struct TrackingCandidate {
     reads: RefCell<Vec<String>>,
 }
 
+struct UnreadableConfigCandidate {
+    inner: MemoryCandidate,
+}
+
 struct UnreadableCandidate {
     files: Vec<CandidateFile>,
 }
@@ -141,6 +145,31 @@ impl CandidateContent for TrackingCandidate {
 
     fn read(&self, path: &RepoPath) -> Result<CandidateBytes, CandidateError> {
         self.reads.borrow_mut().push(path.as_str().to_string());
+        self.inner.read(path)
+    }
+}
+
+impl CandidateContent for UnreadableConfigCandidate {
+    fn scope_fingerprint(&self) -> &str {
+        self.inner.scope_fingerprint()
+    }
+
+    fn candidate_digest(&self) -> &str {
+        self.inner.candidate_digest()
+    }
+
+    fn source(&self) -> ReviewSource {
+        self.inner.source()
+    }
+
+    fn files(&self) -> &[CandidateFile] {
+        self.inner.files()
+    }
+
+    fn read(&self, path: &RepoPath) -> Result<CandidateBytes, CandidateError> {
+        if path.as_str().starts_with(".pre-commit-review/") {
+            return Err(RepoPath::new("").unwrap_err());
+        }
         self.inner.read(path)
     }
 }
@@ -703,6 +732,39 @@ fn text_adapter_bounds_invalid_queries_query_count_and_matches() {
 }
 
 #[test]
+fn text_adapter_rejects_oversized_test_hint_patterns_and_uses_first_match() {
+    let oversized = "x".repeat(501);
+    let hints = format!(
+        "oversized\t{oversized}\t\tunit\tnone\tlow\tignored\nfirst\tnotes\\.txt$\t\tunit\tnone\thigh\tfirst hint\nsecond\tnotes\\.txt$\t\tunit\tnone\thigh\tsecond hint\n"
+    );
+    let candidate =
+        MemoryCandidate::new(&[(".pre-commit-review/test-hints", hints.as_bytes(), false)]);
+    let mut tracker = BudgetTracker::new(ImpactBudget::fast_defaults());
+
+    let configuration = TextAdapter::load_configuration(&candidate, &mut tracker).unwrap();
+    let output = TextAdapter::scan(
+        &RepoPath::new("notes.txt").unwrap(),
+        b"plain text",
+        false,
+        &configuration,
+        &mut tracker,
+    );
+
+    assert!(configuration
+        .limitation_codes
+        .iter()
+        .any(|code| code == "invalid-test-hint"));
+    let hints = output
+        .facts
+        .iter()
+        .filter(|fact| fact.kind == TextFactKind::TestHint)
+        .collect::<Vec<_>>();
+    assert_eq!(hints.len(), 1);
+    assert_eq!(hints[0].rule_id, "first");
+    assert_eq!(hints[0].match_text, "first hint");
+}
+
+#[test]
 fn text_adapter_binary_and_syntax_budget_states_remain_independent() {
     let candidate = MemoryCandidate::new(&[]);
     let mut budget = ImpactBudget::fast_defaults();
@@ -798,6 +860,54 @@ fn normalizer_is_deterministic_and_preserves_unresolved_calls() {
                 && edge.unresolved_target.is_some()
                 && edge.resolution == Resolution::Unresolved
         }));
+}
+
+#[test]
+fn normalizer_disambiguates_same_named_callers_by_source_range() {
+    let source = br#"
+mod first {
+    fn run() { first_target(); }
+}
+mod second {
+    fn run() { second_target(); }
+}
+"#;
+    let mut tracker = BudgetTracker::new(ImpactBudget::fast_defaults());
+    let syntax = TreeSitterRustAdapter::analyze(
+        source,
+        &[ChangedRange {
+            start_line: 1,
+            end_line: 8,
+            deletion_anchor: false,
+        }],
+        &mut tracker,
+    )
+    .unwrap();
+    let normalized = normalize_unit(
+        "src/lib.rs",
+        "rust",
+        "1111111111111111",
+        "2222222222222222",
+        Some(&syntax),
+        None,
+    );
+    let callers = normalized
+        .impact_edges
+        .iter()
+        .filter(|edge| {
+            matches!(
+                edge.unresolved_target.as_deref(),
+                Some("first_target" | "second_target")
+            )
+        })
+        .map(|edge| edge.from_symbol.as_str())
+        .collect::<std::collections::BTreeSet<_>>();
+
+    assert_eq!(callers.len(), 2);
+    assert!(callers.iter().all(|caller| normalized
+        .changed_symbols
+        .iter()
+        .any(|symbol| symbol.symbol_id == **caller)));
 }
 
 #[test]
@@ -1254,6 +1364,103 @@ fn engine_output_truncation_is_bounded_and_deterministic() {
         second.metrics.output_bytes = serde_json::to_vec(&second).unwrap().len();
     }
     assert_eq!(first, second);
+}
+
+#[test]
+fn engine_rejects_an_output_budget_smaller_than_the_irreducible_contract() {
+    let source = b"pub fn changed() {}\n";
+    let mut candidate = MemoryCandidate::new(&[("src/lib.rs", source, true)]);
+    candidate.files[0].changed_ranges = vec![ChangedRange {
+        start_line: 1,
+        end_line: 1,
+        deletion_anchor: false,
+    }];
+    let mut request = ImpactRequest::fast_defaults();
+    request.budget.max_output_bytes = 1;
+
+    let error = build_impact_context(&candidate, request).unwrap_err();
+
+    assert_eq!(error.code(), "output-budget-too-small");
+}
+
+#[test]
+fn engine_degrades_unreadable_candidate_configuration_instead_of_aborting() {
+    let source = b"pub fn changed() {}\n";
+    let mut inner = MemoryCandidate::new(&[
+        ("src/lib.rs", source, true),
+        (".pre-commit-review/context-queries", b"changed", false),
+    ]);
+    let changed_file = inner
+        .files
+        .iter_mut()
+        .find(|file| file.path.as_str() == "src/lib.rs")
+        .unwrap();
+    changed_file.changed_ranges = vec![ChangedRange {
+        start_line: 1,
+        end_line: 1,
+        deletion_anchor: false,
+    }];
+    let candidate = UnreadableConfigCandidate { inner };
+
+    let context = build_impact_context(&candidate, ImpactRequest::fast_defaults()).unwrap();
+
+    context.validate().unwrap();
+    assert!(context
+        .limitations
+        .iter()
+        .any(|limitation| limitation.code == "context-query-config-unavailable"));
+    assert_eq!(
+        context
+            .providers
+            .iter()
+            .find(|provider| provider.provider_kind == "text-adapter")
+            .unwrap()
+            .status,
+        ProviderStatus::Partial
+    );
+    assert!(context
+        .changed_symbols
+        .iter()
+        .any(|symbol| symbol.name == "changed"));
+}
+
+#[test]
+fn engine_applies_file_byte_budget_to_candidate_configuration() {
+    let source = b"pub fn changed() {}\n";
+    let config = vec![b'x'; 101];
+    let mut candidate = MemoryCandidate::new(&[
+        ("src/lib.rs", source, true),
+        (
+            ".pre-commit-review/context-queries",
+            config.as_slice(),
+            false,
+        ),
+    ]);
+    let changed_file = candidate
+        .files
+        .iter_mut()
+        .find(|file| file.path.as_str() == "src/lib.rs")
+        .unwrap();
+    changed_file.changed_ranges = vec![ChangedRange {
+        start_line: 1,
+        end_line: 1,
+        deletion_anchor: false,
+    }];
+    let mut request = ImpactRequest::fast_defaults();
+    request.budget.max_file_bytes = 100;
+
+    let context = build_impact_context(&candidate, request).unwrap();
+
+    context.validate().unwrap();
+    assert!(context
+        .limitations
+        .iter()
+        .any(|limitation| limitation.code == "file-byte-budget-exhausted"));
+    assert!(context
+        .domain_summaries
+        .iter()
+        .all(|summary| summary.summary_kind
+            != collect_diff_context_cli::impact_context::contracts::SummaryKind::TextQueryMatch));
 }
 
 #[test]

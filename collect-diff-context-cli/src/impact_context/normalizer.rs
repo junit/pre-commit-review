@@ -1,6 +1,6 @@
 use crate::impact_context::adapters::text::{TextOutput, TextProvenance};
 use crate::impact_context::adapters::tree_sitter_rust::{
-    RustCallFact, RustSymbolFact, RustSyntaxOutput, RustTextFact,
+    RustCallFact, RustSyntaxOutput, RustTextFact,
 };
 use crate::impact_context::contracts::{
     ChangedSymbol, Confidence, EdgeKind, ImpactEdge, ParseQuality, Resolution, SourceRange,
@@ -73,7 +73,7 @@ pub fn normalize_unit(
                 confidence: symbol_confidence,
             };
             merge_symbol(&mut symbols, normalized);
-            caller_ids.insert(symbol_display_name(symbol), symbol_id.clone());
+            caller_ids.insert(range_identity(&symbol.range), symbol_id.clone());
 
             let defines = make_edge(
                 syntax_provider_id,
@@ -302,9 +302,9 @@ fn call_edge(
     quality: ParseQuality,
 ) -> ImpactEdge {
     let from_symbol = call
-        .caller
+        .caller_range
         .as_ref()
-        .and_then(|caller| caller_ids.get(caller))
+        .and_then(|range| caller_ids.get(&range_identity(range)))
         .cloned()
         .unwrap_or_else(|| format!("file:{path}"));
     make_edge(
@@ -412,13 +412,6 @@ fn confidence_rank(confidence: Confidence) -> u8 {
         Confidence::High => 3,
         Confidence::Medium => 2,
         Confidence::Low => 1,
-    }
-}
-
-fn symbol_display_name(symbol: &RustSymbolFact) -> String {
-    match &symbol.owner {
-        Some(owner) => format!("{owner}::{}", symbol.name),
-        None => symbol.name.clone(),
     }
 }
 

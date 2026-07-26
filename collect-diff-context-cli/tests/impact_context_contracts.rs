@@ -242,6 +242,25 @@ fn invalid_provider_status_is_rejected() {
 }
 
 #[test]
+fn schema_bounded_nested_fields_are_rejected_by_rust_validation() {
+    for (pointer, replacement) in [
+        ("/units/0/manifest_unit_id", json!("")),
+        ("/impact_edges/0/from_symbol", json!("")),
+        ("/units/0/manifest_unit_id", json!("x".repeat(4097))),
+        ("/impact_edges/0/from_symbol", json!("x".repeat(1001))),
+    ] {
+        let mut value = valid_context_value();
+        *value.pointer_mut(pointer).unwrap() = replacement;
+        assert_rejected(value);
+    }
+
+    let mut value = valid_context_value();
+    value["units"][0]["changed_ranges"] =
+        json!(vec![value["units"][0]["changed_ranges"][0].clone(); 1001]);
+    assert_rejected(value);
+}
+
+#[test]
 fn syntactic_and_text_providers_cannot_claim_resolved_semantics() {
     for resolution in ["resolved-reference", "semantic", "polymorphic-candidate"] {
         let mut value = valid_context_value();

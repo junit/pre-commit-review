@@ -41,7 +41,7 @@ pub struct RustTextFact {
 #[derive(Debug, Clone, PartialEq, Eq, Serialize)]
 pub struct RustCallFact {
     pub target: String,
-    pub caller: Option<String>,
+    pub caller_range: Option<SourceRange>,
     pub range: SourceRange,
     pub resolution: Resolution,
 }
@@ -192,8 +192,10 @@ impl TreeSitterRustAdapter {
                     .then_some("fact-budget-exhausted"),
                 "call" => {
                     let range = source_range(node);
-                    let caller = innermost_caller(&changed_symbols, &range);
-                    if caller.is_none() && !node_intersects_changes(range.clone(), changed_ranges) {
+                    let caller_range = innermost_caller(&changed_symbols, &range);
+                    if caller_range.is_none()
+                        && !node_intersects_changes(range.clone(), changed_ranges)
+                    {
                         None
                     } else if budget.consume(BudgetResource::Facts, 1).is_err() {
                         Some("fact-budget-exhausted")
@@ -202,7 +204,7 @@ impl TreeSitterRustAdapter {
                     } else {
                         calls.push(RustCallFact {
                             target: bounded_node_text(node, source),
-                            caller,
+                            caller_range,
                             range,
                             resolution: Resolution::Unresolved,
                         });
@@ -225,7 +227,9 @@ impl TreeSitterRustAdapter {
         sort_dedup_text_facts(&mut attributes);
         calls.sort_by(|left, right| range_key(&left.range).cmp(&range_key(&right.range)));
         calls.dedup_by(|left, right| {
-            left.target == right.target && left.caller == right.caller && left.range == right.range
+            left.target == right.target
+                && left.caller_range == right.caller_range
+                && left.range == right.range
         });
 
         let overlaps_change = errors
@@ -411,7 +415,7 @@ fn push_text_fact(
     true
 }
 
-fn innermost_caller(symbols: &[RustSymbolFact], range: &SourceRange) -> Option<String> {
+fn innermost_caller(symbols: &[RustSymbolFact], range: &SourceRange) -> Option<SourceRange> {
     symbols
         .iter()
         .filter(|symbol| {
@@ -423,7 +427,7 @@ fn innermost_caller(symbols: &[RustSymbolFact], range: &SourceRange) -> Option<S
                 .end_byte
                 .saturating_sub(symbol.range.start_byte)
         })
-        .map(symbol_display_name)
+        .map(|symbol| symbol.range.clone())
 }
 
 fn symbol_display_name(symbol: &RustSymbolFact) -> String {

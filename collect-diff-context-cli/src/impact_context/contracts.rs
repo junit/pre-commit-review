@@ -10,6 +10,9 @@ const MAX_EDGES: usize = 500;
 const MAX_SUMMARIES: usize = 1_000;
 const MAX_LIMITATIONS: usize = 1_000;
 const MAX_MESSAGE_CHARS: usize = 1_000;
+const MAX_IDS: usize = 5_000;
+const MAX_RANGES: usize = 1_000;
+const MAX_MANIFEST_UNIT_ID_CHARS: usize = 4_096;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "lowercase")]
@@ -406,6 +409,11 @@ impl ImpactContext {
             )?;
             validate_bounded_text(&provider.provider_kind, 100, "provider kind")?;
             validate_bounded_text(&provider.provider_version, 100, "provider version")?;
+            validate_maximum(
+                provider.limitation_ids.len(),
+                MAX_IDS,
+                "provider limitation ids",
+            )?;
             validate_id_references(
                 &provider.limitation_ids,
                 &limitations,
@@ -414,8 +422,31 @@ impl ImpactContext {
         }
 
         for unit in &self.units {
+            validate_bounded_text(
+                &unit.manifest_unit_id,
+                MAX_MANIFEST_UNIT_ID_CHARS,
+                "manifest unit id",
+            )?;
             validate_path(&unit.path)?;
             validate_bounded_text(&unit.language, 100, "unit language")?;
+            validate_maximum(unit.provider_ids.len(), MAX_IDS, "unit provider ids")?;
+            validate_maximum(unit.changed_ranges.len(), MAX_RANGES, "unit changed ranges")?;
+            validate_maximum(
+                unit.parse_affected_ranges.len(),
+                MAX_RANGES,
+                "unit parse affected ranges",
+            )?;
+            validate_maximum(
+                unit.parse_affected_symbol_ids.len(),
+                MAX_IDS,
+                "unit parse affected symbol ids",
+            )?;
+            validate_maximum(
+                unit.changed_symbol_ids.len(),
+                MAX_IDS,
+                "unit changed symbol ids",
+            )?;
+            validate_maximum(unit.limitation_ids.len(), MAX_IDS, "unit limitation ids")?;
             match unit.presence {
                 ImpactPresence::Present => match (
                     unit.content_sha256.as_deref(),
@@ -501,6 +532,7 @@ impl ImpactContext {
 
         for edge in &self.impact_edges {
             validate_id(&edge.edge_id, "edge id")?;
+            validate_bounded_text(&edge.from_symbol, MAX_MESSAGE_CHARS, "edge source symbol")?;
             validate_path(&edge.path)?;
             let provider = providers
                 .get(edge.provider_id.as_str())
@@ -552,6 +584,11 @@ impl ImpactContext {
                 }
             }
             validate_bounded_text(&summary.message, MAX_MESSAGE_CHARS, "summary message")?;
+            validate_maximum(
+                summary.evidence_fact_ids.len(),
+                MAX_IDS,
+                "summary evidence fact ids",
+            )?;
             validate_ids(&summary.evidence_fact_ids, "summary evidence fact ids")?;
         }
 
