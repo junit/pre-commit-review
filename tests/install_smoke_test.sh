@@ -39,6 +39,7 @@ run_offline_install codex --copy --dir "$tmp_dir/codex-skills"
 [ ! -e "$tmp_dir/codex-skills/pre-commit-review/scripts/collect_static_evidence.$python_suffix" ]
 [ -x "$tmp_dir/codex-skills/pre-commit-review/scripts/run_static_analysis.sh" ]
 [ ! -e "$tmp_dir/codex-skills/pre-commit-review/scripts/run_static_analysis.$python_suffix" ]
+[ -x "$tmp_dir/codex-skills/pre-commit-review/scripts/orchestrate_static_analysis.sh" ]
 [ -f "$tmp_dir/codex-skills/pre-commit-review/scripts/fetch_gitleaks.sh" ]
 [ -f "$tmp_dir/codex-skills/pre-commit-review/scripts/gitleaks.version" ]
 [ -f "$tmp_dir/codex-skills/pre-commit-review/scripts/gitleaks-assets.sha256" ]
@@ -54,6 +55,7 @@ run_offline_install codex --copy --dir "$tmp_dir/codex-skills"
 [ -f "$tmp_dir/codex-skills/pre-commit-review/references/decision/risk-taxonomy.md" ]
 [ -f "$tmp_dir/codex-skills/pre-commit-review/references/decision/static-analysis-evidence.md" ]
 [ -f "$tmp_dir/codex-skills/pre-commit-review/references/decision/static-analysis-execution.md" ]
+[ -f "$tmp_dir/codex-skills/pre-commit-review/references/decision/static-analysis-orchestration.md" ]
 [ -f "$tmp_dir/codex-skills/pre-commit-review/references/rendering/output-en.md" ]
 [ -f "$tmp_dir/codex-skills/pre-commit-review/references/rendering/output-zh.md" ]
 [ -f "$tmp_dir/codex-skills/pre-commit-review/references/rendering/visual-output.md" ]
@@ -69,11 +71,16 @@ run_offline_install codex --copy --dir "$tmp_dir/codex-skills"
 [ -f "$tmp_dir/codex-skills/pre-commit-review/collect-diff-context-cli/schemas/static-analysis-evidence.schema.json" ]
 [ -f "$tmp_dir/codex-skills/pre-commit-review/collect-diff-context-cli/schemas/static-analysis-profile.schema.json" ]
 [ -f "$tmp_dir/codex-skills/pre-commit-review/collect-diff-context-cli/schemas/static-analysis-execution.schema.json" ]
+[ -f "$tmp_dir/codex-skills/pre-commit-review/collect-diff-context-cli/schemas/static-analysis-orchestration-manifest.schema.json" ]
+[ -f "$tmp_dir/codex-skills/pre-commit-review/collect-diff-context-cli/schemas/static-analysis-orchestration.schema.json" ]
 [ -f "$tmp_dir/codex-skills/pre-commit-review/THIRD_PARTY_LICENSES/gitleaks-LICENSE" ]
 (
   cd "$tmp_dir"
   python3 "$tmp_dir/codex-skills/pre-commit-review/scripts/validate_schemas.py" >/dev/null
 )
+python3 "$tmp_dir/codex-skills/pre-commit-review/scripts/validate_schemas.py" --help >"$tmp_dir/schema-help.out"
+grep -Fq -- '--static-orchestration-manifest' "$tmp_dir/schema-help.out"
+grep -Fq -- '--static-orchestration-output' "$tmp_dir/schema-help.out"
 
 isolated_source="$tmp_dir/source-without-static-checkout"
 mkdir -p "$isolated_source/collect-diff-context-cli"
@@ -85,8 +92,14 @@ rm -f "$isolated_source"/scripts/bin/static_analysis-*
 "$isolated_source/install.sh" codex --copy --dir "$tmp_dir/source-without-static" --no-download
 [ -x "$tmp_dir/source-without-static/pre-commit-review/scripts/collect_static_evidence.sh" ]
 [ -x "$tmp_dir/source-without-static/pre-commit-review/scripts/run_static_analysis.sh" ]
+[ -x "$tmp_dir/source-without-static/pre-commit-review/scripts/orchestrate_static_analysis.sh" ]
 [ -f "$tmp_dir/source-without-static/pre-commit-review/scripts/lib/static_analysis_cli.sh" ]
 [ ! -e "$tmp_dir/source-without-static/pre-commit-review/scripts/bin/$static_analysis_name" ]
+
+grep -Fq "\"\$static_binary\" orchestrate --help" "$repo_root/.github/workflows/lint.yml"
+grep -Fq './tests/static_analysis_orchestration_test.sh' "$repo_root/.github/workflows/lint.yml"
+grep -Fq "\"\$static_binary\" orchestrate --help" "$repo_root/.github/workflows/release.yml"
+grep -Fq 'chmod +x dist/pre-commit-review/scripts/orchestrate_static_analysis.sh' "$repo_root/.github/workflows/release.yml"
 
 run_offline_install codex --copy --dir "$tmp_dir/codex-skills"
 [ -d "$tmp_dir/codex-skills/pre-commit-review" ]

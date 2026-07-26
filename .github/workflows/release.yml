@@ -77,6 +77,7 @@ jobs:
           static_binary="dist/${{ matrix.static_artifact_name }}"
           "$static_binary" collect --help
           "$static_binary" run --help
+          "$static_binary" orchestrate --help
 
       - name: Fetch pinned Gitleaks binary
         shell: bash
@@ -116,6 +117,7 @@ jobs:
           chmod +x dist/pre-commit-review/scripts/collect_diff_context.sh
           chmod +x dist/pre-commit-review/scripts/collect_static_evidence.sh
           chmod +x dist/pre-commit-review/scripts/run_static_analysis.sh
+          chmod +x dist/pre-commit-review/scripts/orchestrate_static_analysis.sh
           chmod +x dist/pre-commit-review/scripts/check_gitleaks.sh
           chmod +x dist/pre-commit-review/scripts/bin/collect_diff_context-* || true
           chmod +x dist/pre-commit-review/scripts/bin/static_analysis-* || true

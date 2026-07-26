@@ -6,6 +6,7 @@ import sys
 
 try:
     import jsonschema
+    from referencing import Registry, Resource
 except ModuleNotFoundError:
     print(
         "validate_schemas: Python package 'jsonschema' is required; "
@@ -50,6 +51,31 @@ def load_static_execution_output(path):
     except StopIteration as exc:
         raise ValueError('static-execution section has no JSON value') from exc
     return json.loads(payload_line)
+
+
+def load_static_orchestration_output(path):
+    lines = pathlib.Path(path).read_text(encoding='utf-8').splitlines()
+    try:
+        marker = lines.index('## Static Analysis Orchestration JSON')
+    except ValueError as exc:
+        raise ValueError('missing Static Analysis Orchestration JSON section') from exc
+    try:
+        payload_line = next(line for line in lines[marker + 1:] if line.strip())
+    except StopIteration as exc:
+        raise ValueError('static-orchestration section has no JSON value') from exc
+    return json.loads(payload_line)
+
+
+def load_schema_bundle(schema_dir):
+    schemas = {}
+    resources = []
+    for schema_path in sorted(schema_dir.glob('*.schema.json')):
+        schema = json.loads(schema_path.read_text(encoding='utf-8'))
+        schemas[schema_path.name] = schema
+        resources.append((schema_path.name, Resource.from_contents(schema)))
+        if schema.get('$id') and schema['$id'] != schema_path.name:
+            resources.append((schema['$id'], Resource.from_contents(schema)))
+    return schemas, Registry().with_resources(resources)
 
 def validate_control_plane_invariants(payload):
     if not payload.get('authoritative'):
@@ -150,6 +176,9 @@ def validate_static_evidence_invariants(payload):
     report_ids = {report['report_id'] for report in payload['reports']}
     if len(report_ids) != len(payload['reports']):
         raise ValueError('report identifiers must be unique')
+    finding_ids = {finding['finding_id'] for finding in findings}
+    if len(finding_ids) != len(findings):
+        raise ValueError('finding identifiers must be unique')
     if any(not set(item['report_ids']).issubset(report_ids) for item in findings):
         raise ValueError('finding references an unknown report identifier')
     if any(item['blocking_candidate'] != (item['disposition'] == 'blocking-candidate') for item in findings):
@@ -167,21 +196,7 @@ def validate_static_evidence_invariants(payload):
                 raise ValueError('explicit input report cannot use controlled scope binding')
 
 
-def validate_static_execution_invariants(payload, evidence):
-    if payload['scope'] != evidence['scope']:
-        raise ValueError('execution and evidence scopes must match')
-    report_ids = sorted(report['report_id'] for report in evidence['reports'])
-    if sorted(payload['evidence']['report_ids']) != report_ids:
-        raise ValueError('execution evidence report_ids do not match emitted reports')
-    for report in evidence['reports']:
-        if report['trust'] != 'controlled-execution':
-            raise ValueError('execution output contains evidence without controlled trust')
-        if report['scope_binding'] != 'controlled-execution':
-            raise ValueError('execution output contains evidence without controlled scope binding')
-        if report['execution_id'] != payload['execution_id']:
-            raise ValueError('execution_id does not link every evidence report')
-        if report['tool'] != payload['tool']:
-            raise ValueError('execution tool identity does not match linked evidence')
+def validate_static_execution_record(payload):
     execution = payload['execution']
     expected_execution_id_digest = hashlib.sha256()
     for value in (
@@ -208,21 +223,13 @@ def validate_static_execution_invariants(payload, evidence):
     if execution['status'] == 'completed':
         if not execution['result_accepted'] or execution['failure_reason'] is not None:
             raise ValueError('completed execution must have an accepted result and no failure reason')
-        if any(report['status'] != 'completed' for report in evidence['reports']):
-            raise ValueError('completed execution requires completed evidence reports')
         if execution['exit_code'] not in payload['profile']['success_exit_codes']:
             raise ValueError('completed execution exit code is not authorized by the profile')
-        if max(execution['stdout_bytes'], execution['stderr_bytes']) > limits['max_output_bytes']:
+        if max(stream_sizes) > limits['max_output_bytes']:
             raise ValueError('completed execution exceeds the authorized output limit')
-        if any(report['format'] != payload['profile']['output_format'] for report in evidence['reports']):
-            raise ValueError('completed evidence format does not match the authorized profile')
     else:
         if execution['result_accepted'] or execution['failure_reason'] is None:
             raise ValueError('incomplete execution must reject its result with a failure reason')
-        if evidence['counts']['blocking_candidates'] != 0:
-            raise ValueError('incomplete execution evidence cannot contain blocking candidates')
-        if any(report['status'] == 'completed' for report in evidence['reports']):
-            raise ValueError('incomplete execution cannot emit completed evidence reports')
         expected_reason = {
             'failed': 'non-success-exit',
             'timeout': 'timeout',
@@ -239,6 +246,178 @@ def validate_static_execution_invariants(payload, evidence):
             size == limits['max_output_bytes'] + 1 for size in stream_sizes
         ):
             raise ValueError('output-limit execution must retain exactly one sentinel byte')
+
+
+def validate_static_execution_invariants(payload, evidence):
+    if payload['scope'] != evidence['scope']:
+        raise ValueError('execution and evidence scopes must match')
+    report_ids = sorted(report['report_id'] for report in evidence['reports'])
+    if sorted(payload['evidence']['report_ids']) != report_ids:
+        raise ValueError('execution evidence report_ids do not match emitted reports')
+    for report in evidence['reports']:
+        if report['trust'] != 'controlled-execution':
+            raise ValueError('execution output contains evidence without controlled trust')
+        if report['scope_binding'] != 'controlled-execution':
+            raise ValueError('execution output contains evidence without controlled scope binding')
+        if report['execution_id'] != payload['execution_id']:
+            raise ValueError('execution_id does not link every evidence report')
+        if report['tool'] != payload['tool']:
+            raise ValueError('execution tool identity does not match linked evidence')
+    validate_static_execution_record(payload)
+    execution = payload['execution']
+    if execution['status'] == 'completed':
+        if any(report['status'] != 'completed' for report in evidence['reports']):
+            raise ValueError('completed execution requires completed evidence reports')
+        if any(report['format'] != payload['profile']['output_format'] for report in evidence['reports']):
+            raise ValueError('completed evidence format does not match the authorized profile')
+    else:
+        if evidence['counts']['blocking_candidates'] != 0:
+            raise ValueError('incomplete execution evidence cannot contain blocking candidates')
+        if any(report['status'] == 'completed' for report in evidence['reports']):
+            raise ValueError('incomplete execution cannot emit completed evidence reports')
+
+
+def validate_static_orchestration_manifest_invariants(payload):
+    profile_ids = [item['profile_id'] for item in payload['profiles']]
+    if len(profile_ids) != len(set(profile_ids)):
+        raise ValueError('orchestration manifest profile_id values must be unique')
+    path_hash_pairs = [(item['path'], item['sha256']) for item in payload['profiles']]
+    if len(path_hash_pairs) != len(set(path_hash_pairs)):
+        raise ValueError('orchestration manifest path/hash pairs must be unique')
+    for item in payload['profiles']:
+        if not pathlib.Path(item['path']).is_absolute():
+            raise ValueError('orchestration manifest profile paths must be absolute')
+
+
+def validate_budget_amount(name, amount):
+    if amount['consumed'] + amount['remaining'] != amount['initial']:
+        raise ValueError(f'orchestration budget {name} does not balance')
+
+
+def validate_static_orchestration_invariants(payload, evidence):
+    if payload['scope'] != evidence['scope']:
+        raise ValueError('orchestration and evidence scopes must match')
+
+    reports = evidence['reports']
+    findings = evidence['findings']
+    reports_by_id = {report['report_id']: report for report in reports}
+    report_ids = set(reports_by_id)
+    finding_ids = {finding['finding_id'] for finding in findings}
+    if set(payload['report_ids']) != report_ids:
+        raise ValueError('orchestration report_ids do not match combined evidence')
+    if set(payload['finding_ids']) != finding_ids:
+        raise ValueError('orchestration finding_ids do not match combined evidence')
+
+    executed = [run for run in payload['runs'] if run['run_kind'] == 'executed']
+    if executed and not reports:
+        raise ValueError('executed orchestration runs require combined evidence reports')
+    if not executed and reports:
+        raise ValueError('orchestration without executed runs cannot contain reports')
+
+    claimed_report_ids = set()
+    incomplete_report_ids = set()
+    accepted = 0
+    execution_millis = 0
+    captured_output_bytes = 0
+    shared_snapshot = payload['snapshot']
+    for run in executed:
+        execution = run['execution']
+        process = execution['execution']
+        validate_static_execution_record(execution)
+        if execution['scope'] != payload['scope']:
+            raise ValueError('executed run scope does not match orchestration scope')
+        for key in ('kind', 'sha256', 'files', 'bytes'):
+            if execution['snapshot'][key] != shared_snapshot[key]:
+                raise ValueError('executed run does not use the shared orchestration snapshot')
+
+        run_report_ids = set(execution['evidence']['report_ids'])
+        if not run_report_ids:
+            raise ValueError('executed run must expose at least one evidence report id')
+        if not run_report_ids.issubset(report_ids):
+            raise ValueError('executed run references a report absent from combined evidence')
+        if claimed_report_ids.intersection(run_report_ids):
+            raise ValueError('combined evidence report is claimed by multiple executed runs')
+        claimed_report_ids.update(run_report_ids)
+
+        linked_reports = [reports_by_id[report_id] for report_id in run_report_ids]
+        if any(report['execution_id'] != execution['execution_id'] for report in linked_reports):
+            raise ValueError('executed run report execution_id linkage is inconsistent')
+        if any(report['tool'] != execution['tool'] for report in linked_reports):
+            raise ValueError('executed run report tool identity is inconsistent')
+        if any(report['trust'] != 'controlled-execution' for report in linked_reports):
+            raise ValueError('orchestration reports must use controlled-execution trust')
+        if any(report['scope_binding'] != 'controlled-execution' for report in linked_reports):
+            raise ValueError('orchestration reports must use controlled-execution scope binding')
+        if any(report['status'] != process['status'] for report in linked_reports):
+            raise ValueError('executed run status does not match its combined evidence reports')
+
+        if process['status'] == 'completed':
+            if not process['result_accepted']:
+                raise ValueError('completed orchestration run must accept its result')
+            accepted += 1
+        else:
+            if process['result_accepted']:
+                raise ValueError('incomplete orchestration run cannot accept its result')
+            incomplete_report_ids.update(run_report_ids)
+
+        execution_millis += process['duration_ms']
+        captured_output_bytes += process['stdout_bytes'] + process['stderr_bytes']
+
+    if claimed_report_ids != report_ids:
+        raise ValueError('combined evidence contains reports not owned by an executed run')
+    for finding in findings:
+        linked_ids = set(finding['report_ids'])
+        if linked_ids.intersection(incomplete_report_ids) and finding['blocking_candidate']:
+            raise ValueError('incomplete orchestration reports cannot support blocking candidates')
+
+    expected_status = 'completed' if accepted == len(payload['runs']) else (
+        'partial' if accepted else 'failed'
+    )
+    if payload['status'] != expected_status:
+        raise ValueError('orchestration status does not match run terminal states')
+
+    for name, amount in payload['budgets'].items():
+        validate_budget_amount(name, amount)
+    expected_budget_consumption = {
+        'execution_millis': execution_millis,
+        'captured_output_bytes': captured_output_bytes,
+        'findings': evidence['counts']['deduplicated_findings'],
+        'snapshot_files': shared_snapshot['files'],
+        'snapshot_bytes': shared_snapshot['bytes'],
+    }
+    for name, consumed in expected_budget_consumption.items():
+        amount = payload['budgets'][name]
+        if amount['consumed'] != min(consumed, amount['initial']):
+            raise ValueError(f'orchestration budget {name} consumption is inconsistent')
+
+    if payload['manifest']['manifest_id'] != payload['manifest']['sha256'][:16]:
+        raise ValueError('manifest_id must be derived from the authorized manifest SHA256')
+    if shared_snapshot['snapshot_id'] != shared_snapshot['sha256'][:16]:
+        raise ValueError('snapshot_id must be derived from the shared snapshot SHA256')
+
+    orchestration_digest = hashlib.sha256()
+    for value in (
+        payload['scope']['fingerprint'],
+        payload['manifest']['sha256'],
+        shared_snapshot['sha256'],
+    ):
+        orchestration_digest.update(value.encode('utf-8'))
+        orchestration_digest.update(b'\0')
+    for run in payload['runs']:
+        if run['run_kind'] == 'executed':
+            terminal = 'executed'
+            execution_id = run['execution']['execution_id']
+        elif run['run_kind'] == 'invalidated':
+            terminal = f"invalidated/{run['reason']}"
+            execution_id = ''
+        else:
+            terminal = f"not-run/{run['reason']}"
+            execution_id = ''
+        for value in (run['profile_id'], terminal, execution_id):
+            orchestration_digest.update(value.encode('utf-8'))
+            orchestration_digest.update(b'\0')
+    if payload['orchestration_id'] != orchestration_digest.hexdigest()[:16]:
+        raise ValueError('orchestration_id does not match scope, authorization, and run states')
 
 
 def main():
@@ -267,6 +446,18 @@ def main():
         default=[],
         help='validate one static_analysis_profile/v1 JSON file',
     )
+    parser.add_argument(
+        '--static-orchestration-manifest',
+        action='append',
+        default=[],
+        help='validate one static-analysis orchestration manifest JSON file',
+    )
+    parser.add_argument(
+        '--static-orchestration-output',
+        action='append',
+        default=[],
+        help='validate one orchestration output and its combined static evidence',
+    )
     args = parser.parse_args()
     skill_root = pathlib.Path(__file__).resolve().parent.parent
     schema_dir = skill_root / 'collect-diff-context-cli/schemas'
@@ -283,6 +474,7 @@ def main():
     if errors:
         sys.exit(1)
     print(f'All {len(schema_files)} schemas validated.')
+    schemas, schema_registry = load_schema_bundle(schema_dir)
     if args.control_plane_output:
         schema = json.loads((schema_dir / 'review-control-plane.schema.json').read_text())
         validator = jsonschema.Draft202012Validator(schema)
@@ -331,7 +523,7 @@ def main():
         if errors:
             sys.exit(1)
     if args.static_profile:
-        profile_schema = json.loads((schema_dir / 'static-analysis-profile.schema.json').read_text())
+        profile_schema = schemas['static-analysis-profile.schema.json']
         profile_validator = jsonschema.Draft202012Validator(profile_schema)
         for profile_path in args.static_profile:
             try:
@@ -340,6 +532,42 @@ def main():
                 print(f'  ✅ {profile_path}: valid static-analysis profile')
             except Exception as exc:
                 print(f'  ❌ {profile_path}: {exc}', file=sys.stderr)
+                errors += 1
+        if errors:
+            sys.exit(1)
+    if args.static_orchestration_manifest:
+        manifest_schema = schemas['static-analysis-orchestration-manifest.schema.json']
+        manifest_validator = jsonschema.Draft202012Validator(manifest_schema)
+        for manifest_path in args.static_orchestration_manifest:
+            try:
+                payload = json.loads(pathlib.Path(manifest_path).read_text(encoding='utf-8'))
+                manifest_validator.validate(payload)
+                validate_static_orchestration_manifest_invariants(payload)
+                print(f'  ✅ {manifest_path}: valid static-analysis orchestration manifest')
+            except Exception as exc:
+                print(f'  ❌ {manifest_path}: {exc}', file=sys.stderr)
+                errors += 1
+        if errors:
+            sys.exit(1)
+    if args.static_orchestration_output:
+        orchestration_schema = schemas['static-analysis-orchestration.schema.json']
+        evidence_schema = schemas['static-analysis-evidence.schema.json']
+        orchestration_validator = jsonschema.Draft202012Validator(
+            orchestration_schema,
+            registry=schema_registry,
+        )
+        evidence_validator = jsonschema.Draft202012Validator(evidence_schema)
+        for output_path in args.static_orchestration_output:
+            try:
+                payload = load_static_orchestration_output(output_path)
+                evidence = load_static_evidence_output(output_path)
+                orchestration_validator.validate(payload)
+                evidence_validator.validate(evidence)
+                validate_static_evidence_invariants(evidence)
+                validate_static_orchestration_invariants(payload, evidence)
+                print(f'  ✅ {output_path}: valid static-analysis orchestration output')
+            except Exception as exc:
+                print(f'  ❌ {output_path}: {exc}', file=sys.stderr)
                 errors += 1
         if errors:
             sys.exit(1)

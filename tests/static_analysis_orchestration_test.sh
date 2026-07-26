@@ -174,6 +174,34 @@ output="$tmp_dir/orchestration.out"
 grep -Fq 'status: disabled' "$tmp_dir/orchestration.err" \
   || fail 'disabled sanitizer state was not reported'
 
+python3 "$repo_root/scripts/validate_schemas.py" \
+  --static-orchestration-manifest "$manifest" \
+  --static-orchestration-output "$output" >/dev/null \
+  || fail 'schema validator rejected valid orchestration manifest/output'
+
+python3 - "$manifest" "$tmp_dir/relative-manifest.json" "$tmp_dir/duplicate-profile-manifest.json" <<'PY'
+import copy
+import json
+import pathlib
+import sys
+
+manifest = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding='utf-8'))
+relative = copy.deepcopy(manifest)
+relative['profiles'][0]['path'] = 'relative-profile.json'
+pathlib.Path(sys.argv[2]).write_text(json.dumps(relative), encoding='utf-8')
+duplicate = copy.deepcopy(manifest)
+duplicate['profiles'][1]['profile_id'] = duplicate['profiles'][0]['profile_id']
+pathlib.Path(sys.argv[3]).write_text(json.dumps(duplicate), encoding='utf-8')
+PY
+for invalid_manifest in \
+  "$tmp_dir/relative-manifest.json" \
+  "$tmp_dir/duplicate-profile-manifest.json"; do
+  if python3 "$repo_root/scripts/validate_schemas.py" \
+    --static-orchestration-manifest "$invalid_manifest" >/dev/null 2>&1; then
+    fail "schema validator accepted invalid orchestration manifest: $(basename "$invalid_manifest")"
+  fi
+done
+
 python3 - "$output" "$fingerprint" <<'PY' \
   || fail 'public orchestration output did not satisfy its linked contracts'
 import json
@@ -196,6 +224,128 @@ assert orchestration['report_ids'] == [item['report_id'] for item in evidence['r
 assert orchestration['finding_ids'] == [item['finding_id'] for item in evidence['findings']]
 assert evidence['counts']['blocking_candidates'] == 1
 PY
+
+python3 - "$output" "$tmp_dir" <<'PY'
+import copy
+import hashlib
+import json
+import pathlib
+import sys
+
+source = pathlib.Path(sys.argv[1])
+target = pathlib.Path(sys.argv[2])
+lines = source.read_text(encoding='utf-8').splitlines()
+orchestration_index = lines.index('## Static Analysis Orchestration JSON') + 1
+evidence_index = lines.index('## Static Analysis Evidence JSON') + 1
+orchestration = json.loads(lines[orchestration_index])
+evidence = json.loads(lines[evidence_index])
+
+def write_case(name, orchestration_payload, evidence_payload):
+    rendered = list(lines)
+    rendered[orchestration_index] = json.dumps(orchestration_payload, separators=(',', ':'))
+    rendered[evidence_index] = json.dumps(evidence_payload, separators=(',', ':'))
+    (target / f'{name}.out').write_text('\n'.join(rendered) + '\n', encoding='utf-8')
+
+scope_mismatch = copy.deepcopy(evidence)
+scope_mismatch['scope']['fingerprint'] = '0' * 64
+write_case('scope-mismatch', orchestration, scope_mismatch)
+
+report_mismatch = copy.deepcopy(orchestration)
+report_mismatch['report_ids'] = report_mismatch['report_ids'][:-1]
+write_case('report-mismatch', report_mismatch, evidence)
+
+status_mismatch = copy.deepcopy(orchestration)
+status_mismatch['status'] = 'partial'
+write_case('status-mismatch', status_mismatch, evidence)
+
+incomplete_orchestration = copy.deepcopy(orchestration)
+incomplete_candidate = copy.deepcopy(evidence)
+timeout_execution = incomplete_orchestration['runs'][1]['execution']
+timeout_process = timeout_execution['execution']
+timeout_process['status'] = 'timeout'
+timeout_process['result_accepted'] = False
+timeout_process['failure_reason'] = 'timeout'
+timeout_process['exit_code'] = None
+execution_digest = hashlib.sha256()
+for value in (
+    timeout_execution['scope']['fingerprint'],
+    timeout_execution['profile']['sha256'],
+    timeout_execution['executable']['sha256'],
+    timeout_process['stdout_sha256'],
+    timeout_process['status'],
+):
+    execution_digest.update(str(value).encode('utf-8'))
+    execution_digest.update(b'\0')
+timeout_execution['execution_id'] = execution_digest.hexdigest()[:16]
+timeout_report_id = timeout_execution['evidence']['report_ids'][0]
+timeout_report = next(
+    report for report in incomplete_candidate['reports']
+    if report['report_id'] == timeout_report_id
+)
+timeout_report['status'] = 'timeout'
+timeout_report['execution_id'] = timeout_execution['execution_id']
+timeout_report['finding_count'] = 1
+timeout_finding = copy.deepcopy(incomplete_candidate['findings'][0])
+timeout_finding['finding_id'] = 'f' * 16
+timeout_finding['report_ids'] = [timeout_report_id]
+timeout_finding['tool'] = timeout_execution['tool']
+timeout_finding['rule_id'] = 'TIMEOUT-CANDIDATE'
+timeout_finding['message'] = 'A timeout report must not support a blocking candidate.'
+incomplete_candidate['findings'].append(timeout_finding)
+for count_name in ('input_findings', 'deduplicated_findings', 'mapped_to_units', 'added_line', 'blocking_candidates'):
+    incomplete_candidate['counts'][count_name] += 1
+incomplete_orchestration['status'] = 'partial'
+incomplete_orchestration['finding_ids'].append(timeout_finding['finding_id'])
+findings_budget = incomplete_orchestration['budgets']['findings']
+findings_budget['consumed'] += 1
+findings_budget['remaining'] -= 1
+orchestration_digest = hashlib.sha256()
+for value in (
+    incomplete_orchestration['scope']['fingerprint'],
+    incomplete_orchestration['manifest']['sha256'],
+    incomplete_orchestration['snapshot']['sha256'],
+):
+    orchestration_digest.update(value.encode('utf-8'))
+    orchestration_digest.update(b'\0')
+for run in incomplete_orchestration['runs']:
+    for value in (run['profile_id'], 'executed', run['execution']['execution_id']):
+        orchestration_digest.update(value.encode('utf-8'))
+        orchestration_digest.update(b'\0')
+incomplete_orchestration['orchestration_id'] = orchestration_digest.hexdigest()[:16]
+write_case('incomplete-candidate', incomplete_orchestration, incomplete_candidate)
+
+empty_evidence = copy.deepcopy(evidence)
+empty_evidence['reports'] = []
+empty_evidence['findings'] = []
+empty_evidence['truncated'] = False
+empty_evidence['counts'] = {
+    'reports': 0,
+    'input_findings': 0,
+    'deduplicated_findings': 0,
+    'mapped_to_units': 0,
+    'added_line': 0,
+    'blocking_candidates': 0,
+    'priority_candidates': 0,
+    'notes': 0,
+    'outside_scope': 0,
+}
+empty_ids = copy.deepcopy(orchestration)
+empty_ids['report_ids'] = []
+empty_ids['finding_ids'] = []
+write_case('executed-without-reports', empty_ids, empty_evidence)
+PY
+
+for invalid_output in \
+  "$tmp_dir/scope-mismatch.out" \
+  "$tmp_dir/report-mismatch.out" \
+  "$tmp_dir/status-mismatch.out" \
+  "$tmp_dir/incomplete-candidate.out" \
+  "$tmp_dir/executed-without-reports.out"; do
+  if python3 "$repo_root/scripts/validate_schemas.py" \
+    --static-orchestration-output "$invalid_output" >/dev/null 2>&1; then
+    fail "schema validator accepted semantically inconsistent output: $(basename "$invalid_output")"
+  fi
+done
 
 if (
   cd "$fixture"
