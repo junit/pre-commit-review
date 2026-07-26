@@ -1,6 +1,10 @@
+use collect_diff_context_cli::candidate::ChangedRange;
+use collect_diff_context_cli::impact_context::adapters::tree_sitter_rust::TreeSitterRustAdapter;
 use collect_diff_context_cli::impact_context::budget::{
     BudgetResource, BudgetTracker, ImpactBudget,
 };
+use collect_diff_context_cli::impact_context::contracts::{ParseQuality, Resolution};
+use serde_json::json;
 use std::time::Duration;
 
 #[test]
@@ -123,4 +127,230 @@ fn budget_deadline_exhaustion_is_stable_and_monotonic() {
     assert_eq!(first.code(), "deadline-exhausted");
     assert_eq!(second.code(), "deadline-exhausted");
     assert!(tracker.deadline_exhausted());
+}
+
+#[test]
+fn tree_sitter_clean_fixture_selects_enclosing_changed_function() {
+    let source = include_bytes!("fixtures/impact_context/rust-clean.rs");
+    let source_text = std::str::from_utf8(source).unwrap();
+    let changed_line = source_text
+        .lines()
+        .position(|line| line.contains("helper(value)"))
+        .map(|line| line as u32 + 1)
+        .unwrap();
+    let changed_ranges = [ChangedRange {
+        start_line: changed_line,
+        end_line: changed_line,
+        deletion_anchor: false,
+    }];
+    let mut tracker = BudgetTracker::new(ImpactBudget::fast_defaults());
+
+    let output = TreeSitterRustAdapter::analyze(source, &changed_ranges, &mut tracker).unwrap();
+
+    assert_eq!(output.parse_quality, ParseQuality::Clean);
+    let process = output
+        .changed_symbols
+        .iter()
+        .find(|symbol| symbol.name == "process")
+        .expect("body hunk must select its enclosing function");
+    assert!(process.owner.as_deref().unwrap().contains("Service"));
+    assert!(process.signature.contains("pub async fn process<U>"));
+    assert!(output
+        .imports
+        .iter()
+        .any(|fact| fact.text.contains("HashMap as Map")));
+    assert!(output
+        .imports
+        .iter()
+        .any(|fact| fact.text.contains("prelude::*")));
+    assert!(output.calls.iter().all(|call| {
+        matches!(
+            call.resolution,
+            Resolution::Syntactic | Resolution::Unresolved
+        )
+    }));
+    assert!(output.calls.iter().any(|call| call.target == "helper"));
+    assert!(output
+        .macros
+        .iter()
+        .any(|fact| fact.text == "tracing::debug"));
+}
+
+#[test]
+fn tree_sitter_clean_fixture_matches_the_structural_golden() {
+    let source = include_bytes!("fixtures/impact_context/rust-clean.rs");
+    let changed_line = std::str::from_utf8(source)
+        .unwrap()
+        .lines()
+        .position(|line| line.contains("helper(value)"))
+        .map(|line| line as u32 + 1)
+        .unwrap();
+    let mut tracker = BudgetTracker::new(ImpactBudget::fast_defaults());
+    let output = TreeSitterRustAdapter::analyze(
+        source,
+        &[ChangedRange {
+            start_line: changed_line,
+            end_line: changed_line,
+            deletion_anchor: false,
+        }],
+        &mut tracker,
+    )
+    .unwrap();
+    let projection = json!({
+        "parse_quality": output.parse_quality,
+        "changed_symbols": output.changed_symbols.iter().map(|symbol| json!({
+            "kind": symbol.kind,
+            "name": symbol.name,
+            "owner": symbol.owner,
+        })).collect::<Vec<_>>(),
+        "calls": output.calls.iter().map(|call| json!([
+            call.target,
+            call.resolution,
+        ])).collect::<Vec<_>>(),
+        "macros": output.macros.iter().map(|fact| fact.text.as_str()).collect::<Vec<_>>(),
+        "limitation_codes": output.limitation_codes,
+    });
+    let expected: serde_json::Value = serde_json::from_str(include_str!(
+        "fixtures/impact_context/rust-clean.expected.json"
+    ))
+    .unwrap();
+
+    assert_eq!(projection, expected);
+}
+
+#[test]
+fn tree_sitter_recovery_quality_tracks_changed_structure_overlap() {
+    let source = include_bytes!("fixtures/impact_context/rust-recovered.rs");
+    let source_text = std::str::from_utf8(source).unwrap();
+    let line = |needle: &str| {
+        source_text
+            .lines()
+            .position(|line| line.contains(needle))
+            .map(|line| line as u32 + 1)
+            .unwrap()
+    };
+    let analyze = |changed_line| {
+        let mut tracker = BudgetTracker::new(ImpactBudget::fast_defaults());
+        TreeSitterRustAdapter::analyze(
+            source,
+            &[ChangedRange {
+                start_line: changed_line,
+                end_line: changed_line,
+                deletion_anchor: false,
+            }],
+            &mut tracker,
+        )
+        .unwrap()
+    };
+    let stable = analyze(line("pub fn stable"));
+    let degraded = analyze(line("let next = @"));
+    let projection = json!({
+        "stable": {
+            "parse_quality": stable.parse_quality,
+            "limitation_codes": stable.limitation_codes,
+        },
+        "degraded": {
+            "parse_quality": degraded.parse_quality,
+            "limitation_codes": degraded.limitation_codes,
+        }
+    });
+    let expected: serde_json::Value = serde_json::from_str(include_str!(
+        "fixtures/impact_context/rust-recovered.expected.json"
+    ))
+    .unwrap();
+
+    assert!(stable.error_node_count + stable.missing_node_count > 0);
+    assert!(degraded.error_node_count + degraded.missing_node_count > 0);
+    assert_eq!(projection, expected);
+}
+
+#[test]
+fn tree_sitter_malformed_and_deeply_nested_input_never_panics() {
+    let mut malformed_budget = ImpactBudget::fast_defaults();
+    malformed_budget.max_nesting_depth = 16;
+    let mut tracker = BudgetTracker::new(malformed_budget);
+    let mut source = b"fn hostile() {".to_vec();
+    source.extend(std::iter::repeat_n(b'{', 600));
+    source.push(0xff);
+    source.extend(std::iter::repeat_n(b'}', 600));
+
+    let output = TreeSitterRustAdapter::analyze(
+        &source,
+        &[ChangedRange {
+            start_line: 1,
+            end_line: 1,
+            deletion_anchor: false,
+        }],
+        &mut tracker,
+    )
+    .unwrap();
+
+    assert!(output
+        .limitation_codes
+        .iter()
+        .any(|code| code == "nesting-depth-budget-exhausted"));
+    assert!(output.nodes_visited <= tracker.amount(BudgetResource::Nodes).initial);
+}
+
+#[test]
+fn tree_sitter_extracts_declared_rust_structure_without_expansion() {
+    let source = include_bytes!("fixtures/impact_context/rust-clean.rs");
+    let line_count = std::str::from_utf8(source).unwrap().lines().count() as u32;
+    let mut tracker = BudgetTracker::new(ImpactBudget::fast_defaults());
+
+    let output = TreeSitterRustAdapter::analyze(
+        source,
+        &[ChangedRange {
+            start_line: 1,
+            end_line: line_count,
+            deletion_anchor: false,
+        }],
+        &mut tracker,
+    )
+    .unwrap();
+
+    assert!(output
+        .changed_symbols
+        .iter()
+        .any(|symbol| symbol.kind == "struct" && symbol.name == "Service"));
+    assert!(output
+        .changed_symbols
+        .iter()
+        .any(|symbol| symbol.kind == "enum" && symbol.name == "Mode"));
+    assert!(output
+        .changed_symbols
+        .iter()
+        .any(|symbol| symbol.kind == "trait" && symbol.name == "Runner"));
+    assert!(output.changed_symbols.iter().any(|symbol| {
+        symbol.kind == "function-declaration"
+            && symbol.name == "run"
+            && symbol.owner.as_deref() == Some("Runner")
+    }));
+    assert!(output.changed_symbols.iter().any(|symbol| {
+        symbol.kind == "method"
+            && symbol.name == "new"
+            && symbol
+                .owner
+                .as_deref()
+                .is_some_and(|owner| owner.contains("Service"))
+    }));
+    assert!(output
+        .changed_symbols
+        .iter()
+        .any(|symbol| symbol.kind == "closure" && symbol.name.starts_with("<closure@")));
+    for attribute in ["#[derive(Debug)]", "#[inline]", "#[test]", "#[ignore]"] {
+        assert!(output.attributes.iter().any(|fact| fact.text == attribute));
+    }
+    assert_eq!(
+        output
+            .macros
+            .iter()
+            .filter(|fact| fact.text == "tracing::debug")
+            .count(),
+        1
+    );
+    assert!(output
+        .calls
+        .iter()
+        .all(|call| call.resolution == Resolution::Unresolved));
 }

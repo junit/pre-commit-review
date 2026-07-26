@@ -1,0 +1,10 @@
+{
+  "stable": {
+    "parse_quality": "recovered",
+    "limitation_codes": ["syntax-recovery-outside-changed-structure"]
+  },
+  "degraded": {
+    "parse_quality": "degraded",
+    "limitation_codes": ["syntax-recovery-overlaps-changed-structure"]
+  }
+}

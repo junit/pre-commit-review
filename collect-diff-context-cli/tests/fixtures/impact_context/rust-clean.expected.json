@@ -1,0 +1,23 @@
+{
+  "parse_quality": "clean",
+  "changed_symbols": [
+    {
+      "kind": "impl",
+      "name": "Service<T>",
+      "owner": null
+    },
+    {
+      "kind": "method",
+      "name": "process",
+      "owner": "impl<T: Clone> Service<T>"
+    }
+  ],
+  "calls": [
+    ["input.clone", "unresolved"],
+    ["helper", "unresolved"],
+    ["Ok", "unresolved"],
+    ["mapper", "unresolved"]
+  ],
+  "macros": ["tracing::debug"],
+  "limitation_codes": []
+}
