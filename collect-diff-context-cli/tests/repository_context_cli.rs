@@ -19,11 +19,12 @@ fn repository_context_with_required_sanitizer(
     repo: &GitRepo,
     arguments: &[&str],
 ) -> Result<Output, Box<dyn Error>> {
+    let unavailable_scanner = repo.path().join("missing-gitleaks");
     Ok(Command::new(env!("CARGO_BIN_EXE_repository-context-cli"))
         .args(arguments)
         .current_dir(repo.path())
         .env_remove("PRE_COMMIT_REVIEW_SECRET_SCAN")
-        .env_remove("PRE_COMMIT_REVIEW_GITLEAKS_BIN")
+        .env("PRE_COMMIT_REVIEW_GITLEAKS_BIN", unavailable_scanner)
         .env_remove("PRE_COMMIT_REVIEW_GITLEAKS_CONFIG")
         .output()?)
 }
