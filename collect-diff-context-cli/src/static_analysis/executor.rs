@@ -770,7 +770,10 @@ fn bounded_process_detail(value: &[u8]) -> String {
     }
 }
 
-fn verify_prepared_integrity(prepared: &PreparedProfile, phase: &str) -> Result<(), RunError> {
+pub(crate) fn verify_prepared_integrity(
+    prepared: &PreparedProfile,
+    phase: &str,
+) -> Result<(), RunError> {
     let (profile_sha256, _) = sha256_file(&prepared.profile_path, None)?;
     if profile_sha256 != prepared.profile_sha256 {
         return Err(RunError::new(format!(
