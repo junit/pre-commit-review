@@ -411,42 +411,15 @@ pub fn run_analysis(request: RunRequest) -> Result<RunArtifact, RunError> {
         },
     )?;
 
-    let mut final_status = process.status;
-    let mut execution_id =
-        compact_execution_id(&request.expected_scope, &prepared, &process, final_status);
-    let mut evidence = if final_status == ExecutionStatus::Completed {
-        collect_completed_evidence(
-            &repository,
-            request.source,
-            &request.expected_scope,
-            &prepared,
-            &process,
-            &execution_id,
-            request.max_findings,
-        )
-        .ok()
-        .filter(|evidence| evidence_matches_profile(evidence, &prepared.profile))
-    } else {
-        None
-    };
-    if evidence.is_none() {
-        if final_status == ExecutionStatus::Completed {
-            final_status = ExecutionStatus::InvalidOutput;
-            execution_id =
-                compact_execution_id(&request.expected_scope, &prepared, &process, final_status);
-        }
-        evidence = Some(collect_failure_evidence(
-            &repository,
-            request.source,
-            &request.expected_scope,
-            &prepared,
-            &process,
-            &execution_id,
-            final_status,
-            request.max_findings,
-        )?);
-    }
-    let evidence = evidence.expect("assigned above");
+    let artifact = build_run_artifact(
+        &repository,
+        request.source,
+        &request.expected_scope,
+        &prepared,
+        &snapshot,
+        &process,
+        request.max_findings,
+    )?;
 
     snapshot
         .verify_unchanged()
@@ -463,11 +436,58 @@ pub fn run_analysis(request: RunRequest) -> Result<RunArtifact, RunError> {
         ))
     })?;
     let expected_evidence_scope = evidence_scope(&scope);
-    if evidence.scope != expected_evidence_scope {
+    if artifact.evidence.scope != expected_evidence_scope {
         return Err(RunError::new(
             "controlled evidence scope does not match the opening control plane",
         ));
     }
+    Ok(artifact)
+}
+
+#[allow(clippy::too_many_arguments)]
+pub(crate) fn build_run_artifact(
+    repository: &Path,
+    source: ReviewSource,
+    expected_scope: &str,
+    prepared: &PreparedProfile,
+    snapshot: &CandidateSnapshot,
+    process: &ProcessOutcome,
+    max_findings: usize,
+) -> Result<RunArtifact, RunError> {
+    let mut final_status = process.status;
+    let mut execution_id = compact_execution_id(expected_scope, prepared, process, final_status);
+    let mut evidence = if final_status == ExecutionStatus::Completed {
+        collect_completed_evidence(
+            repository,
+            source,
+            expected_scope,
+            prepared,
+            process,
+            &execution_id,
+            max_findings,
+        )
+        .ok()
+        .filter(|evidence| evidence_matches_profile(evidence, &prepared.profile))
+    } else {
+        None
+    };
+    if evidence.is_none() {
+        if final_status == ExecutionStatus::Completed {
+            final_status = ExecutionStatus::InvalidOutput;
+            execution_id = compact_execution_id(expected_scope, prepared, process, final_status);
+        }
+        evidence = Some(collect_failure_evidence(
+            repository,
+            source,
+            expected_scope,
+            prepared,
+            process,
+            &execution_id,
+            final_status,
+            max_findings,
+        )?);
+    }
+    let evidence = evidence.expect("assigned above");
 
     let mut report_ids = evidence
         .reports
@@ -673,7 +693,7 @@ fn is_scope_fingerprint(value: &str) -> bool {
             .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
 }
 
-fn repository_state_digest(repository: &Path) -> Result<String, RunError> {
+pub(crate) fn repository_state_digest(repository: &Path) -> Result<String, RunError> {
     let commands: [&[&str]; 3] = [
         &["status", "--porcelain=v2", "-z", "--untracked-files=all"],
         &["diff", "--no-ext-diff", "--no-textconv", "--binary"],

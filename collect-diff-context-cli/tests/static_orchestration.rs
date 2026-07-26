@@ -1,11 +1,14 @@
 #[cfg(unix)]
-use collect_diff_context_cli::review_scope::ReviewSource;
+use collect_diff_context_cli::review_scope::{
+    open_authoritative_scope, ReviewSource, ScopeRequest,
+};
 use collect_diff_context_cli::static_analysis::contracts::{
-    OrchestrationArtifact, OrchestrationManifest, StaticAnalysisEvidence,
+    InvalidationReason, NotRunReason, OrchestrationArtifact, OrchestrationManifest,
+    OrchestrationRun, OrchestrationStatus, StaticAnalysisEvidence,
 };
 #[cfg(unix)]
 use collect_diff_context_cli::static_analysis::orchestration::{
-    prepare_orchestration, OrchestrationRequest,
+    execute, prepare_orchestration, OrchestrationRequest,
 };
 use serde_json::{json, Value};
 #[cfg(unix)]
@@ -745,4 +748,193 @@ fn preflight_revalidation_rejects_manifest_profile_and_entrypoint_drift() {
         assert!(prepared.revalidate().is_err(), "drift={drift}");
         assert!(!marker.exists());
     }
+}
+
+#[cfg(unix)]
+fn write_execution_profile(
+    directory: &Path,
+    name: &str,
+    executable: &Path,
+    arguments: &[&Path],
+) -> (PathBuf, String) {
+    let path = directory.join(format!("{name}-execution.json"));
+    let argument_values = arguments
+        .iter()
+        .map(|argument| argument.to_string_lossy().into_owned())
+        .collect::<Vec<_>>();
+    fs::write(
+        &path,
+        serde_json::to_vec(&json!({
+            "schema_version": 1,
+            "kind": "static_analysis_profile",
+            "name": format!("{name} execution profile"),
+            "tool": {"name": name, "version": "1.0"},
+            "executable": {
+                "path": executable.to_string_lossy(),
+                "sha256": sha256_file(executable)
+            },
+            "arguments": argument_values,
+            "output_format": "normalized-json",
+            "success_exit_codes": [0],
+            "limits": {
+                "timeout_seconds": 30,
+                "max_output_bytes": 1048576,
+                "max_snapshot_bytes": 10485760,
+                "max_snapshot_files": 1000
+            },
+            "repository_configuration": "disabled",
+            "network_access": "offline-required"
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    let hash = sha256_file(&path);
+    (path, hash)
+}
+
+#[cfg(unix)]
+fn source_analyzer(directory: &Path, name: &str, mutate_snapshot: bool) -> PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+
+    let path = directory.join(format!("{name}-analyzer.sh"));
+    let mutation = if mutate_snapshot {
+        "chmod u+w candidate.txt\nprintf 'mutated\\n' > candidate.txt\n"
+    } else {
+        ""
+    };
+    let body = format!(
+        "#!/bin/sh\nset -eu\nlog_path=$1\nprintf '%s\\t%s\\t%s\\n' \"$PWD\" \"$PRE_COMMIT_REVIEW_SCOPE_FINGERPRINT\" \"$(cat candidate.txt)\" >> \"$log_path\"\n{mutation}printf '%s\\n' '{{\"schema_version\":1,\"kind\":\"static_analysis_input\",\"scope_fingerprint\":\"'\"$PRE_COMMIT_REVIEW_SCOPE_FINGERPRINT\"'\",\"tool\":{{\"name\":\"{name}\",\"version\":\"1.0\"}},\"status\":\"completed\",\"findings\":[]}}'\n"
+    );
+    fs::write(&path, body).unwrap();
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+    path
+}
+
+#[cfg(unix)]
+fn execution_request(
+    repository: &Path,
+    manifest_path: &Path,
+    manifest_sha256: &str,
+) -> OrchestrationRequest {
+    let scope = open_authoritative_scope(ScopeRequest {
+        repository: repository.to_path_buf(),
+        source: Some(ReviewSource::Staged),
+        expected_fingerprint: None,
+    })
+    .unwrap();
+    OrchestrationRequest {
+        repository: repository.to_path_buf(),
+        source: ReviewSource::Staged,
+        expected_scope: scope.fingerprint,
+        manifest_path: manifest_path.to_path_buf(),
+        expected_manifest_sha256: manifest_sha256.to_string(),
+        allow_repository_configuration: false,
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn shared_snapshot_is_materialized_once_for_all_profiles() {
+    let repository = preflight_repository();
+    let fixtures = TempDir::new().unwrap();
+    let log = fixtures.path().join("snapshot.log");
+    let first = source_analyzer(fixtures.path(), "first", false);
+    let second = source_analyzer(fixtures.path(), "second", false);
+    let (first_profile, first_hash) =
+        write_execution_profile(fixtures.path(), "first", &first, &[&log]);
+    let (second_profile, second_hash) =
+        write_execution_profile(fixtures.path(), "second", &second, &[&log]);
+    let (manifest, manifest_sha256) = write_preflight_manifest(
+        fixtures.path(),
+        &[
+            ("first", &first_profile, &first_hash),
+            ("second", &second_profile, &second_hash),
+        ],
+    );
+
+    let output = execute(execution_request(
+        repository.path(),
+        &manifest,
+        &manifest_sha256,
+    ))
+    .unwrap();
+
+    assert_eq!(output.orchestration.status, OrchestrationStatus::Completed);
+    assert_eq!(output.orchestration.runs.len(), 2);
+    for run in &output.orchestration.runs {
+        let OrchestrationRun::Executed { execution, .. } = run else {
+            panic!("expected executed run: {run:?}");
+        };
+        assert_eq!(
+            execution.snapshot.sha256,
+            output.orchestration.snapshot.sha256
+        );
+        assert_eq!(
+            execution.snapshot.files,
+            output.orchestration.snapshot.files
+        );
+        assert_eq!(
+            execution.snapshot.bytes,
+            output.orchestration.snapshot.bytes
+        );
+    }
+    assert_eq!(output.evidence.reports.len(), 2);
+
+    let observations = fs::read_to_string(&log)
+        .unwrap()
+        .lines()
+        .map(|line| line.split('\t').map(str::to_string).collect::<Vec<_>>())
+        .collect::<Vec<_>>();
+    assert_eq!(observations.len(), 2);
+    assert_eq!(observations[0][0], observations[1][0]);
+    assert_eq!(observations[0][1], observations[1][1]);
+    assert_eq!(observations[0][1], output.orchestration.scope.fingerprint);
+    assert_eq!(observations[0][2], "candidate");
+    assert_eq!(observations[1][2], "candidate");
+}
+
+#[cfg(unix)]
+#[test]
+fn shared_snapshot_mutation_invalidates_current_and_stops_remaining_profiles() {
+    let repository = preflight_repository();
+    let fixtures = TempDir::new().unwrap();
+    let log = fixtures.path().join("mutation.log");
+    let mutating = source_analyzer(fixtures.path(), "mutating", true);
+    let later = source_analyzer(fixtures.path(), "later", false);
+    let (mutating_profile, mutating_hash) =
+        write_execution_profile(fixtures.path(), "mutating", &mutating, &[&log]);
+    let (later_profile, later_hash) =
+        write_execution_profile(fixtures.path(), "later", &later, &[&log]);
+    let (manifest, manifest_sha256) = write_preflight_manifest(
+        fixtures.path(),
+        &[
+            ("mutating", &mutating_profile, &mutating_hash),
+            ("later", &later_profile, &later_hash),
+        ],
+    );
+
+    let output = execute(execution_request(
+        repository.path(),
+        &manifest,
+        &manifest_sha256,
+    ))
+    .unwrap();
+
+    assert_eq!(output.orchestration.status, OrchestrationStatus::Failed);
+    assert!(matches!(
+        &output.orchestration.runs[0],
+        OrchestrationRun::Invalidated {
+            profile_id,
+            reason: InvalidationReason::SnapshotMutated
+        } if profile_id == "mutating"
+    ));
+    assert!(matches!(
+        &output.orchestration.runs[1],
+        OrchestrationRun::NotRun {
+            profile_id,
+            reason: NotRunReason::SharedIntegrityFailure
+        } if profile_id == "later"
+    ));
+    assert!(output.evidence.reports.is_empty());
+    assert_eq!(fs::read_to_string(&log).unwrap().lines().count(), 1);
 }
