@@ -1,13 +1,14 @@
 use super::contracts::{
-    BudgetAmount, BudgetRecord, DecisionContract, EvidenceCounts, EvidenceScope,
-    InvalidationReason, ManifestIdentity, NotRunReason, OrchestrationArtifact,
-    OrchestrationManifest, OrchestrationRun, OrchestrationSnapshot, OrchestrationStatus,
-    ProfileLimits, RepositoryConfiguration, StaticAnalysisEvidence, StaticAnalysisProfile,
+    BudgetAmount, BudgetRecord, EvidenceScope, InvalidationReason, ManifestIdentity, NotRunReason,
+    OrchestrationArtifact, OrchestrationManifest, OrchestrationRun, OrchestrationSnapshot,
+    OrchestrationStatus, ProfileLimits, RepositoryConfiguration, StaticAnalysisEvidence,
+    StaticAnalysisProfile,
 };
+use super::evidence_union::{union_evidence, EvidenceRun};
 use super::executor::{
     build_run_artifact, execute_prepared_with_clock, prepare_profile, repository_state_digest,
     sha256_file, verify_prepared_integrity, Clock, ExecutionLimits, PreparedProfile,
-    ProcessOutcome, RunArtifact, SystemClock,
+    ProcessOutcome, SystemClock,
 };
 use super::snapshot::{CandidateSnapshot, SnapshotLimits};
 use crate::review_scope::{
@@ -21,6 +22,7 @@ use std::time::Duration;
 
 const MAX_MANIFEST_BYTES: u64 = 1_000_000;
 const MAX_PROFILE_BYTES: u64 = 1_000_000;
+const MAX_SOURCE_FINDINGS: usize = 5_000;
 
 #[derive(Debug, Clone)]
 pub struct OrchestrationRequest {
@@ -76,7 +78,7 @@ pub struct OrchestrationError {
 }
 
 impl OrchestrationError {
-    fn new(message: impl Into<String>) -> Self {
+    pub(crate) fn new(message: impl Into<String>) -> Self {
         Self {
             message: message.into(),
         }
@@ -262,7 +264,7 @@ pub(crate) fn execute_with_clock(
             &profile.prepared,
             &snapshot,
             &process,
-            prepared.manifest.limits.max_findings,
+            MAX_SOURCE_FINDINGS,
         )
         .map_err(|error| OrchestrationError::new(error.to_string()))?;
         runs.push(OrchestrationRun::Executed {
@@ -272,7 +274,33 @@ pub(crate) fn execute_with_clock(
         artifacts.push(artifact);
     }
 
-    let evidence = combine_evidence(&scope, &artifacts, prepared.manifest.limits.max_findings);
+    let combined_scope = evidence_scope(&scope);
+    let mut evidence_runs = artifacts
+        .into_iter()
+        .map(|artifact| EvidenceRun {
+            execution: artifact.execution,
+            evidence: artifact.evidence,
+        })
+        .collect::<Vec<_>>();
+    let evidence = union_evidence(
+        &combined_scope,
+        &mut evidence_runs,
+        prepared.manifest.limits.max_findings,
+    )?;
+    let mut updated_executions = evidence_runs.iter();
+    for run in &mut runs {
+        if let OrchestrationRun::Executed { execution, .. } = run {
+            let updated = updated_executions.next().ok_or_else(|| {
+                OrchestrationError::new("executed run count does not match evidence run count")
+            })?;
+            *execution = Box::new(updated.execution.clone());
+        }
+    }
+    if updated_executions.next().is_some() {
+        return Err(OrchestrationError::new(
+            "evidence run count does not match executed run count",
+        ));
+    }
     budgets.record_findings(evidence.counts.deduplicated_findings);
     prepared.revalidate()?;
     if repository_state_digest(&repository)
@@ -460,91 +488,6 @@ fn effective_snapshot_limits(prepared: &PreparedOrchestration) -> SnapshotLimits
             .chain(std::iter::once(prepared.manifest.limits.max_snapshot_bytes))
             .min()
             .expect("manifest contains at least one profile"),
-    }
-}
-
-fn combine_evidence(
-    scope: &AuthoritativeScope,
-    artifacts: &[RunArtifact],
-    max_findings: usize,
-) -> StaticAnalysisEvidence {
-    let mut reports = Vec::new();
-    let mut findings = Vec::new();
-    let mut counts = EvidenceCounts {
-        reports: 0,
-        input_findings: 0,
-        deduplicated_findings: 0,
-        mapped_to_units: 0,
-        added_line: 0,
-        blocking_candidates: 0,
-        priority_candidates: 0,
-        notes: 0,
-        outside_scope: 0,
-    };
-    let mut truncated = false;
-    for artifact in artifacts {
-        reports.extend(artifact.evidence.reports.iter().cloned());
-        findings.extend(artifact.evidence.findings.iter().cloned());
-        counts.reports = counts
-            .reports
-            .saturating_add(artifact.evidence.counts.reports);
-        counts.input_findings = counts
-            .input_findings
-            .saturating_add(artifact.evidence.counts.input_findings);
-        counts.deduplicated_findings = counts
-            .deduplicated_findings
-            .saturating_add(artifact.evidence.counts.deduplicated_findings);
-        counts.mapped_to_units = counts
-            .mapped_to_units
-            .saturating_add(artifact.evidence.counts.mapped_to_units);
-        counts.added_line = counts
-            .added_line
-            .saturating_add(artifact.evidence.counts.added_line);
-        counts.blocking_candidates = counts
-            .blocking_candidates
-            .saturating_add(artifact.evidence.counts.blocking_candidates);
-        counts.priority_candidates = counts
-            .priority_candidates
-            .saturating_add(artifact.evidence.counts.priority_candidates);
-        counts.notes = counts.notes.saturating_add(artifact.evidence.counts.notes);
-        counts.outside_scope = counts
-            .outside_scope
-            .saturating_add(artifact.evidence.counts.outside_scope);
-        truncated |= artifact.evidence.truncated;
-    }
-    if findings.len() > max_findings {
-        findings.truncate(max_findings);
-        truncated = true;
-    }
-    StaticAnalysisEvidence {
-        schema_version: 1,
-        kind: "static_analysis_evidence".to_string(),
-        authoritative: true,
-        scope: evidence_scope(scope),
-        reports,
-        counts,
-        findings,
-        truncated,
-        decision_contract: artifacts
-            .first()
-            .map(|artifact| artifact.evidence.decision_contract.clone())
-            .unwrap_or_else(empty_decision_contract),
-    }
-}
-
-fn empty_decision_contract() -> DecisionContract {
-    DecisionContract {
-        blocking:
-            "blocking candidates require independent verification before they affect the verdict"
-                .to_string(),
-        non_blocking:
-            "invalidated and not-run analyzers are unavailable verification, not clean results"
-                .to_string(),
-        verification: "preserve every available analyzer result with its execution provenance"
-            .to_string(),
-        finalization:
-            "revalidate scope and authorization before releasing the orchestration artifact"
-                .to_string(),
     }
 }
 

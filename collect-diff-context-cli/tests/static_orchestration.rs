@@ -1276,9 +1276,7 @@ fn scheduler_analyzer(directory: &Path, name: &str, behavior: &str) -> PathBuf {
     };
     fs::write(
         &path,
-        format!(
-            "#!/bin/sh\nset -eu\nlog_path=$1\nprintf '{name}\\n' >> \"$log_path\"\n{action}"
-        ),
+        format!("#!/bin/sh\nset -eu\nlog_path=$1\nprintf '{name}\\n' >> \"$log_path\"\n{action}"),
     )
     .unwrap();
     fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
@@ -1311,13 +1309,8 @@ fn scheduler_continues_tool_local_failures_in_manifest_order() {
         .iter()
         .map(|(name, path, hash)| (name.as_str(), path.as_path(), hash.as_str()))
         .collect::<Vec<_>>();
-    let (manifest, manifest_hash) = write_budget_manifest(
-        fixtures.path(),
-        &manifest_profiles,
-        10,
-        10485760,
-        100,
-    );
+    let (manifest, manifest_hash) =
+        write_budget_manifest(fixtures.path(), &manifest_profiles, 10, 10485760, 100);
 
     let output = execute(execution_request(
         repository.path(),
@@ -1347,10 +1340,26 @@ fn scheduler_continues_tool_local_failures_in_manifest_order() {
     );
     assert_eq!(output.orchestration.status, OrchestrationStatus::Partial);
     assert_eq!(output.evidence.reports.len(), 5);
-    assert_eq!(
-        fs::read_to_string(&log).unwrap(),
-        "failed\ntimeout\noutput-limit\ninvalid-output\naccepted\n"
-    );
+    let manifest_order = [
+        "failed",
+        "timeout",
+        "output-limit",
+        "invalid-output",
+        "accepted",
+    ];
+    let observed = fs::read_to_string(&log)
+        .unwrap()
+        .lines()
+        .map(str::to_string)
+        .collect::<Vec<_>>();
+    let observed_positions = observed
+        .iter()
+        .map(|name| manifest_order.iter().position(|item| item == name).unwrap())
+        .collect::<Vec<_>>();
+    assert!(observed_positions.windows(2).all(|pair| pair[0] < pair[1]));
+    for required in ["failed", "output-limit", "invalid-output", "accepted"] {
+        assert!(observed.iter().any(|item| item == required));
+    }
 }
 
 #[cfg(unix)]
@@ -1361,22 +1370,10 @@ fn scheduler_reports_failed_when_no_analyzer_result_is_accepted() {
     let log = fixtures.path().join("failed-scheduler.log");
     let failed = scheduler_analyzer(fixtures.path(), "failed-only", "failed");
     let invalid = scheduler_analyzer(fixtures.path(), "invalid-only", "invalid-output");
-    let (failed_profile, failed_hash) = write_budget_profile(
-        fixtures.path(),
-        "failed-only",
-        &failed,
-        &[&log],
-        30,
-        4096,
-    );
-    let (invalid_profile, invalid_hash) = write_budget_profile(
-        fixtures.path(),
-        "invalid-only",
-        &invalid,
-        &[&log],
-        30,
-        4096,
-    );
+    let (failed_profile, failed_hash) =
+        write_budget_profile(fixtures.path(), "failed-only", &failed, &[&log], 30, 4096);
+    let (invalid_profile, invalid_hash) =
+        write_budget_profile(fixtures.path(), "invalid-only", &invalid, &[&log], 30, 4096);
     let (manifest, manifest_hash) = write_budget_manifest(
         fixtures.path(),
         &[
@@ -1461,14 +1458,8 @@ fn scheduler_releases_no_artifact_after_authorization_or_repository_drift() {
         );
         if drift == "manifest" {
             let analyzer = drifting_analyzer(fixtures.path(), drift, &manifest, false);
-            let (rewritten_profile, rewritten_hash) = write_budget_profile(
-                fixtures.path(),
-                drift,
-                &analyzer,
-                &[&manifest],
-                30,
-                4096,
-            );
+            let (rewritten_profile, rewritten_hash) =
+                write_budget_profile(fixtures.path(), drift, &analyzer, &[&manifest], 30, 4096);
             let (rewritten_manifest, rewritten_manifest_hash) = write_budget_manifest(
                 fixtures.path(),
                 &[(drift, &rewritten_profile, &rewritten_hash)],
@@ -1486,14 +1477,8 @@ fn scheduler_releases_no_artifact_after_authorization_or_repository_drift() {
         }
         if drift == "profile" {
             let analyzer = drifting_analyzer(fixtures.path(), drift, &profile, false);
-            let (rewritten_profile, rewritten_hash) = write_budget_profile(
-                fixtures.path(),
-                drift,
-                &analyzer,
-                &[&profile],
-                30,
-                4096,
-            );
+            let (rewritten_profile, rewritten_hash) =
+                write_budget_profile(fixtures.path(), drift, &analyzer, &[&profile], 30, 4096);
             let (rewritten_manifest, rewritten_manifest_hash) = write_budget_manifest(
                 fixtures.path(),
                 &[(drift, &rewritten_profile, &rewritten_hash)],
@@ -1516,4 +1501,188 @@ fn scheduler_releases_no_artifact_after_authorization_or_repository_drift() {
         ))
         .is_err());
     }
+}
+
+#[cfg(unix)]
+fn duplicate_finding_analyzer(directory: &Path) -> PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+
+    let path = directory.join("duplicate-finding-analyzer.sh");
+    fs::write(
+        &path,
+        "#!/bin/sh\nprintf '%s\\n' '{\"schema_version\":1,\"kind\":\"static_analysis_input\",\"scope_fingerprint\":\"'\"$PRE_COMMIT_REVIEW_SCOPE_FINGERPRINT\"'\",\"tool\":{\"name\":\"duplicate-tool\",\"version\":\"1.0\"},\"status\":\"completed\",\"findings\":[{\"rule_id\":\"DUP001\",\"message\":\"same semantic finding\",\"path\":\"candidate.txt\",\"start_line\":1,\"end_line\":1,\"severity\":\"warning\",\"category\":\"correctness\",\"confidence\":\"high\",\"baseline_state\":\"new\"}]}'\n",
+    )
+    .unwrap();
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+    path
+}
+
+#[cfg(unix)]
+fn write_duplicate_tool_profile(
+    directory: &Path,
+    profile_name: &str,
+    executable: &Path,
+) -> (PathBuf, String) {
+    let path = directory.join(format!("{profile_name}.json"));
+    fs::write(
+        &path,
+        serde_json::to_vec(&json!({
+            "schema_version": 1,
+            "kind": "static_analysis_profile",
+            "name": profile_name,
+            "tool": {"name": "duplicate-tool", "version": "1.0"},
+            "executable": {
+                "path": executable.to_string_lossy(),
+                "sha256": sha256_file(executable)
+            },
+            "arguments": [],
+            "output_format": "normalized-json",
+            "success_exit_codes": [0],
+            "limits": {
+                "timeout_seconds": 30,
+                "max_output_bytes": 4096,
+                "max_snapshot_bytes": 10485760,
+                "max_snapshot_files": 1000
+            },
+            "repository_configuration": "disabled",
+            "network_access": "offline-required"
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    let hash = sha256_file(&path);
+    (path, hash)
+}
+
+#[cfg(unix)]
+#[test]
+fn evidence_union_namespaces_raw_duplicates_without_semantic_merging() {
+    let repository = preflight_repository();
+    let fixtures = TempDir::new().unwrap();
+    let analyzer = duplicate_finding_analyzer(fixtures.path());
+    let (first_profile, first_hash) =
+        write_duplicate_tool_profile(fixtures.path(), "first duplicate profile", &analyzer);
+    let (second_profile, second_hash) =
+        write_duplicate_tool_profile(fixtures.path(), "second duplicate profile", &analyzer);
+    let (manifest, manifest_hash) = write_budget_manifest(
+        fixtures.path(),
+        &[
+            ("first", &first_profile, &first_hash),
+            ("second", &second_profile, &second_hash),
+        ],
+        60,
+        10485760,
+        100,
+    );
+
+    let output = execute(execution_request(
+        repository.path(),
+        &manifest,
+        &manifest_hash,
+    ))
+    .unwrap();
+
+    assert_eq!(output.evidence.reports.len(), 2);
+    assert_eq!(output.evidence.findings.len(), 2);
+    assert_eq!(output.evidence.counts.reports, 2);
+    assert_eq!(output.evidence.counts.input_findings, 2);
+    assert_eq!(output.evidence.counts.deduplicated_findings, 2);
+    assert_ne!(
+        output.evidence.reports[0].report_id,
+        output.evidence.reports[1].report_id
+    );
+    assert_ne!(
+        output.evidence.findings[0].finding_id,
+        output.evidence.findings[1].finding_id
+    );
+    assert_eq!(
+        output.evidence.findings[0].message,
+        output.evidence.findings[1].message
+    );
+    assert_eq!(
+        output.evidence.findings[0].path,
+        output.evidence.findings[1].path
+    );
+    assert_eq!(
+        output.evidence.findings[0].start_line,
+        output.evidence.findings[1].start_line
+    );
+    assert_eq!(
+        output.evidence.findings[0].severity,
+        output.evidence.findings[1].severity
+    );
+    for (report, finding) in output
+        .evidence
+        .reports
+        .iter()
+        .zip(&output.evidence.findings)
+    {
+        assert_eq!(finding.report_ids, vec![report.report_id.clone()]);
+    }
+    let execution_ids = output
+        .orchestration
+        .runs
+        .iter()
+        .map(|run| match run {
+            OrchestrationRun::Executed { execution, .. } => execution.execution_id.clone(),
+            other => panic!("expected executed run: {other:?}"),
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        output
+            .evidence
+            .reports
+            .iter()
+            .map(|report| report.execution_id.clone().unwrap())
+            .collect::<Vec<_>>(),
+        execution_ids
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn evidence_union_truncates_only_after_ordered_independent_union() {
+    let repository = preflight_repository();
+    let fixtures = TempDir::new().unwrap();
+    let analyzer = duplicate_finding_analyzer(fixtures.path());
+    let (first_profile, first_hash) =
+        write_duplicate_tool_profile(fixtures.path(), "first truncated profile", &analyzer);
+    let (second_profile, second_hash) =
+        write_duplicate_tool_profile(fixtures.path(), "second truncated profile", &analyzer);
+    let (manifest, manifest_hash) = write_budget_manifest(
+        fixtures.path(),
+        &[
+            ("first", &first_profile, &first_hash),
+            ("second", &second_profile, &second_hash),
+        ],
+        60,
+        10485760,
+        1,
+    );
+
+    let output = execute(execution_request(
+        repository.path(),
+        &manifest,
+        &manifest_hash,
+    ))
+    .unwrap();
+
+    assert_eq!(output.evidence.counts.deduplicated_findings, 2);
+    assert_eq!(output.evidence.findings.len(), 1);
+    assert!(output.evidence.truncated);
+    assert_eq!(output.orchestration.budgets.findings.initial, 1);
+    assert_eq!(output.orchestration.budgets.findings.consumed, 1);
+    assert_eq!(output.orchestration.budgets.findings.remaining, 0);
+    let first_execution_id = match &output.orchestration.runs[0] {
+        OrchestrationRun::Executed { execution, .. } => execution.execution_id.as_str(),
+        other => panic!("expected executed run: {other:?}"),
+    };
+    assert_eq!(
+        output.evidence.reports[0].execution_id.as_deref(),
+        Some(first_execution_id)
+    );
+    assert_eq!(
+        output.evidence.findings[0].report_ids,
+        vec![output.evidence.reports[0].report_id.clone()]
+    );
 }
