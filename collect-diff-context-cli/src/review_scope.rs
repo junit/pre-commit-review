@@ -195,6 +195,24 @@ pub fn added_lines(
     selected_ref: &str,
     path: &str,
 ) -> Result<BTreeSet<u32>, ScopeError> {
+    parse_added_lines(&diff_for_path(repository, source, selected_ref, path)?)
+}
+
+pub fn changed_ranges(
+    repository: &Path,
+    source: ReviewSource,
+    selected_ref: &str,
+    path: &str,
+) -> Result<Vec<crate::candidate::ChangedRange>, ScopeError> {
+    parse_changed_ranges(&diff_for_path(repository, source, selected_ref, path)?)
+}
+
+fn diff_for_path(
+    repository: &Path,
+    source: ReviewSource,
+    selected_ref: &str,
+    path: &str,
+) -> Result<Vec<u8>, ScopeError> {
     let mut command = Command::new("git");
     command.current_dir(repository).args([
         "-c",
@@ -236,7 +254,7 @@ pub fn added_lines(
             }
         )));
     }
-    parse_added_lines(&output.stdout)
+    Ok(output.stdout)
 }
 
 #[derive(Debug, Clone, Copy)]
@@ -283,12 +301,54 @@ fn parse_added_lines(diff: &[u8]) -> Result<BTreeSet<u32>, ScopeError> {
     Ok(added)
 }
 
+fn parse_changed_ranges(diff: &[u8]) -> Result<Vec<crate::candidate::ChangedRange>, ScopeError> {
+    let mut ranges = Vec::new();
+    for line in diff.split(|byte| *byte == b'\n') {
+        if !line.starts_with(b"@@ -") {
+            continue;
+        }
+        let (_, _, new_start, new_count) = parse_hunk_ranges(line)?;
+        if new_count == 0 {
+            let anchor = new_start.max(1);
+            ranges.push(crate::candidate::ChangedRange {
+                start_line: anchor,
+                end_line: anchor,
+                deletion_anchor: true,
+            });
+            continue;
+        }
+        let end_line = u64::from(new_start)
+            .checked_add(new_count - 1)
+            .and_then(|line| u32::try_from(line).ok())
+            .ok_or_else(|| ScopeError::new("changed range exceeds u32"))?;
+        ranges.push(crate::candidate::ChangedRange {
+            start_line: new_start,
+            end_line,
+            deletion_anchor: false,
+        });
+    }
+    Ok(ranges)
+}
+
 fn parse_hunk_header(line: &[u8]) -> Result<Option<HunkCursor>, ScopeError> {
+    if !line.starts_with(b"@@ -") {
+        return Ok(None);
+    }
+    let (old_start, old_count, new_start, new_count) = parse_hunk_ranges(line)?;
+    let _ = old_start;
+    Ok(Some(HunkCursor {
+        next_new_line: new_start,
+        remaining_old: old_count,
+        remaining_new: new_count,
+    }))
+}
+
+fn parse_hunk_ranges(line: &[u8]) -> Result<(u32, u64, u32, u64), ScopeError> {
     let header = std::str::from_utf8(line)
         .map_err(|_| ScopeError::new("git diff emitted a non-UTF-8 hunk header"))?;
     let mut fields = header.split_whitespace();
     if fields.next() != Some("@@") {
-        return Ok(None);
+        return Err(ScopeError::new("git diff emitted an invalid hunk header"));
     }
     let old_range = fields
         .next()
@@ -298,13 +358,9 @@ fn parse_hunk_header(line: &[u8]) -> Result<Option<HunkCursor>, ScopeError> {
         .next()
         .and_then(|value| value.strip_prefix('+'))
         .ok_or_else(|| ScopeError::new("git diff emitted an invalid new hunk range"))?;
-    let (_, old_count) = parse_hunk_range(old_range)?;
+    let (old_start, old_count) = parse_hunk_range(old_range)?;
     let (new_start, new_count) = parse_hunk_range(new_range)?;
-    Ok(Some(HunkCursor {
-        next_new_line: new_start,
-        remaining_old: old_count,
-        remaining_new: new_count,
-    }))
+    Ok((old_start, old_count, new_start, new_count))
 }
 
 fn parse_hunk_range(value: &str) -> Result<(u32, u64), ScopeError> {
