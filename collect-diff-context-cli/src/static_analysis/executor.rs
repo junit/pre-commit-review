@@ -303,10 +303,10 @@ pub(crate) fn execute_prepared_with_clock(
         scope_fingerprint,
     );
     configure_process_group(&mut command)?;
-    let start = clock.now();
     let mut child = command
         .spawn()
         .map_err(|error| RunError::new(format!("cannot start trusted analyzer: {error}")))?;
+    let start = clock.now();
     let process_group = match ProcessGroup::attach(&mut child) {
         Ok(process_group) => process_group,
         Err(error) => {
