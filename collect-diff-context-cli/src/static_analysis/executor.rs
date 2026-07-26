@@ -16,7 +16,7 @@ use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Component, Path, PathBuf};
 use std::process::{Child, Command, ExitStatus, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
-use std::sync::{mpsc, Arc};
+use std::sync::{mpsc, Arc, Mutex};
 use std::thread;
 use std::time::{Duration, Instant};
 use tempfile::TempDir;
@@ -37,7 +37,30 @@ pub struct PreparedProfile {
 #[derive(Debug, Clone, Copy)]
 pub struct ExecutionLimits {
     pub timeout: Duration,
-    pub max_output_bytes: usize,
+    pub max_stream_output_bytes: usize,
+    pub max_combined_output_bytes: usize,
+}
+
+pub(crate) trait Clock {
+    fn now(&self) -> Duration;
+}
+
+pub(crate) struct SystemClock {
+    origin: Instant,
+}
+
+impl SystemClock {
+    pub(crate) fn new() -> Self {
+        Self {
+            origin: Instant::now(),
+        }
+    }
+}
+
+impl Clock for SystemClock {
+    fn now(&self) -> Duration {
+        self.origin.elapsed()
+    }
 }
 
 #[derive(Debug, Clone)]
@@ -207,18 +230,44 @@ pub fn execute_prepared(
     scope_fingerprint: &str,
     limits: ExecutionLimits,
 ) -> Result<ProcessOutcome, RunError> {
+    let clock = SystemClock::new();
+    execute_prepared_with_clock(
+        prepared,
+        snapshot,
+        source,
+        scope_fingerprint,
+        limits,
+        &clock,
+    )
+}
+
+pub(crate) fn execute_prepared_with_clock(
+    prepared: &PreparedProfile,
+    snapshot: &CandidateSnapshot,
+    source: ReviewSource,
+    scope_fingerprint: &str,
+    limits: ExecutionLimits,
+    clock: &dyn Clock,
+) -> Result<ProcessOutcome, RunError> {
     if limits.timeout.is_zero() {
         return Err(RunError::new("execution timeout must be greater than zero"));
     }
     if limits.timeout > Duration::from_secs(prepared.profile.limits.timeout_seconds)
-        || limits.max_output_bytes > prepared.profile.limits.max_output_bytes
+        || limits.max_stream_output_bytes > prepared.profile.limits.max_output_bytes
+        || limits.max_combined_output_bytes
+            > prepared.profile.limits.max_output_bytes.saturating_mul(2)
     {
         return Err(RunError::new(
             "execution limits cannot exceed the authorized profile limits",
         ));
     }
-    let capture_capacity = limits
-        .max_output_bytes
+    if limits.max_combined_output_bytes == 0 {
+        return Err(RunError::new(
+            "combined execution output limit must be greater than zero",
+        ));
+    }
+    let stream_capture_capacity = limits
+        .max_stream_output_bytes
         .checked_add(1)
         .ok_or_else(|| RunError::new("execution output limit is too large"))?;
     verify_prepared_integrity(prepared, "before execution")?;
@@ -254,7 +303,7 @@ pub fn execute_prepared(
         scope_fingerprint,
     );
     configure_process_group(&mut command)?;
-    let start = Instant::now();
+    let start = clock.now();
     let mut child = command
         .spawn()
         .map_err(|error| RunError::new(format!("cannot start trusted analyzer: {error}")))?;
@@ -283,17 +332,20 @@ pub fn execute_prepared(
         }
     };
     let overflow = Arc::new(AtomicBool::new(false));
+    let combined_remaining = Arc::new(Mutex::new(limits.max_combined_output_bytes));
     let stdout_capture = spawn_capture(
         stdout,
         stdout_path.clone(),
-        capture_capacity,
+        stream_capture_capacity,
         Arc::clone(&overflow),
+        Arc::clone(&combined_remaining),
     );
     let stderr_capture = spawn_capture(
         stderr,
         stderr_path.clone(),
-        capture_capacity,
+        stream_capture_capacity,
         Arc::clone(&overflow),
+        Arc::clone(&combined_remaining),
     );
 
     let mut forced_status = None;
@@ -305,7 +357,7 @@ pub fn execute_prepared(
                 RunError::new(format!("cannot wait for trusted analyzer: {error}"))
             })?;
         }
-        if start.elapsed() >= limits.timeout {
+        if clock.now().saturating_sub(start) >= limits.timeout {
             forced_status = Some(ExecutionStatus::Timeout);
             process_group.terminate(&mut child);
             break child.wait().map_err(|error| {
@@ -332,7 +384,8 @@ pub fn execute_prepared(
         .map_err(|error| RunError::new(error.to_string()))?;
     verify_prepared_integrity(prepared, "during execution")?;
 
-    let duration_ms = u64::try_from(start.elapsed().as_millis()).unwrap_or(u64::MAX);
+    let duration_ms =
+        u64::try_from(clock.now().saturating_sub(start).as_millis()).unwrap_or(u64::MAX);
     let (stdout_sha256, stdout_bytes) = sha256_file(&stdout_path, None)?;
     let (stderr_sha256, stderr_bytes) = sha256_file(&stderr_path, None)?;
     let observed_exit_code = process_exit_code(&exit_status);
@@ -407,7 +460,8 @@ pub fn run_analysis(request: RunRequest) -> Result<RunArtifact, RunError> {
         &request.expected_scope,
         ExecutionLimits {
             timeout: Duration::from_secs(prepared.profile.limits.timeout_seconds),
-            max_output_bytes: prepared.profile.limits.max_output_bytes,
+            max_stream_output_bytes: prepared.profile.limits.max_output_bytes,
+            max_combined_output_bytes: prepared.profile.limits.max_output_bytes.saturating_mul(2),
         },
     )?;
 
@@ -691,6 +745,139 @@ fn is_scope_fingerprint(value: &str) -> bool {
         && value
             .bytes()
             .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}
+
+#[cfg(all(test, unix))]
+mod tests {
+    use super::*;
+    use crate::static_analysis::contracts::{
+        ExecutableAuthorization, NetworkAccess, OutputFormat, ProfileLimits,
+        RepositoryConfiguration, StaticAnalysisProfile, ToolIdentity,
+    };
+    use std::collections::VecDeque;
+    use std::os::unix::fs::PermissionsExt;
+    use std::sync::Mutex;
+
+    struct SequenceClock {
+        values: Mutex<VecDeque<Duration>>,
+        last: Mutex<Duration>,
+    }
+
+    impl SequenceClock {
+        fn new(values: impl IntoIterator<Item = Duration>) -> Self {
+            Self {
+                values: Mutex::new(values.into_iter().collect()),
+                last: Mutex::new(Duration::ZERO),
+            }
+        }
+    }
+
+    impl Clock for SequenceClock {
+        fn now(&self) -> Duration {
+            let next = self.values.lock().unwrap().pop_front();
+            if let Some(value) = next {
+                *self.last.lock().unwrap() = value;
+                value
+            } else {
+                *self.last.lock().unwrap()
+            }
+        }
+    }
+
+    fn git(repository: &Path, arguments: &[&str]) {
+        let output = Command::new("git")
+            .args(arguments)
+            .current_dir(repository)
+            .output()
+            .unwrap();
+        assert!(
+            output.status.success(),
+            "git {arguments:?} failed: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    #[test]
+    fn budgets_use_deterministic_clock_for_effective_timeout() {
+        let repository = tempfile::tempdir().unwrap();
+        git(repository.path(), &["init", "-q"]);
+        git(
+            repository.path(),
+            &["config", "user.email", "review@example.test"],
+        );
+        git(repository.path(), &["config", "user.name", "Review Test"]);
+        fs::write(repository.path().join("candidate.txt"), "base\n").unwrap();
+        git(repository.path(), &["add", "candidate.txt"]);
+        git(repository.path(), &["commit", "-qm", "base"]);
+        fs::write(repository.path().join("candidate.txt"), "candidate\n").unwrap();
+        git(repository.path(), &["add", "candidate.txt"]);
+
+        let fixtures = tempfile::tempdir().unwrap();
+        let executable_path = fixtures.path().join("slow.sh");
+        fs::write(&executable_path, "#!/bin/sh\nsleep 10\n").unwrap();
+        fs::set_permissions(&executable_path, fs::Permissions::from_mode(0o755)).unwrap();
+        let (executable_sha256, _) = sha256_file(&executable_path, None).unwrap();
+        let profile = StaticAnalysisProfile {
+            schema_version: 1,
+            kind: "static_analysis_profile".to_string(),
+            name: "deterministic clock profile".to_string(),
+            tool: ToolIdentity {
+                name: "slow".to_string(),
+                version: Some("1.0".to_string()),
+            },
+            executable: ExecutableAuthorization {
+                path: executable_path.to_string_lossy().into_owned(),
+                sha256: executable_sha256,
+            },
+            arguments: Vec::new(),
+            output_format: OutputFormat::NormalizedJson,
+            success_exit_codes: vec![0],
+            limits: ProfileLimits {
+                timeout_seconds: 5,
+                max_output_bytes: 1024,
+                max_snapshot_bytes: 10_485_760,
+                max_snapshot_files: 1000,
+            },
+            repository_configuration: RepositoryConfiguration::Disabled,
+            network_access: NetworkAccess::OfflineRequired,
+        };
+        let profile_path = fixtures.path().join("profile.json");
+        fs::write(&profile_path, serde_json::to_vec(&profile).unwrap()).unwrap();
+        let (profile_sha256, _) = sha256_file(&profile_path, None).unwrap();
+        let prepared =
+            prepare_profile(repository.path(), &profile_path, &profile_sha256, false).unwrap();
+        let snapshot = CandidateSnapshot::materialize(
+            repository.path(),
+            ReviewSource::Staged,
+            SnapshotLimits {
+                max_files: 1000,
+                max_bytes: 10_485_760,
+            },
+        )
+        .unwrap();
+        let clock = SequenceClock::new([
+            Duration::ZERO,
+            Duration::from_secs(2),
+            Duration::from_secs(2),
+        ]);
+
+        let outcome = execute_prepared_with_clock(
+            &prepared,
+            &snapshot,
+            ReviewSource::Staged,
+            "0123456789abcdef0123456789abcdef0123456789abcdef0123456789abcdef",
+            ExecutionLimits {
+                timeout: Duration::from_secs(1),
+                max_stream_output_bytes: 1024,
+                max_combined_output_bytes: 2048,
+            },
+            &clock,
+        )
+        .unwrap();
+
+        assert_eq!(outcome.status, ExecutionStatus::Timeout);
+        assert_eq!(outcome.duration_ms, 2_000);
+    }
 }
 
 pub(crate) fn repository_state_digest(repository: &Path) -> Result<String, RunError> {
@@ -979,10 +1166,11 @@ fn spawn_capture(
     path: PathBuf,
     capacity: usize,
     overflow: Arc<AtomicBool>,
+    combined_remaining: Arc<Mutex<usize>>,
 ) -> CaptureHandle {
     let (sender, receiver) = mpsc::channel();
     let thread = thread::spawn(move || {
-        let result = capture_stream(&mut stream, &path, capacity, &overflow)
+        let result = capture_stream(&mut stream, &path, capacity, &overflow, &combined_remaining)
             .map_err(|error| error.to_string());
         if result.is_err() {
             overflow.store(true, Ordering::Release);
@@ -997,6 +1185,7 @@ fn capture_stream(
     path: &Path,
     capacity: usize,
     overflow: &AtomicBool,
+    combined_remaining: &Mutex<usize>,
 ) -> Result<(), RunError> {
     let mut output = File::create(path)
         .map_err(|error| RunError::new(format!("cannot create analyzer capture: {error}")))?;
@@ -1009,15 +1198,23 @@ fn capture_stream(
         if read == 0 {
             break;
         }
-        let remaining = capacity.saturating_sub(written);
-        let saved = read.min(remaining);
+        let stream_remaining = capacity.saturating_sub(written);
+        let stream_allowed = read.min(stream_remaining);
+        let saved = {
+            let mut remaining = combined_remaining
+                .lock()
+                .map_err(|_| RunError::new("combined output budget lock is poisoned"))?;
+            let saved = stream_allowed.min(*remaining);
+            *remaining -= saved;
+            saved
+        };
         if saved > 0 {
             output.write_all(&buffer[..saved]).map_err(|error| {
                 RunError::new(format!("cannot capture trusted analyzer output: {error}"))
             })?;
             written += saved;
         }
-        if read > remaining || written == capacity {
+        if read > saved || written == capacity {
             overflow.store(true, Ordering::Release);
         }
     }

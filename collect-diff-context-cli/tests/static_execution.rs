@@ -401,7 +401,8 @@ printf '%s' '{"schema_version":1,"kind":"static_analysis_input","scope_fingerpri
         "0123456789abcdef0123456789abcdef01234567",
         ExecutionLimits {
             timeout: Duration::from_secs(2),
-            max_output_bytes: 4096,
+            max_stream_output_bytes: 4096,
+            max_combined_output_bytes: 8192,
         },
     )
     .unwrap();
@@ -430,7 +431,8 @@ fn executor_classifies_non_success_exit() {
         "0123456789abcdef0123456789abcdef01234567",
         ExecutionLimits {
             timeout: Duration::from_secs(2),
-            max_output_bytes: 4096,
+            max_stream_output_bytes: 4096,
+            max_combined_output_bytes: 8192,
         },
     )
     .unwrap();
@@ -453,7 +455,8 @@ fn executor_enforces_output_limit_with_bounded_prefix() {
         "0123456789abcdef0123456789abcdef01234567",
         ExecutionLimits {
             timeout: Duration::from_secs(2),
-            max_output_bytes: 1024,
+            max_stream_output_bytes: 1024,
+            max_combined_output_bytes: 2048,
         },
     )
     .unwrap();
@@ -480,7 +483,8 @@ fn executor_enforces_stderr_output_limit() {
         "0123456789abcdef0123456789abcdef01234567",
         ExecutionLimits {
             timeout: Duration::from_secs(2),
-            max_output_bytes: 1024,
+            max_stream_output_bytes: 1024,
+            max_combined_output_bytes: 2048,
         },
     )
     .unwrap();
@@ -505,7 +509,8 @@ fn executor_timeout_terminates_descendants() {
         "0123456789abcdef0123456789abcdef01234567",
         ExecutionLimits {
             timeout: Duration::from_millis(100),
-            max_output_bytes: 4096,
+            max_stream_output_bytes: 4096,
+            max_combined_output_bytes: 8192,
         },
     )
     .unwrap();
@@ -538,7 +543,8 @@ fn executor_rejects_prepared_artifact_replacement_before_spawn() {
         "0123456789abcdef0123456789abcdef01234567",
         ExecutionLimits {
             timeout: Duration::from_secs(2),
-            max_output_bytes: 4096,
+            max_stream_output_bytes: 4096,
+            max_combined_output_bytes: 8192,
         },
     )
     .unwrap_err();
@@ -565,7 +571,8 @@ fn executor_rejects_prepared_artifact_replacement_before_spawn() {
         "0123456789abcdef0123456789abcdef01234567",
         ExecutionLimits {
             timeout: Duration::from_secs(2),
-            max_output_bytes: 4096,
+            max_stream_output_bytes: 4096,
+            max_combined_output_bytes: 8192,
         },
     )
     .unwrap_err();

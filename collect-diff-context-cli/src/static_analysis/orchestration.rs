@@ -2,11 +2,12 @@ use super::contracts::{
     BudgetAmount, BudgetRecord, DecisionContract, EvidenceCounts, EvidenceScope,
     InvalidationReason, ManifestIdentity, NotRunReason, OrchestrationArtifact,
     OrchestrationManifest, OrchestrationRun, OrchestrationSnapshot, OrchestrationStatus,
-    RepositoryConfiguration, StaticAnalysisEvidence, StaticAnalysisProfile,
+    ProfileLimits, RepositoryConfiguration, StaticAnalysisEvidence, StaticAnalysisProfile,
 };
 use super::executor::{
-    build_run_artifact, execute_prepared, prepare_profile, repository_state_digest, sha256_file,
-    verify_prepared_integrity, ExecutionLimits, PreparedProfile, RunArtifact,
+    build_run_artifact, execute_prepared_with_clock, prepare_profile, repository_state_digest,
+    sha256_file, verify_prepared_integrity, Clock, ExecutionLimits, PreparedProfile,
+    ProcessOutcome, RunArtifact, SystemClock,
 };
 use super::snapshot::{CandidateSnapshot, SnapshotLimits};
 use crate::review_scope::{
@@ -168,6 +169,14 @@ pub fn prepare_orchestration(
 }
 
 pub fn execute(request: OrchestrationRequest) -> Result<OrchestrationOutput, OrchestrationError> {
+    let clock = SystemClock::new();
+    execute_with_clock(request, &clock)
+}
+
+pub(crate) fn execute_with_clock(
+    request: OrchestrationRequest,
+    clock: &dyn Clock,
+) -> Result<OrchestrationOutput, OrchestrationError> {
     let prepared = prepare_orchestration(&request)?;
     let scope = open_authoritative_scope(ScopeRequest {
         repository: request.repository.clone(),
@@ -184,10 +193,13 @@ pub fn execute(request: OrchestrationRequest) -> Result<OrchestrationOutput, Orc
         effective_snapshot_limits(&prepared),
     )
     .map_err(|error| OrchestrationError::new(error.to_string()))?;
+    let mut budgets = BudgetLedger::new(&prepared);
+    budgets.record_snapshot(&snapshot);
 
     let mut runs = Vec::with_capacity(prepared.profiles.len());
     let mut artifacts = Vec::new();
     let mut shared_integrity_failed = false;
+    let mut budget_exhausted = false;
     for profile in &prepared.profiles {
         if shared_integrity_failed {
             runs.push(OrchestrationRun::NotRun {
@@ -196,6 +208,22 @@ pub fn execute(request: OrchestrationRequest) -> Result<OrchestrationOutput, Orc
             });
             continue;
         }
+        if budget_exhausted {
+            runs.push(OrchestrationRun::NotRun {
+                profile_id: profile.profile_id.clone(),
+                reason: NotRunReason::BudgetExhausted,
+            });
+            continue;
+        }
+        let Some(execution_limits) = budgets.effective_limits(&profile.prepared.profile.limits)
+        else {
+            runs.push(OrchestrationRun::NotRun {
+                profile_id: profile.profile_id.clone(),
+                reason: NotRunReason::BudgetExhausted,
+            });
+            budget_exhausted = true;
+            continue;
+        };
         if let Err(error) = snapshot.verify_unchanged() {
             runs.push(OrchestrationRun::Invalidated {
                 profile_id: profile.profile_id.clone(),
@@ -207,15 +235,13 @@ pub fn execute(request: OrchestrationRequest) -> Result<OrchestrationOutput, Orc
             }
             continue;
         }
-        let process = match execute_prepared(
+        let process = match execute_prepared_with_clock(
             &profile.prepared,
             &snapshot,
             request.source,
             &request.expected_scope,
-            ExecutionLimits {
-                timeout: Duration::from_secs(profile.prepared.profile.limits.timeout_seconds),
-                max_output_bytes: profile.prepared.profile.limits.max_output_bytes,
-            },
+            execution_limits,
+            clock,
         ) {
             Ok(process) => process,
             Err(error) if is_snapshot_integrity_error(&error.to_string()) => {
@@ -228,6 +254,7 @@ pub fn execute(request: OrchestrationRequest) -> Result<OrchestrationOutput, Orc
             }
             Err(error) => return Err(OrchestrationError::new(error.to_string())),
         };
+        budgets.consume(&process);
         let artifact = build_run_artifact(
             &repository,
             request.source,
@@ -246,6 +273,7 @@ pub fn execute(request: OrchestrationRequest) -> Result<OrchestrationOutput, Orc
     }
 
     let evidence = combine_evidence(&scope, &artifacts, prepared.manifest.limits.max_findings);
+    budgets.record_findings(evidence.counts.deduplicated_findings);
     prepared.revalidate()?;
     if repository_state_digest(&repository)
         .map_err(|error| OrchestrationError::new(error.to_string()))?
@@ -262,7 +290,7 @@ pub fn execute(request: OrchestrationRequest) -> Result<OrchestrationOutput, Orc
     })?;
 
     let status = orchestration_status(&runs);
-    let budgets = provisional_budget_record(&prepared, &snapshot, &artifacts, &evidence);
+    let budget_record = budgets.record();
     let report_ids = evidence
         .reports
         .iter()
@@ -293,7 +321,7 @@ pub fn execute(request: OrchestrationRequest) -> Result<OrchestrationOutput, Orc
             bytes: snapshot.bytes,
         },
         status,
-        budgets,
+        budgets: budget_record,
         runs,
         report_ids,
         finding_ids,
@@ -305,6 +333,115 @@ pub fn execute(request: OrchestrationRequest) -> Result<OrchestrationOutput, Orc
         orchestration,
         evidence,
     })
+}
+
+struct BudgetLedger {
+    initial_millis: u64,
+    remaining_millis: u64,
+    initial_output_bytes: usize,
+    remaining_output_bytes: usize,
+    finding_limit: usize,
+    finding_consumed: usize,
+    snapshot_file_limit: usize,
+    snapshot_files_consumed: usize,
+    snapshot_byte_limit: u64,
+    snapshot_bytes_consumed: u64,
+}
+
+impl BudgetLedger {
+    fn new(prepared: &PreparedOrchestration) -> Self {
+        let initial_millis = prepared
+            .manifest
+            .limits
+            .max_execution_seconds
+            .saturating_mul(1_000);
+        let initial_output_bytes =
+            usize::try_from(prepared.manifest.limits.max_captured_output_bytes)
+                .expect("manifest output limit fits usize");
+        Self {
+            initial_millis,
+            remaining_millis: initial_millis,
+            initial_output_bytes,
+            remaining_output_bytes: initial_output_bytes,
+            finding_limit: prepared.manifest.limits.max_findings,
+            finding_consumed: 0,
+            snapshot_file_limit: prepared.manifest.limits.max_snapshot_files,
+            snapshot_files_consumed: 0,
+            snapshot_byte_limit: prepared.manifest.limits.max_snapshot_bytes,
+            snapshot_bytes_consumed: 0,
+        }
+    }
+
+    fn effective_limits(&self, profile: &ProfileLimits) -> Option<ExecutionLimits> {
+        if self.remaining_millis == 0 || self.remaining_output_bytes == 0 {
+            return None;
+        }
+        let timeout_millis = self
+            .remaining_millis
+            .min(profile.timeout_seconds.saturating_mul(1_000));
+        let max_combined_output_bytes = self
+            .remaining_output_bytes
+            .min(profile.max_output_bytes.saturating_mul(2));
+        if timeout_millis == 0 || max_combined_output_bytes == 0 {
+            return None;
+        }
+        Some(ExecutionLimits {
+            timeout: Duration::from_millis(timeout_millis),
+            max_stream_output_bytes: profile.max_output_bytes,
+            max_combined_output_bytes,
+        })
+    }
+
+    fn consume(&mut self, outcome: &ProcessOutcome) {
+        self.remaining_millis = self.remaining_millis.saturating_sub(outcome.duration_ms);
+        let captured = outcome.stdout_bytes.saturating_add(outcome.stderr_bytes);
+        self.remaining_output_bytes = self.remaining_output_bytes.saturating_sub(captured);
+    }
+
+    fn record_findings(&mut self, total_independent: usize) {
+        self.finding_consumed = total_independent.min(self.finding_limit);
+    }
+
+    fn record_snapshot(&mut self, snapshot: &CandidateSnapshot) {
+        self.snapshot_files_consumed = snapshot.files;
+        self.snapshot_bytes_consumed = snapshot.bytes;
+    }
+
+    fn record(&self) -> BudgetRecord {
+        BudgetRecord {
+            execution_millis: BudgetAmount {
+                initial: self.initial_millis,
+                consumed: self.initial_millis.saturating_sub(self.remaining_millis),
+                remaining: self.remaining_millis,
+            },
+            captured_output_bytes: BudgetAmount {
+                initial: self.initial_output_bytes as u64,
+                consumed: self
+                    .initial_output_bytes
+                    .saturating_sub(self.remaining_output_bytes) as u64,
+                remaining: self.remaining_output_bytes as u64,
+            },
+            findings: BudgetAmount {
+                initial: self.finding_limit as u64,
+                consumed: self.finding_consumed as u64,
+                remaining: self.finding_limit.saturating_sub(self.finding_consumed) as u64,
+            },
+            snapshot_files: BudgetAmount {
+                initial: self.snapshot_file_limit as u64,
+                consumed: self.snapshot_files_consumed as u64,
+                remaining: self
+                    .snapshot_file_limit
+                    .saturating_sub(self.snapshot_files_consumed) as u64,
+            },
+            snapshot_bytes: BudgetAmount {
+                initial: self.snapshot_byte_limit,
+                consumed: self.snapshot_bytes_consumed,
+                remaining: self
+                    .snapshot_byte_limit
+                    .saturating_sub(self.snapshot_bytes_consumed),
+            },
+        }
+    }
 }
 
 fn effective_snapshot_limits(prepared: &PreparedOrchestration) -> SnapshotLimits {
@@ -425,53 +562,6 @@ fn orchestration_status(runs: &[OrchestrationRun]) -> OrchestrationStatus {
         OrchestrationStatus::Partial
     } else {
         OrchestrationStatus::Failed
-    }
-}
-
-fn provisional_budget_record(
-    prepared: &PreparedOrchestration,
-    snapshot: &CandidateSnapshot,
-    artifacts: &[RunArtifact],
-    evidence: &StaticAnalysisEvidence,
-) -> BudgetRecord {
-    let execution_initial = prepared
-        .manifest
-        .limits
-        .max_execution_seconds
-        .saturating_mul(1_000);
-    let execution_consumed = artifacts
-        .iter()
-        .map(|artifact| artifact.execution.execution.duration_ms)
-        .fold(0_u64, u64::saturating_add)
-        .min(execution_initial);
-    let output_initial = prepared.manifest.limits.max_captured_output_bytes;
-    let output_consumed = artifacts
-        .iter()
-        .map(|artifact| {
-            (artifact.execution.execution.stdout_bytes as u64)
-                .saturating_add(artifact.execution.execution.stderr_bytes as u64)
-        })
-        .fold(0_u64, u64::saturating_add)
-        .min(output_initial);
-    let findings_initial = prepared.manifest.limits.max_findings as u64;
-    let findings_consumed = (evidence.counts.deduplicated_findings as u64).min(findings_initial);
-    BudgetRecord {
-        execution_millis: budget_amount(execution_initial, execution_consumed),
-        captured_output_bytes: budget_amount(output_initial, output_consumed),
-        findings: budget_amount(findings_initial, findings_consumed),
-        snapshot_files: budget_amount(
-            prepared.manifest.limits.max_snapshot_files as u64,
-            snapshot.files as u64,
-        ),
-        snapshot_bytes: budget_amount(prepared.manifest.limits.max_snapshot_bytes, snapshot.bytes),
-    }
-}
-
-fn budget_amount(initial: u64, consumed: u64) -> BudgetAmount {
-    BudgetAmount {
-        initial,
-        consumed,
-        remaining: initial.saturating_sub(consumed),
     }
 }
 

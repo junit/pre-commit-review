@@ -938,3 +938,323 @@ fn shared_snapshot_mutation_invalidates_current_and_stops_remaining_profiles() {
     assert!(output.evidence.reports.is_empty());
     assert_eq!(fs::read_to_string(&log).unwrap().lines().count(), 1);
 }
+
+#[cfg(unix)]
+fn write_budget_profile(
+    directory: &Path,
+    name: &str,
+    executable: &Path,
+    arguments: &[&Path],
+    timeout_seconds: u64,
+    max_output_bytes: usize,
+) -> (PathBuf, String) {
+    let path = directory.join(format!("{name}-budget.json"));
+    let argument_values = arguments
+        .iter()
+        .map(|argument| argument.to_string_lossy().into_owned())
+        .collect::<Vec<_>>();
+    fs::write(
+        &path,
+        serde_json::to_vec(&json!({
+            "schema_version": 1,
+            "kind": "static_analysis_profile",
+            "name": format!("{name} budget profile"),
+            "tool": {"name": name, "version": "1.0"},
+            "executable": {
+                "path": executable.to_string_lossy(),
+                "sha256": sha256_file(executable)
+            },
+            "arguments": argument_values,
+            "output_format": "normalized-json",
+            "success_exit_codes": [0],
+            "limits": {
+                "timeout_seconds": timeout_seconds,
+                "max_output_bytes": max_output_bytes,
+                "max_snapshot_bytes": 10485760,
+                "max_snapshot_files": 1000
+            },
+            "repository_configuration": "disabled",
+            "network_access": "offline-required"
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    let hash = sha256_file(&path);
+    (path, hash)
+}
+
+#[cfg(unix)]
+fn write_budget_manifest(
+    directory: &Path,
+    profiles: &[(&str, &Path, &str)],
+    max_execution_seconds: u64,
+    max_captured_output_bytes: u64,
+    max_findings: usize,
+) -> (PathBuf, String) {
+    let path = directory.join("budget-manifest.json");
+    let profile_values = profiles
+        .iter()
+        .map(|(profile_id, path, sha256)| {
+            json!({
+                "profile_id": profile_id,
+                "path": path.to_string_lossy(),
+                "sha256": sha256
+            })
+        })
+        .collect::<Vec<_>>();
+    fs::write(
+        &path,
+        serde_json::to_vec(&json!({
+            "schema_version": 1,
+            "kind": "static_analysis_orchestration_manifest",
+            "name": "budget fixture analyzers",
+            "profiles": profile_values,
+            "limits": {
+                "max_execution_seconds": max_execution_seconds,
+                "max_captured_output_bytes": max_captured_output_bytes,
+                "max_findings": max_findings,
+                "max_snapshot_bytes": 10485760,
+                "max_snapshot_files": 1000
+            }
+        }))
+        .unwrap(),
+    )
+    .unwrap();
+    let hash = sha256_file(&path);
+    (path, hash)
+}
+
+#[cfg(unix)]
+fn raw_output_analyzer(directory: &Path, name: &str, bytes: usize) -> PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+
+    let path = directory.join(format!("{name}-raw-output.sh"));
+    fs::write(
+        &path,
+        format!("#!/bin/sh\nhead -c {bytes} /dev/zero | tr '\\000' x\n"),
+    )
+    .unwrap();
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+    path
+}
+
+#[cfg(unix)]
+fn slow_analyzer(directory: &Path, name: &str, seconds: u64) -> PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+
+    let path = directory.join(format!("{name}-slow.sh"));
+    fs::write(
+        &path,
+        format!(
+            "#!/bin/sh\nsleep {seconds}\nprintf '%s\\n' '{{\"schema_version\":1,\"kind\":\"static_analysis_input\",\"scope_fingerprint\":\"'\"$PRE_COMMIT_REVIEW_SCOPE_FINGERPRINT\"'\",\"tool\":{{\"name\":\"{name}\",\"version\":\"1.0\"}},\"status\":\"completed\",\"findings\":[]}}'\n"
+        ),
+    )
+    .unwrap();
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+    path
+}
+
+#[cfg(unix)]
+fn finding_analyzer(directory: &Path, name: &str, findings: usize) -> PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+
+    let path = directory.join(format!("{name}-findings.sh"));
+    let finding_values = (0..findings)
+        .map(|index| {
+            json!({
+                "rule_id": format!("{name}-R{index}"),
+                "message": format!("{name} finding {index}"),
+                "path": "candidate.txt",
+                "start_line": 1,
+                "end_line": 1,
+                "severity": "warning",
+                "category": "correctness",
+                "confidence": "high",
+                "baseline_state": "new"
+            })
+        })
+        .collect::<Vec<_>>();
+    let template = serde_json::to_string(&json!({
+        "schema_version": 1,
+        "kind": "static_analysis_input",
+        "scope_fingerprint": "__SCOPE__",
+        "tool": {"name": name, "version": "1.0"},
+        "status": "completed",
+        "findings": finding_values
+    }))
+    .unwrap();
+    fs::write(
+        &path,
+        format!(
+            "#!/bin/sh\nprintf '%s\\n' \"${{0}}\" >/dev/null\nprintf '%s\\n' '{}' | sed \"s/__SCOPE__/$PRE_COMMIT_REVIEW_SCOPE_FINGERPRINT/\"\n",
+            template.replace('\'', "'\\''")
+        ),
+    )
+    .unwrap();
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+    path
+}
+
+#[cfg(unix)]
+#[test]
+fn budgets_enforce_cumulative_output_and_stop_remaining_profiles() {
+    let repository = preflight_repository();
+    let fixtures = TempDir::new().unwrap();
+    let later_log = fixtures.path().join("later-output.log");
+    let overflowing = raw_output_analyzer(fixtures.path(), "overflowing", 1025);
+    let later = source_analyzer(fixtures.path(), "later-output", false);
+    let (overflow_profile, overflow_hash) =
+        write_budget_profile(fixtures.path(), "overflowing", &overflowing, &[], 30, 1024);
+    let (later_profile, later_hash) = write_budget_profile(
+        fixtures.path(),
+        "later-output",
+        &later,
+        &[&later_log],
+        30,
+        1048576,
+    );
+    let (manifest, manifest_hash) = write_budget_manifest(
+        fixtures.path(),
+        &[
+            ("overflowing", &overflow_profile, &overflow_hash),
+            ("later-output", &later_profile, &later_hash),
+        ],
+        60,
+        1025,
+        100,
+    );
+
+    let output = execute(execution_request(
+        repository.path(),
+        &manifest,
+        &manifest_hash,
+    ))
+    .unwrap();
+
+    assert!(matches!(
+        &output.orchestration.runs[0],
+        OrchestrationRun::Executed { execution, .. }
+            if execution.execution.status
+                == collect_diff_context_cli::static_analysis::contracts::ExecutionStatus::OutputLimit
+    ));
+    assert!(matches!(
+        &output.orchestration.runs[1],
+        OrchestrationRun::NotRun {
+            reason: NotRunReason::BudgetExhausted,
+            ..
+        }
+    ));
+    assert_eq!(
+        output.orchestration.budgets.captured_output_bytes,
+        serde_json::from_value(budget(1025, 1025)).unwrap()
+    );
+    assert!(!later_log.exists());
+}
+
+#[cfg(unix)]
+#[test]
+fn budgets_apply_effective_timeout_and_stop_remaining_profiles() {
+    let repository = preflight_repository();
+    let fixtures = TempDir::new().unwrap();
+    let later_log = fixtures.path().join("later-time.log");
+    let slow = slow_analyzer(fixtures.path(), "slow", 2);
+    let later = source_analyzer(fixtures.path(), "later-time", false);
+    let (slow_profile, slow_hash) =
+        write_budget_profile(fixtures.path(), "slow", &slow, &[], 5, 1048576);
+    let (later_profile, later_hash) = write_budget_profile(
+        fixtures.path(),
+        "later-time",
+        &later,
+        &[&later_log],
+        30,
+        1048576,
+    );
+    let (manifest, manifest_hash) = write_budget_manifest(
+        fixtures.path(),
+        &[
+            ("slow", &slow_profile, &slow_hash),
+            ("later-time", &later_profile, &later_hash),
+        ],
+        1,
+        10485760,
+        100,
+    );
+
+    let output = execute(execution_request(
+        repository.path(),
+        &manifest,
+        &manifest_hash,
+    ))
+    .unwrap();
+
+    assert!(matches!(
+        &output.orchestration.runs[0],
+        OrchestrationRun::Executed { execution, .. }
+            if execution.execution.status
+                == collect_diff_context_cli::static_analysis::contracts::ExecutionStatus::Timeout
+    ));
+    assert!(matches!(
+        &output.orchestration.runs[1],
+        OrchestrationRun::NotRun {
+            reason: NotRunReason::BudgetExhausted,
+            ..
+        }
+    ));
+    assert_eq!(
+        output.orchestration.budgets.execution_millis,
+        serde_json::from_value(budget(1000, 1000)).unwrap()
+    );
+    assert!(!later_log.exists());
+}
+
+#[cfg(unix)]
+#[test]
+fn budgets_record_findings_and_shared_snapshot_exactly_once() {
+    let repository = preflight_repository();
+    let fixtures = TempDir::new().unwrap();
+    let first = finding_analyzer(fixtures.path(), "first-findings", 2);
+    let second = finding_analyzer(fixtures.path(), "second-findings", 2);
+    let (first_profile, first_hash) =
+        write_budget_profile(fixtures.path(), "first-findings", &first, &[], 30, 1048576);
+    let (second_profile, second_hash) = write_budget_profile(
+        fixtures.path(),
+        "second-findings",
+        &second,
+        &[],
+        30,
+        1048576,
+    );
+    let (manifest, manifest_hash) = write_budget_manifest(
+        fixtures.path(),
+        &[
+            ("first-findings", &first_profile, &first_hash),
+            ("second-findings", &second_profile, &second_hash),
+        ],
+        60,
+        10485760,
+        3,
+    );
+
+    let output = execute(execution_request(
+        repository.path(),
+        &manifest,
+        &manifest_hash,
+    ))
+    .unwrap();
+
+    assert_eq!(output.evidence.counts.deduplicated_findings, 4);
+    assert_eq!(output.evidence.findings.len(), 3);
+    assert!(output.evidence.truncated);
+    assert_eq!(
+        output.orchestration.budgets.findings,
+        serde_json::from_value(budget(3, 3)).unwrap()
+    );
+    assert_eq!(
+        output.orchestration.budgets.snapshot_files.consumed,
+        output.orchestration.snapshot.files as u64
+    );
+    assert_eq!(
+        output.orchestration.budgets.snapshot_bytes.consumed,
+        output.orchestration.snapshot.bytes
+    );
+}
