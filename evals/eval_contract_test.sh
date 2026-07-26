@@ -157,7 +157,8 @@ required_scenarios='[
   "pasted-diff",
   "static-analysis-evidence",
   "controlled-static-analysis",
-  "controlled-static-analysis-unauthorized"
+  "controlled-static-analysis-unauthorized",
+  "static-analysis-orchestration-partial"
 ]'
 
 jq -e --argjson required "$required_scenarios" \
@@ -233,6 +234,10 @@ assert_jq "$advanced_output_eval_file" \
 assert_jq "$advanced_output_eval_file" \
   'any(.cases[]; .scenario == "controlled-static-analysis-unauthorized" and .expected.verdict == "SAFE_TO_COMMIT_WITH_NOTES" and (.expected.must_include | index("SHA256") != null) and (.expected.must_not_include | index("SEC-SHOULD-NOT-RUN") != null))' \
   'advanced-output-eval.json must refuse controlled execution without an exact profile hash'
+
+assert_jq "$advanced_output_eval_file" \
+  'any(.cases[]; .scenario == "static-analysis-orchestration-partial" and .expected.verdict == "DO_NOT_COMMIT" and (.expected.must_include | index("partial") != null) and (.expected.must_include | index("SEC-ORCH-EVAL") != null) and (.expected.must_include | index("timeout") != null) and (.expected.must_include | index("limitation") != null) and (.expected.must_not_include | index("full static-analysis coverage") != null))' \
+  'advanced-output-eval.json must preserve partial orchestration coverage and use only completed evidence'
 
 assert_jq "$advanced_output_eval_file" \
   '(.cases | map(.scenario)) as $seen | $seen | index("independent-findings-enumeration") != null' \

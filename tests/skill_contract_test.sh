@@ -12,6 +12,8 @@ decision_risk_file="$repo_root/references/decision/risk-taxonomy.md"
 decision_finding_verification_file="$repo_root/references/decision/finding-verification.md"
 decision_static_analysis_file="$repo_root/references/decision/static-analysis-evidence.md"
 decision_static_execution_file="$repo_root/references/decision/static-analysis-execution.md"
+decision_static_orchestration_file="$repo_root/references/decision/static-analysis-orchestration.md"
+static_orchestration_doc_file="$repo_root/docs/static-analysis-orchestration.md"
 
 render_output_en_file="$repo_root/references/rendering/output-en.md"
 render_output_zh_file="$repo_root/references/rendering/output-zh.md"
@@ -41,6 +43,8 @@ for required_file in \
   "$decision_finding_verification_file" \
   "$decision_static_analysis_file" \
   "$decision_static_execution_file" \
+  "$decision_static_orchestration_file" \
+  "$static_orchestration_doc_file" \
   "$render_output_en_file" \
   "$render_output_zh_file" \
   "$render_visual_file" \
@@ -83,16 +87,36 @@ grep -Fq 'references/decision/static-analysis-evidence.md' "$skill_file" \
   || fail 'SKILL.md must route explicit SARIF/JSON evidence through the static-analysis contract'
 grep -Fq 'references/decision/static-analysis-execution.md' "$skill_file" \
   || fail 'SKILL.md must route authorized analyzer execution through the controlled-execution contract'
+grep -Fq 'references/decision/static-analysis-orchestration.md' "$skill_file" \
+  || fail 'SKILL.md must route authorized analyzer manifests through the orchestration contract'
 grep -Fq 'When the user explicitly authorizes controlled static-analysis execution, additionally load both execution and evidence contracts:' "$skill_file" \
   || fail 'SKILL.md reference loading must route controlled execution through both contracts'
 grep -Fq 'Never auto-discover result files and never execute a repository-provided analyzer' "$skill_file" \
   || fail 'SKILL.md must prohibit implicit static report discovery and analyzer execution'
 grep -Fq 'Never discover or select a profile, executable, argument, configuration, plugin, package script, or build target on the user'\''s behalf.' "$skill_file" \
   || fail 'SKILL.md must prohibit implicit controlled-execution selection'
+grep -Fq 'Run orchestration only when the user or trusted CI policy explicitly authorizes an absolute manifest path and the exact lowercase SHA256 of those manifest bytes.' "$skill_file" \
+  || fail 'SKILL.md must require exact manifest path and hash authorization'
+grep -Fq 'Never discover or select an orchestration manifest, profile, analyzer, configuration, plugin, package script, build target, or dependency preparation step.' "$skill_file" \
+  || fail 'SKILL.md must prohibit orchestration and analyzer discovery'
 grep -Fq 'This is controlled execution for a trusted tool, not an operating-system hostile-code sandbox.' "$skill_file" \
   || fail 'SKILL.md must state the controlled-execution threat boundary'
 grep -Fq 'Only `completed` with `result_accepted: true` is accepted tool evidence.' "$skill_file" \
   || fail 'SKILL.md must reject incomplete controlled execution as clean evidence'
+grep -Fq 'An orchestration with any failed, timed-out, invalidated, or not-run profile is `partial` unless no profile produced accepted evidence, in which case it is `failed`.' "$decision_static_orchestration_file" \
+  || fail 'orchestration reference must preserve honest partial and failed states'
+grep -Fq 'Supported analyzers are self-contained source-only offline tools that need no build, dependency installation, generated resources, daemon, or repository-owned executable configuration.' "$decision_static_orchestration_file" \
+  || fail 'orchestration reference must define the supported analyzer class'
+grep -Fq 'Route build-coupled tools through explicitly supplied precomputed evidence instead of orchestration.' "$decision_static_orchestration_file" \
+  || fail 'orchestration reference must route build-coupled tools to precomputed evidence'
+grep -Fq 'Findings from different executions remain independent candidates even when rule ids, locations, messages, or fingerprints match.' "$decision_static_orchestration_file" \
+  || fail 'orchestration reference must keep cross-analyzer findings independent'
+grep -Fq 'Revalidate the authoritative scope, manifest bytes, every profile, and every executable before accepting the final orchestration and combined evidence.' "$decision_static_orchestration_file" \
+  || fail 'orchestration reference must require final scope and authorization revalidation'
+if grep -Fq 'static_analysis_input/v2' \
+  "$skill_file" "$decision_static_orchestration_file" "$static_orchestration_doc_file"; then
+  fail 'orchestration policy must not introduce static_analysis_input/v2'
+fi
 grep -Fq 'Pass `--allow-repository-configuration` only when the authorized profile says `repository_configuration: explicitly-trusted`' "$skill_file" \
   || fail 'SKILL.md must require a separate repository-configuration authorization gate'
 grep -Fq 'Proxy poisoning is only a best-effort network guard' "$decision_static_execution_file" \

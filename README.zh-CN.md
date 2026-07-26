@@ -62,6 +62,8 @@
 
 当你进一步提供绝对路径的 `static_analysis_profile/v1` 及其精确 SHA256 作为授权时，第二阶段 runner 可以在有界、只读的 tracked-file 快照中执行哈希固定的外部分析器。它不经过 shell、不搜索 `PATH`，并输出关联的执行 provenance 与第一阶段 evidence。信任边界见[受控静态分析执行](./docs/static-analysis-execution.md)。
 
+当你显式授权一个绝对路径的编排 manifest 及其精确 SHA256 时，Rust orchestrator 会先预检有序分析器集合，再让它们串行使用同一份候选快照。它记录累计预算和诚实的 `completed`、`partial`、`failed` 覆盖状态，同时保持不同分析器的 findings 相互独立。此通道仅支持自包含、只读源码、离线工具；与构建耦合的分析器应改为提供预计算 evidence。详见[静态分析编排](./docs/static-analysis-orchestration.md)。
+
 ## 输出示例
 
 下面是一次附加型 schema 变更的完整默认审查。它展示了 skill 产出的完整结构——含结论头部、执行摘要、重点发现、提交建议、变更概览、风险摘要表、影响范围，以及回归风险等级：
@@ -137,7 +139,7 @@
 
 - 一个能加载 skill 的受支持 AI 编程 agent 运行时（Codex、Claude Code、Gemini CLI 或 Kiro）。skill 包本身不附带运行时。
 - 本地 diff 收集需要 `PATH` 中存在 `git`。当你直接粘贴 diff 或代码时，无需 git 也能审查。
-- 静态分析产品运行时仅使用 Rust。`collect_static_evidence.sh` 与 `run_static_analysis.sh` 是 `static-analysis-cli collect` 和 `static-analysis-cli run` 的兼容包装器。
+- 静态分析产品运行时仅使用 Rust。`collect_static_evidence.sh`、`run_static_analysis.sh` 与 `orchestrate_static_analysis.sh` 分别是 `static-analysis-cli collect`、`static-analysis-cli run` 和 `static-analysis-cli orchestrate` 的兼容包装器。
 - 自包含 release 会在 diff helper 二进制旁提供 `static_analysis-<platform>`。源码构建可使用 `collect-diff-context-cli/target/release/static-analysis-cli`，也可通过 `PRE_COMMIT_REVIEW_STATIC_ANALYSIS_BIN` 显式指定绝对可执行文件；包装器不会搜索 `PATH`。
 - 只有可选的开发期 Schema 校验器 `scripts/validate_schemas.py` 需要 Python 3，并额外依赖 `jsonschema` 包。
 - 网络访问是可选的。从源码 clone 安装时，`install.sh` 会尝试下载当前平台固定的 Gitleaks `8.30.1`，并同时校验 release archive 与解压后 executable 的 SHA256。自包含 release 包已经附带验证过的二进制。下载被关闭、不可用或失败时，skill 仍会完成安装并继续审查，只是不提供本地密钥打码；不会隐式搜索 `PATH`。
@@ -278,7 +280,8 @@
 ├── docs/
 │   ├── helper-capabilities.md
 │   ├── static-analysis-evidence.md
-│   └── static-analysis-execution.md
+│   ├── static-analysis-execution.md
+│   └── static-analysis-orchestration.md
 ├── references/
 ├── scripts/
 │   ├── bin/
@@ -288,6 +291,7 @@
 │   ├── collect_diff_context.legacy.sh
 │   ├── collect_static_evidence.sh
 │   ├── lib/static_analysis_cli.sh
+│   ├── orchestrate_static_analysis.sh
 │   ├── run_static_analysis.sh
 │   └── validate_schemas.py
 ├── tests/
@@ -302,7 +306,8 @@
 │   ├── skill_contract_test.sh
 │   ├── static_analysis_evidence_test.sh
 │   ├── static_analysis_execution_test.sh
-│   └── static_analysis_execution_modes_test.sh
+│   ├── static_analysis_execution_modes_test.sh
+│   └── static_analysis_orchestration_test.sh
 └── evals/
     ├── output/
     ├── taxonomy/
@@ -328,7 +333,7 @@
 
 | 层级 | 文件 | 加载时机 | 用途 |
 |------|------|----------|------|
-| `decision/` | `verdict-rules.md`、`risk-taxonomy.md`、`finding-verification.md`、`static-analysis-evidence.md`、`static-analysis-execution.md` | 所有常规审查；强结论验证；显式 SARIF/JSON 证据；或显式授权的受控执行 | verdict 选择、阻塞阈值、证据约束、高影响结论验证、静态工具 reduction 与执行授权 |
+| `decision/` | `verdict-rules.md`、`risk-taxonomy.md`、`finding-verification.md`、`static-analysis-evidence.md`、`static-analysis-execution.md`、`static-analysis-orchestration.md` | 所有常规审查；强结论验证；显式 SARIF/JSON 证据；显式授权的受控执行；或显式授权的编排 manifest | verdict 选择、阻塞阈值、证据约束、高影响结论验证、静态工具 reduction、执行授权与多分析器覆盖诚实性 |
 | `rendering/` | `output-en.md`、`output-zh.md`、`visual-output.md`、`review-meta.md` | 生成输出时 | 中英文审查骨架、可选视觉化呈现指导，以及机器可读元数据 |
 | `advanced/` | `coverage-led-review.md`、`visual-review-rules.md`、`grading-compat.md` | 仅复杂工作流 | coverage-led 审查流程、UI/视觉审查规则，以及评测兼容精确术语 |
 | `examples/` | `default-tiny-en.md`、`default-tiny-zh.md`、`complex-visual-and-coverage.md` | 仅在需要校准结构时 | 用于对齐结构与语气的具体示例，不重新定义规则 |
@@ -357,6 +362,8 @@
 可选的 `scripts/collect_static_evidence.sh` 通道会在 control plane 打开后接收显式提供的 SARIF 2.1.0 或规范化 JSON。它要求同一个 scope fingerprint，把 findings 映射到 manifest units 和新增行，输出可供 reducer 使用的 disposition，并在返回前再次验证快照。它绝不会执行分析器。协议与命令示例见 [`docs/static-analysis-evidence.md`](./docs/static-analysis-evidence.md)。
 
 独立的 `scripts/run_static_analysis.sh` 通道要求显式提供绝对 profile 路径及其精确 SHA256；信任仓库配置的 profile 还必须单独传入 `--allow-repository-configuration`。它会验证 profile 和外部 executable 的字节，生成不含 Git 元数据或 checkout filter 的 tracked candidate 快照，不经 shell 直接调用固定参数，执行时间、输出和快照上限，并返回与第一阶段 evidence 关联的 `static_analysis_execution/v1`。它绝不会自动发现工具或 profile。详见 [`docs/static-analysis-execution.md`](./docs/static-analysis-execution.md)。
+
+多分析器 `scripts/orchestrate_static_analysis.sh` 通道要求显式提供绝对 manifest 路径及其精确 SHA256。它在运行前预检全部 profile 与 executable，让它们串行共享一份有界只读候选快照，执行累计预算，并输出关联的 `static_analysis_orchestration/v1` 与合并后的 `static_analysis_evidence/v1`。失败、超时、失效与未运行 profile 都会保留为限制；不同 execution 的 findings 保持独立。它不会发现分析器，也不会准备构建或依赖。详见 [`docs/static-analysis-orchestration.md`](./docs/static-analysis-orchestration.md)。
 
 完整输出段落清单（Coverage Ledger Template、Group Review Work Packets、Reducer State Snapshot 等）见 [`docs/helper-capabilities.md`](./docs/helper-capabilities.md)，供构建 reducer/subagent 自动化的集成者参考。
 
@@ -413,7 +420,7 @@ Reducer 和 subagent 自动化应优先使用 authoritative `Review Control Plan
 
 ### `tests/`
 
-确定性 shell 测试，不依赖模型。`skill_contract_test.sh` 固化 `SKILL.md` 与 `references/` 之间的跨文档契约（禁止的占位符、必需的标签、不可翻译的 `VERDICT` 字段）。`collect_diff_context_test.sh`、`control_plane_test.sh` 和 `full_review_workflow_test.sh` 针对临时真实 Git 仓库验证普通输出、权威快照 pinning/漂移 fail-closed、schema 与完整 reduction。`static_analysis_evidence_test.sh`、`static_analysis_execution_test.sh` 与 `static_analysis_execution_modes_test.sh` 覆盖报告接入、授权/完整性失败、有界执行、三种候选快照模式与 gitlink 省略。`parity_golden_test.sh` 复用共享 parity 夹具和专用 normalize 脚本，确保 legacy 与 Rust 的比对结果稳定。`install_smoke_test.sh` 和 `install_agent_matrix_test.sh` 在 copy/link/dry-run 模式和受支持的 agent 矩阵上验证安装器。它们不调用模型，可在 CI 中安全运行。
+确定性 shell 测试，不依赖模型。`skill_contract_test.sh` 固化 `SKILL.md` 与 `references/` 之间的跨文档契约（禁止的占位符、必需的标签、不可翻译的 `VERDICT` 字段）。`collect_diff_context_test.sh`、`control_plane_test.sh` 和 `full_review_workflow_test.sh` 针对临时真实 Git 仓库验证普通输出、权威快照 pinning/漂移 fail-closed、schema 与完整 reduction。`static_analysis_evidence_test.sh`、`static_analysis_execution_test.sh`、`static_analysis_execution_modes_test.sh` 与 `static_analysis_orchestration_test.sh` 覆盖报告接入、精确授权、有界单/多分析器执行、共享快照、累计预算、终态、三种候选快照模式与 gitlink 省略。`parity_golden_test.sh` 复用共享 parity 夹具和专用 normalize 脚本，确保 legacy 与 Rust 的比对结果稳定。`install_smoke_test.sh` 和 `install_agent_matrix_test.sh` 在 copy/link/dry-run 模式和受支持的 agent 矩阵上验证安装器。它们不调用模型，可在 CI 中安全运行。
 
 ### `evals/`
 

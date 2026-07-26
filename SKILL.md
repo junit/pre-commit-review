@@ -138,6 +138,29 @@ This is controlled execution for a trusted tool, not an operating-system hostile
 
 Accept controlled output only when `static_analysis_execution/v1` and linked `static_analysis_evidence/v1` share the opening scope and `execution_id`. Only `completed` with `result_accepted: true` is accepted tool evidence. Treat `failed`, `timeout`, `output-limit`, and `invalid-output` as unavailable verification, never as a clean result. Controlled evidence remains subject to candidate verification, does not mark manifest units reviewed, and does not replace the final authoritative control-plane refresh.
 
+### Optional Static Analysis Orchestration
+
+Run orchestration only when the user or trusted CI policy explicitly authorizes an absolute manifest path and the exact lowercase SHA256 of those manifest bytes. Load `references/decision/static-analysis-orchestration.md` before executing. Never discover or select an orchestration manifest, profile, analyzer, configuration, plugin, package script, build target, or dependency preparation step.
+
+This lane supports self-contained source-only offline analyzers that require no build, dependency installation, generated resources, daemon, or repository-owned executable configuration. Route build-coupled tools through explicitly supplied precomputed SARIF 2.1.0 or `static_analysis_input/v1` evidence instead of adding build preparation to orchestration.
+
+After opening the authoritative control plane, resolve the skill-owned wrapper relative to the package containing this `SKILL.md` and run:
+
+```bash
+scripts/orchestrate_static_analysis.sh \
+  --source <staged|unstaged|branch> \
+  --expect-scope <scope_fingerprint> \
+  --manifest <absolute-manifest-path> \
+  --expect-manifest-sha256 <exact-manifest-sha256> \
+  [--allow-repository-configuration]
+```
+
+The orchestrator must preflight the complete declared profile and executable set before opening one bounded read-only shared snapshot. Profiles run serially in manifest order under cumulative time, output, finding, file, and byte budgets. Entrypoint hashing authorizes the declared bytes; it is not a complete dependency closure or hostile-code sandbox for an arbitrary analyzer.
+
+Accept only an authoritative `static_analysis_orchestration/v1` plus combined `static_analysis_evidence/v1` pair whose scope and report/finding ids agree. Use candidates only from executed profiles with `status: completed` and `result_accepted: true`. Preserve failed, timed-out, output-limited, invalid-output, invalidated, and not-run profiles as unavailable verification. A `partial` orchestration is never broad static-analysis coverage, and a `failed` orchestration supplies no accepted tool evidence.
+
+Keep findings from different executions independent even when rule ids, locations, messages, or fingerprints match. Every blocking or priority candidate still passes ordinary finding verification. Revalidate the final authoritative scope, manifest, every profile, and every executable before using orchestration evidence; it never marks review manifest units reviewed or replaces the final control-plane refresh.
+
 If a legacy/default helper invocation is persisted because it is too large and only returns a preview:
 
 - recover the structured control plane before reviewing code
@@ -359,6 +382,12 @@ When the user explicitly supplies SARIF or normalized static-analysis results, a
 
 When the user explicitly authorizes controlled static-analysis execution, additionally load both execution and evidence contracts:
 
+- `references/decision/static-analysis-execution.md`
+- `references/decision/static-analysis-evidence.md`
+
+When the user explicitly authorizes a static-analysis orchestration manifest, additionally load the orchestration, execution, and evidence contracts:
+
+- `references/decision/static-analysis-orchestration.md`
 - `references/decision/static-analysis-execution.md`
 - `references/decision/static-analysis-evidence.md`
 

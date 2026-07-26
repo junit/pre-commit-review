@@ -62,6 +62,8 @@ When you explicitly supply a precomputed SARIF 2.1.0 or normalized JSON report, 
 
 When you additionally authorize an absolute `static_analysis_profile/v1` path with its exact SHA256, the Phase 2 runner can execute that hash-pinned external analyzer in a bounded, read-only tracked-file snapshot. It uses no shell, does not search `PATH`, and emits linked execution provenance plus Phase 1 evidence. See [Controlled Static Analysis Execution](./docs/static-analysis-execution.md) for the trust boundary.
 
+When you explicitly authorize an absolute orchestration manifest path and the exact SHA256 of those manifest bytes, the Rust orchestrator can preflight an ordered analyzer set and run it serially against one shared snapshot. It records cumulative budgets and honest `completed`, `partial`, or `failed` coverage states while keeping each analyzer's findings independent. This lane is limited to self-contained source-only offline tools; build-coupled analyzers should supply precomputed evidence instead. See [Static Analysis Orchestration](./docs/static-analysis-orchestration.md).
+
 ## Example Output
 
 This is a complete default review for an additive schema change. It shows the full structure the skill produces — a header with the verdict, an executive summary, priority findings, commit guidance, a change overview, a risk-summary table, impact scope, and a regression-risk level:
@@ -137,7 +139,7 @@ For a blocking issue the verdict is `DO_NOT_COMMIT` with a `🔒`-marked blocker
 
 - A supported AI coding agent runtime that can load skills (Codex, Claude Code, Gemini CLI, or Kiro). The skill package ships no runtime of its own.
 - `git` on `PATH` for local diff collection. The review still works without it when you paste a diff or code directly.
-- The static-analysis product runtime is Rust-only. `collect_static_evidence.sh` and `run_static_analysis.sh` are compatibility wrappers over `static-analysis-cli collect` and `static-analysis-cli run`.
+- The static-analysis product runtime is Rust-only. `collect_static_evidence.sh`, `run_static_analysis.sh`, and `orchestrate_static_analysis.sh` are compatibility wrappers over `static-analysis-cli collect`, `static-analysis-cli run`, and `static-analysis-cli orchestrate`.
 - Self-contained releases include `static_analysis-<platform>` next to the diff helper binary. Source builds may use `collect-diff-context-cli/target/release/static-analysis-cli`, and `PRE_COMMIT_REVIEW_STATIC_ANALYSIS_BIN` may explicitly select an absolute executable. The wrappers never search `PATH` for it.
 - Python 3 is required only for the optional development schema validator, `scripts/validate_schemas.py`, which additionally requires the `jsonschema` package.
 - Network access is optional. From a source clone, `install.sh` attempts to download the pinned Gitleaks `8.30.1` binary and verify both the release archive and extracted executable SHA256. Self-contained release packages already include the verified executable. If download is disabled, unavailable, or fails, installation and review still work without local secret redaction. Implicit `PATH` discovery is not allowed.
@@ -278,7 +280,8 @@ This repository is not an application or framework. It is a small, portable skil
 ├── docs/
 │   ├── helper-capabilities.md
 │   ├── static-analysis-evidence.md
-│   └── static-analysis-execution.md
+│   ├── static-analysis-execution.md
+│   └── static-analysis-orchestration.md
 ├── references/
 ├── scripts/
 │   ├── bin/
@@ -288,6 +291,7 @@ This repository is not an application or framework. It is a small, portable skil
 │   ├── collect_diff_context.legacy.sh
 │   ├── collect_static_evidence.sh
 │   ├── lib/static_analysis_cli.sh
+│   ├── orchestrate_static_analysis.sh
 │   ├── run_static_analysis.sh
 │   └── validate_schemas.py
 ├── tests/
@@ -302,7 +306,8 @@ This repository is not an application or framework. It is a small, portable skil
 │   ├── skill_contract_test.sh
 │   ├── static_analysis_evidence_test.sh
 │   ├── static_analysis_execution_test.sh
-│   └── static_analysis_execution_modes_test.sh
+│   ├── static_analysis_execution_modes_test.sh
+│   └── static_analysis_orchestration_test.sh
 └── evals/
     ├── output/
     ├── taxonomy/
@@ -328,7 +333,7 @@ Loaded on demand by `SKILL.md`. References are now layered by responsibility:
 
 | Layer | Files | Loaded when | Purpose |
 |------|-------|-------------|---------|
-| `decision/` | `verdict-rules.md`, `risk-taxonomy.md`, `finding-verification.md`, `static-analysis-evidence.md`, `static-analysis-execution.md` | Every routine review, plus finding verification for strong claims, explicit SARIF/JSON evidence, or explicitly authorized controlled execution | Verdict selection, blocker thresholds, evidence discipline, high-impact claim verification, static-tool reduction, and execution authorization |
+| `decision/` | `verdict-rules.md`, `risk-taxonomy.md`, `finding-verification.md`, `static-analysis-evidence.md`, `static-analysis-execution.md`, `static-analysis-orchestration.md` | Every routine review, plus finding verification for strong claims, explicit SARIF/JSON evidence, explicitly authorized controlled execution, or an explicitly authorized orchestration manifest | Verdict selection, blocker thresholds, evidence discipline, high-impact claim verification, static-tool reduction, execution authorization, and multi-analyzer coverage honesty |
 | `rendering/` | `output-en.md`, `output-zh.md`, `visual-output.md`, `review-meta.md` | When rendering the response | Per-language review skeletons, optional visual presentation guidance, and machine-readable metadata |
 | `advanced/` | `coverage-led-review.md`, `visual-review-rules.md`, `grading-compat.md` | Only for complex workflows | Coverage-led review flow, UI/visual review rules, and grading-sensitive exact phrases |
 | `examples/` | `default-tiny-en.md`, `default-tiny-zh.md`, `complex-visual-and-coverage.md` | Optional calibration only | Concrete examples for aligning structure and tone without redefining the rules |
@@ -357,6 +362,8 @@ A read-only helper script that gathers local repository context for the review w
 The optional `scripts/collect_static_evidence.sh` lane accepts explicitly supplied SARIF 2.1.0 or normalized JSON after the control plane is opened. It requires the same scope fingerprint, maps findings to manifest units and added lines, emits reducer-ready dispositions, and revalidates the snapshot before returning. It never runs an analyzer. See [`docs/static-analysis-evidence.md`](./docs/static-analysis-evidence.md).
 
 The separate `scripts/run_static_analysis.sh` lane requires an explicitly supplied absolute profile path and exact profile SHA256. Profiles that trust repository configuration additionally require `--allow-repository-configuration`. It verifies both profile and external executable bytes, materializes the selected tracked candidate without Git metadata or checkout filters, invokes the fixed arguments directly without a shell, enforces time/output/snapshot limits, and returns `static_analysis_execution/v1` linked to the Phase 1 evidence. It never auto-discovers a tool or profile. See [`docs/static-analysis-execution.md`](./docs/static-analysis-execution.md).
+
+The multi-analyzer `scripts/orchestrate_static_analysis.sh` lane requires an explicitly supplied absolute manifest path and exact manifest SHA256. It preflights every referenced profile and executable before execution, shares one bounded read-only candidate snapshot, runs profiles serially under cumulative budgets, and emits linked `static_analysis_orchestration/v1` plus combined `static_analysis_evidence/v1`. Failed, timed-out, invalidated, and not-run profiles remain visible limitations; findings from separate executions remain independent. It never discovers analyzers or prepares builds/dependencies. See [`docs/static-analysis-orchestration.md`](./docs/static-analysis-orchestration.md).
 
 The full list of emitted sections (Coverage Ledger Template, Group Review Work Packets, Reducer State Snapshot, etc.) is documented in [`docs/helper-capabilities.md`](./docs/helper-capabilities.md) for integrators building reducer/subagent automation.
 
@@ -413,7 +420,7 @@ Reducer and subagent automation should prefer authoritative `Review Control Plan
 
 ### `tests/`
 
-Deterministic shell tests with no model dependency. `skill_contract_test.sh` pins the cross-document contract between `SKILL.md` and `references/` (forbidden placeholders, required labels, the untranslatable `VERDICT` field). `collect_diff_context_test.sh`, `control_plane_test.sh`, and `full_review_workflow_test.sh` exercise normal output, authoritative snapshot pinning/drift failure, schemas, and full reduction against temporary real Git repositories. `static_analysis_evidence_test.sh`, `static_analysis_execution_test.sh`, and `static_analysis_execution_modes_test.sh` cover report ingestion, authorization/integrity failures, bounded execution, all three candidate snapshot modes, and gitlink omission. `parity_golden_test.sh` reuses shared parity fixtures plus a dedicated normalizer to keep legacy-vs-Rust comparisons stable. `install_smoke_test.sh` and `install_agent_matrix_test.sh` verify the installer across copy/link/dry-run modes and the supported agent matrix. All of them avoid model calls and are safe in CI.
+Deterministic shell tests with no model dependency. `skill_contract_test.sh` pins the cross-document contract between `SKILL.md` and `references/` (forbidden placeholders, required labels, the untranslatable `VERDICT` field). `collect_diff_context_test.sh`, `control_plane_test.sh`, and `full_review_workflow_test.sh` exercise normal output, authoritative snapshot pinning/drift failure, schemas, and full reduction against temporary real Git repositories. `static_analysis_evidence_test.sh`, `static_analysis_execution_test.sh`, `static_analysis_execution_modes_test.sh`, and `static_analysis_orchestration_test.sh` cover report ingestion, exact authorization, bounded single/multi-analyzer execution, shared snapshots, cumulative budgets, terminal states, all three candidate snapshot modes, and gitlink omission. `parity_golden_test.sh` reuses shared parity fixtures plus a dedicated normalizer to keep legacy-vs-Rust comparisons stable. `install_smoke_test.sh` and `install_agent_matrix_test.sh` verify the installer across copy/link/dry-run modes and the supported agent matrix. All of them avoid model calls and are safe in CI.
 
 ### `evals/`
 

@@ -153,6 +153,8 @@ Static analyzer output is evidence, not an automatic verdict. A normalized `bloc
 
 For controlled execution, only `static_analysis_execution/v1` with `status: completed`, `result_accepted: true`, and linked controlled evidence may support a successful tool claim. `failed`, `timeout`, `output-limit`, or `invalid-output` is unavailable verification; it is never a clean result. Execution provenance does not bypass finding verification or manifest coverage.
 
+For multi-analyzer orchestration, only executed profiles with completed accepted reports may supply candidates. `partial` means at least one declared profile did not produce accepted evidence; preserve that missing analyzer/rule coverage as a bounded review limitation. `failed` means the orchestration supplied no accepted tool evidence. Invalidated and not-run profiles cannot support clean or broad static-analysis claims, and similar findings from separate executions remain independently verified candidates rather than automatic corroboration.
+
 Historical findings, unbaselined findings on unchanged lines, maintainability-only findings, failed-report output, scope-mismatched evidence, and findings outside the selected manifest cannot force `DO_NOT_COMMIT` by themselves. Tool success does not prove absence of defects outside the tool's actual rules and analyzed scope.
 
 ## Output Quality Gate

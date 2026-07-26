@@ -400,6 +400,148 @@ PY
   controlled_profile_hash="$profile_hash"
 }
 
+build_case_static_analysis_orchestration_partial() {
+  local workdir="$1"
+  local tools_dir security_analyzer security_analyzer_hash timeout_analyzer timeout_analyzer_hash
+  local security_profile security_profile_hash timeout_profile timeout_profile_hash manifest manifest_hash
+
+  mkdir -p "$workdir/src"
+  init_repo "$workdir"
+  printf 'export function execute(input: string) {\n  return input.trim();\n}\n' >"$workdir/src/execute.ts"
+  git -C "$workdir" add src/execute.ts
+  git -C "$workdir" commit -q -m orchestration-analysis-baseline
+  printf 'export function execute(input: string) {\n  eval(input);\n  return input.trim();\n}\n' >"$workdir/src/execute.ts"
+  git -C "$workdir" add src/execute.ts
+
+  tools_dir="$(CDPATH='' cd -- "$workdir/.." && pwd -P)/orchestration-tools"
+  mkdir -p "$tools_dir"
+
+  security_analyzer="$tools_dir/security-analyzer.sh"
+  cat >"$security_analyzer" <<'SH'
+#!/bin/sh
+printf '%s\n' '{"version":"2.1.0","runs":[{"tool":{"driver":{"name":"orchestration-security-fixture","version":"1.0.0","rules":[{"id":"SEC-ORCH-EVAL","properties":{"tags":["security","cwe-95"],"precision":"high"}}]}},"results":[{"ruleId":"SEC-ORCH-EVAL","level":"error","message":{"text":"Dynamic evaluation can execute attacker-controlled code."},"locations":[{"physicalLocation":{"artifactLocation":{"uri":"src/execute.ts"},"region":{"startLine":2,"endLine":2}}}]}]}]}'
+SH
+  chmod +x "$security_analyzer"
+  security_analyzer_hash="$(python3 - "$security_analyzer" <<'PY'
+import hashlib
+import pathlib
+import sys
+print(hashlib.sha256(pathlib.Path(sys.argv[1]).read_bytes()).hexdigest())
+PY
+)"
+
+  timeout_analyzer="$tools_dir/timeout-analyzer.sh"
+  cat >"$timeout_analyzer" <<'SH'
+#!/bin/sh
+sleep 5
+printf '%s\n' '{"version":"2.1.0","runs":[{"tool":{"driver":{"name":"orchestration-timeout-fixture","version":"1.0.0"}},"results":[]}]}'
+SH
+  chmod +x "$timeout_analyzer"
+  timeout_analyzer_hash="$(python3 - "$timeout_analyzer" <<'PY'
+import hashlib
+import pathlib
+import sys
+print(hashlib.sha256(pathlib.Path(sys.argv[1]).read_bytes()).hexdigest())
+PY
+)"
+
+  security_profile="$tools_dir/security-profile.json"
+  jq -n \
+    --arg executable "$security_analyzer" \
+    --arg executable_hash "$security_analyzer_hash" '
+    {
+      schema_version: 1,
+      kind: "static_analysis_profile",
+      name: "orchestration security fixture profile",
+      tool: {name: "orchestration-security-fixture", version: "1.0.0"},
+      executable: {path: $executable, sha256: $executable_hash},
+      arguments: [],
+      output_format: "sarif",
+      success_exit_codes: [0],
+      limits: {
+        timeout_seconds: 10,
+        max_output_bytes: 1000000,
+        max_snapshot_bytes: 20000000,
+        max_snapshot_files: 1000
+      },
+      repository_configuration: "disabled",
+      network_access: "offline-required"
+    }
+  ' >"$security_profile"
+  security_profile_hash="$(python3 - "$security_profile" <<'PY'
+import hashlib
+import pathlib
+import sys
+print(hashlib.sha256(pathlib.Path(sys.argv[1]).read_bytes()).hexdigest())
+PY
+)"
+
+  timeout_profile="$tools_dir/timeout-profile.json"
+  jq -n \
+    --arg executable "$timeout_analyzer" \
+    --arg executable_hash "$timeout_analyzer_hash" '
+    {
+      schema_version: 1,
+      kind: "static_analysis_profile",
+      name: "orchestration timeout fixture profile",
+      tool: {name: "orchestration-timeout-fixture", version: "1.0.0"},
+      executable: {path: $executable, sha256: $executable_hash},
+      arguments: [],
+      output_format: "sarif",
+      success_exit_codes: [0],
+      limits: {
+        timeout_seconds: 1,
+        max_output_bytes: 1000000,
+        max_snapshot_bytes: 20000000,
+        max_snapshot_files: 1000
+      },
+      repository_configuration: "disabled",
+      network_access: "offline-required"
+    }
+  ' >"$timeout_profile"
+  timeout_profile_hash="$(python3 - "$timeout_profile" <<'PY'
+import hashlib
+import pathlib
+import sys
+print(hashlib.sha256(pathlib.Path(sys.argv[1]).read_bytes()).hexdigest())
+PY
+)"
+
+  manifest="$tools_dir/orchestration-manifest.json"
+  jq -n \
+    --arg security_profile "$security_profile" \
+    --arg security_profile_hash "$security_profile_hash" \
+    --arg timeout_profile "$timeout_profile" \
+    --arg timeout_profile_hash "$timeout_profile_hash" '
+    {
+      schema_version: 1,
+      kind: "static_analysis_orchestration_manifest",
+      name: "partial orchestration fixture",
+      profiles: [
+        {profile_id: "security", path: $security_profile, sha256: $security_profile_hash},
+        {profile_id: "timeout", path: $timeout_profile, sha256: $timeout_profile_hash}
+      ],
+      limits: {
+        max_execution_seconds: 5,
+        max_captured_output_bytes: 2000000,
+        max_findings: 100,
+        max_snapshot_bytes: 20000000,
+        max_snapshot_files: 1000
+      }
+    }
+  ' >"$manifest"
+  manifest_hash="$(python3 - "$manifest" <<'PY'
+import hashlib
+import pathlib
+import sys
+print(hashlib.sha256(pathlib.Path(sys.argv[1]).read_bytes()).hexdigest())
+PY
+)"
+
+  orchestration_manifest_path="$manifest"
+  orchestration_manifest_hash="$manifest_hash"
+}
+
 build_case_controlled_static_analysis_unauthorized() {
   local workdir="$1"
   local tools_dir analyzer analyzer_hash profile
@@ -550,6 +692,13 @@ prepare_case_fixture() {
         'The user explicitly authorizes the skill-owned controlled runner for this exact staged snapshot. Run the profile below, validate the linked execution/evidence, and cite its execution_id when using the finding.' \
         "Absolute profile: $controlled_profile_path" \
         "Exact profile SHA256: $controlled_profile_hash")"
+      ;;
+    static-analysis-orchestration-partial)
+      build_case_static_analysis_orchestration_partial "$workdir"
+      prompt="$(printf '%s\n\n%s\n%s\n%s\n' "$prompt" \
+        'The user explicitly authorizes the skill-owned orchestration wrapper for this exact staged snapshot. Run the manifest below, validate both output sections, and preserve every non-completed profile as a coverage limitation.' \
+        "Absolute manifest: $orchestration_manifest_path" \
+        "Exact manifest SHA256: $orchestration_manifest_hash")"
       ;;
     controlled-static-analysis-unauthorized)
       build_case_controlled_static_analysis_unauthorized "$workdir"

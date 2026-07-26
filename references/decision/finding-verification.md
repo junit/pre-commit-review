@@ -187,6 +187,14 @@ For static-analysis findings, also verify:
 - the reported path is reachable or otherwise intrinsically blocking under the verdict rules;
 - local suppressions, framework behavior, generated code, or tool limitations do not invalidate the conclusion.
 
+For multi-analyzer orchestration, additionally verify:
+
+- the orchestration and combined evidence share the authoritative opening scope and matching report/finding id sets;
+- only `executed` profiles with `status: completed` and `result_accepted: true` supplied the candidate;
+- failed, timed-out, output-limited, invalid-output, invalidated, and not-run profiles remain visible as unavailable verification rather than clean coverage;
+- the candidate remains independent from similar findings produced by other executions and was not promoted through implicit corroboration weighting;
+- final scope, manifest, profile, and executable authorization revalidation succeeded.
+
 A deterministic tool result can raise confidence in the reported pattern. It does not independently prove reachability, business impact, exploitability, or the absence of mitigating controls.
 
 ## Gate 6: Challenge Reverification

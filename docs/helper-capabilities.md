@@ -99,3 +99,20 @@ The runner:
 - reuses the Phase 1 mapping, reducer dispositions, final scope refresh, and optional secret sanitization
 
 The network guard is best-effort environment isolation, not an operating-system sandbox. Profiles must require offline execution, and only known hash-pinned tools belong in this lane. See [static-analysis-execution.md](static-analysis-execution.md) for the authorization and threat model.
+
+## Optional Static Analysis Orchestration
+
+`scripts/orchestrate_static_analysis.sh` is the opt-in multi-analyzer lane. It requires an explicitly supplied absolute `static_analysis_orchestration_manifest` path and the exact SHA256 authorizing those manifest bytes. It never discovers manifests, profiles, analyzers, package commands, build targets, dependencies, or result files.
+
+The compatibility wrapper resolves the same trusted Rust binary and invokes `static-analysis-cli orchestrate` directly. The orchestrator:
+
+- preflights the manifest, every absolute profile, and every profile-pinned executable before any process starts
+- materializes one bounded read-only tracked candidate snapshot shared by all profiles
+- runs profiles serially in manifest order with cumulative execution, output, finding, file, and byte budgets
+- records every profile as `executed`, `invalidated`, or `not-run`
+- emits honest `completed`, `partial`, or `failed` status without treating timeouts or skipped profiles as clean
+- unions accepted reports with execution-scoped ids while keeping cross-analyzer findings independent
+- revalidates repository scope and state, manifest bytes, profiles, executables, and snapshot integrity before release
+- applies optional local secret sanitization to the two-section orchestration/evidence output
+
+The supported class is self-contained source-only offline analyzers. Build-coupled tools stay in trusted CI or another prepared environment and enter review as explicitly supplied precomputed evidence. Entrypoint hashes are exact authorization, not a complete arbitrary-analyzer dependency closure or operating-system sandbox. See [static-analysis-orchestration.md](static-analysis-orchestration.md) for the manifest, ASCII workflow, state tables, budgets, and review contract.
