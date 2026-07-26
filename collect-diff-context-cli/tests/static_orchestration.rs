@@ -1258,3 +1258,262 @@ fn budgets_record_findings_and_shared_snapshot_exactly_once() {
         output.orchestration.snapshot.bytes
     );
 }
+
+#[cfg(unix)]
+fn scheduler_analyzer(directory: &Path, name: &str, behavior: &str) -> PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+
+    let path = directory.join(format!("{name}-scheduler.sh"));
+    let action = match behavior {
+        "success" => format!(
+            "printf '%s\\n' '{{\"schema_version\":1,\"kind\":\"static_analysis_input\",\"scope_fingerprint\":\"'\"$PRE_COMMIT_REVIEW_SCOPE_FINGERPRINT\"'\",\"tool\":{{\"name\":\"{name}\",\"version\":\"1.0\"}},\"status\":\"completed\",\"findings\":[]}}'\n"
+        ),
+        "failed" => "exit 7\n".to_string(),
+        "timeout" => "sleep 2\n".to_string(),
+        "output-limit" => "head -c 1025 /dev/zero | tr '\\000' x\n".to_string(),
+        "invalid-output" => "printf 'not-json\\n'\n".to_string(),
+        _ => panic!("unknown scheduler behavior: {behavior}"),
+    };
+    fs::write(
+        &path,
+        format!(
+            "#!/bin/sh\nset -eu\nlog_path=$1\nprintf '{name}\\n' >> \"$log_path\"\n{action}"
+        ),
+    )
+    .unwrap();
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+    path
+}
+
+#[cfg(unix)]
+#[test]
+fn scheduler_continues_tool_local_failures_in_manifest_order() {
+    use collect_diff_context_cli::static_analysis::contracts::ExecutionStatus;
+
+    let repository = preflight_repository();
+    let fixtures = TempDir::new().unwrap();
+    let log = fixtures.path().join("scheduler.log");
+    let cases = [
+        ("failed", "failed", 30, 4096),
+        ("timeout", "timeout", 1, 4096),
+        ("output-limit", "output-limit", 30, 1024),
+        ("invalid-output", "invalid-output", 30, 4096),
+        ("accepted", "success", 30, 4096),
+    ];
+    let mut profile_paths = Vec::new();
+    for (name, behavior, timeout, output) in cases {
+        let analyzer = scheduler_analyzer(fixtures.path(), name, behavior);
+        let (profile, hash) =
+            write_budget_profile(fixtures.path(), name, &analyzer, &[&log], timeout, output);
+        profile_paths.push((name.to_string(), profile, hash));
+    }
+    let manifest_profiles = profile_paths
+        .iter()
+        .map(|(name, path, hash)| (name.as_str(), path.as_path(), hash.as_str()))
+        .collect::<Vec<_>>();
+    let (manifest, manifest_hash) = write_budget_manifest(
+        fixtures.path(),
+        &manifest_profiles,
+        10,
+        10485760,
+        100,
+    );
+
+    let output = execute(execution_request(
+        repository.path(),
+        &manifest,
+        &manifest_hash,
+    ))
+    .unwrap();
+
+    let statuses = output
+        .orchestration
+        .runs
+        .iter()
+        .map(|run| match run {
+            OrchestrationRun::Executed { execution, .. } => execution.execution.status,
+            other => panic!("expected executed run: {other:?}"),
+        })
+        .collect::<Vec<_>>();
+    assert_eq!(
+        statuses,
+        vec![
+            ExecutionStatus::Failed,
+            ExecutionStatus::Timeout,
+            ExecutionStatus::OutputLimit,
+            ExecutionStatus::InvalidOutput,
+            ExecutionStatus::Completed,
+        ]
+    );
+    assert_eq!(output.orchestration.status, OrchestrationStatus::Partial);
+    assert_eq!(output.evidence.reports.len(), 5);
+    assert_eq!(
+        fs::read_to_string(&log).unwrap(),
+        "failed\ntimeout\noutput-limit\ninvalid-output\naccepted\n"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn scheduler_reports_failed_when_no_analyzer_result_is_accepted() {
+    let repository = preflight_repository();
+    let fixtures = TempDir::new().unwrap();
+    let log = fixtures.path().join("failed-scheduler.log");
+    let failed = scheduler_analyzer(fixtures.path(), "failed-only", "failed");
+    let invalid = scheduler_analyzer(fixtures.path(), "invalid-only", "invalid-output");
+    let (failed_profile, failed_hash) = write_budget_profile(
+        fixtures.path(),
+        "failed-only",
+        &failed,
+        &[&log],
+        30,
+        4096,
+    );
+    let (invalid_profile, invalid_hash) = write_budget_profile(
+        fixtures.path(),
+        "invalid-only",
+        &invalid,
+        &[&log],
+        30,
+        4096,
+    );
+    let (manifest, manifest_hash) = write_budget_manifest(
+        fixtures.path(),
+        &[
+            ("failed-only", &failed_profile, &failed_hash),
+            ("invalid-only", &invalid_profile, &invalid_hash),
+        ],
+        60,
+        10485760,
+        100,
+    );
+
+    let output = execute(execution_request(
+        repository.path(),
+        &manifest,
+        &manifest_hash,
+    ))
+    .unwrap();
+
+    assert_eq!(output.orchestration.status, OrchestrationStatus::Failed);
+    assert_eq!(output.evidence.reports.len(), 2);
+    assert_eq!(output.evidence.counts.blocking_candidates, 0);
+}
+
+#[cfg(unix)]
+fn drifting_analyzer(
+    directory: &Path,
+    name: &str,
+    target: &Path,
+    repository_drift: bool,
+) -> PathBuf {
+    use std::os::unix::fs::PermissionsExt;
+
+    let path = directory.join(format!("{name}-drift.sh"));
+    let action = if repository_drift {
+        format!("printf 'drift\\n' >> '{}'\n", target.display())
+    } else {
+        "printf '\\n' >> \"$1\"\n".to_string()
+    };
+    fs::write(
+        &path,
+        format!(
+            "#!/bin/sh\nset -eu\n{action}printf '%s\\n' '{{\"schema_version\":1,\"kind\":\"static_analysis_input\",\"scope_fingerprint\":\"'\"$PRE_COMMIT_REVIEW_SCOPE_FINGERPRINT\"'\",\"tool\":{{\"name\":\"{name}\",\"version\":\"1.0\"}},\"status\":\"completed\",\"findings\":[]}}'\n"
+        ),
+    )
+    .unwrap();
+    fs::set_permissions(&path, fs::Permissions::from_mode(0o755)).unwrap();
+    path
+}
+
+#[cfg(unix)]
+#[test]
+fn scheduler_releases_no_artifact_after_authorization_or_repository_drift() {
+    for drift in ["manifest", "profile", "entrypoint", "repository"] {
+        let repository = preflight_repository();
+        let fixtures = TempDir::new().unwrap();
+        let placeholder = fixtures.path().join("placeholder");
+        fs::write(&placeholder, "placeholder\n").unwrap();
+        let analyzer = drifting_analyzer(
+            fixtures.path(),
+            drift,
+            &repository.path().join("candidate.txt"),
+            drift == "repository",
+        );
+        let argument_target = match drift {
+            "entrypoint" => analyzer.as_path(),
+            _ => placeholder.as_path(),
+        };
+        let (profile, profile_hash) = write_budget_profile(
+            fixtures.path(),
+            drift,
+            &analyzer,
+            &[argument_target],
+            30,
+            4096,
+        );
+        let (manifest, manifest_hash) = write_budget_manifest(
+            fixtures.path(),
+            &[(drift, &profile, &profile_hash)],
+            60,
+            10485760,
+            100,
+        );
+        if drift == "manifest" {
+            let analyzer = drifting_analyzer(fixtures.path(), drift, &manifest, false);
+            let (rewritten_profile, rewritten_hash) = write_budget_profile(
+                fixtures.path(),
+                drift,
+                &analyzer,
+                &[&manifest],
+                30,
+                4096,
+            );
+            let (rewritten_manifest, rewritten_manifest_hash) = write_budget_manifest(
+                fixtures.path(),
+                &[(drift, &rewritten_profile, &rewritten_hash)],
+                60,
+                10485760,
+                100,
+            );
+            assert!(execute(execution_request(
+                repository.path(),
+                &rewritten_manifest,
+                &rewritten_manifest_hash,
+            ))
+            .is_err());
+            continue;
+        }
+        if drift == "profile" {
+            let analyzer = drifting_analyzer(fixtures.path(), drift, &profile, false);
+            let (rewritten_profile, rewritten_hash) = write_budget_profile(
+                fixtures.path(),
+                drift,
+                &analyzer,
+                &[&profile],
+                30,
+                4096,
+            );
+            let (rewritten_manifest, rewritten_manifest_hash) = write_budget_manifest(
+                fixtures.path(),
+                &[(drift, &rewritten_profile, &rewritten_hash)],
+                60,
+                10485760,
+                100,
+            );
+            assert!(execute(execution_request(
+                repository.path(),
+                &rewritten_manifest,
+                &rewritten_manifest_hash,
+            ))
+            .is_err());
+            continue;
+        }
+        assert!(execute(execution_request(
+            repository.path(),
+            &manifest,
+            &manifest_hash,
+        ))
+        .is_err());
+    }
+}
