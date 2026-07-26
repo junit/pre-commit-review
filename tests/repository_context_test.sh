@@ -151,6 +151,7 @@ mkdir -p "$command_dir" "$cache_dir"
 : >"$exec_log"
 : >"$forbidden_log"
 real_git="$(command -v git)"
+security_status=0
 cat >"$command_dir/git" <<'EOF_GIT_SHIM'
 #!/usr/bin/env bash
 printf '%s\n' git >>"$PCR_EXEC_LOG"
@@ -184,7 +185,11 @@ done
   NO_PROXY='' \
     "$context_bin" collect --source staged \
       --expect-scope "$security_fingerprint" --mode fast
-) >"$tmp_dir/security-context.json"
+) >"$tmp_dir/security-context.json" || security_status=$?
+case "$security_status" in
+  0|3) ;;
+  *) fail "security fixture exited with status $security_status" ;;
+esac
 grep -Fq '"kind":"impact_context"' "$tmp_dir/security-context.json" \
   || fail 'security fixture did not emit impact context'
 [ ! -s "$forbidden_log" ] || fail 'fast collection invoked a forbidden executable'

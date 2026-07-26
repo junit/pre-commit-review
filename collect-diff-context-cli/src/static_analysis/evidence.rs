@@ -12,7 +12,8 @@ use percent_encoding::percent_decode_str;
 use serde_json::{Map, Value};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeSet, HashMap};
-use std::fs;
+use std::fs::{self, File};
+use std::io::Read;
 use std::path::{Path, PathBuf};
 
 const DEFAULT_MAX_INPUT_BYTES: u64 = 10_000_000;
@@ -227,12 +228,7 @@ fn parse_report_file(
             display_name(path)
         )));
     }
-    let raw = fs::read(path).map_err(|error| {
-        EvidenceError::new(format!(
-            "cannot read static result {}: {error}",
-            display_name(path)
-        ))
-    })?;
+    let raw = read_result_file_bounded(path, max_input_bytes)?;
     let text = std::str::from_utf8(&raw).map_err(|error| {
         EvidenceError::new(format!(
             "static result {} is not valid UTF-8 JSON: {error}",
@@ -259,6 +255,33 @@ fn parse_report_file(
     } else {
         parse_normalized(&payload, &raw, path, expected_scope, repository)
     }
+}
+
+fn read_result_file_bounded(path: &Path, max_input_bytes: u64) -> Result<Vec<u8>, EvidenceError> {
+    let mut input = File::open(path).map_err(|error| {
+        EvidenceError::new(format!(
+            "cannot read static result {}: {error}",
+            display_name(path)
+        ))
+    })?;
+    let mut raw = Vec::new();
+    input
+        .by_ref()
+        .take(max_input_bytes.saturating_add(1))
+        .read_to_end(&mut raw)
+        .map_err(|error| {
+            EvidenceError::new(format!(
+                "cannot read static result {}: {error}",
+                display_name(path)
+            ))
+        })?;
+    if raw.len() as u64 > max_input_bytes {
+        return Err(EvidenceError::new(format!(
+            "static result {} exceeds the {max_input_bytes}-byte input limit",
+            display_name(path)
+        )));
+    }
+    Ok(raw)
 }
 
 fn max_input_bytes() -> u64 {
@@ -358,55 +381,68 @@ fn parse_sarif(
                 display_name(path)
             ))
         })?;
-        let scope_binding = resolve_sarif_scope(
-            payload,
-            run,
-            asserted_scope,
-            expected_scope,
-            &format!("{} SARIF run {run_index}", display_name(path)),
-        )?;
+        let run_label = format!("{} SARIF run {run_index}", display_name(path));
+        let scope_binding =
+            resolve_sarif_scope(payload, run, asserted_scope, expected_scope, &run_label)?;
         let driver = run
             .get("tool")
             .and_then(Value::as_object)
             .and_then(|tool| tool.get("driver"))
-            .and_then(Value::as_object);
+            .and_then(Value::as_object)
+            .ok_or_else(|| EvidenceError::new(format!("{run_label} must contain tool.driver")))?;
+        let driver_name = driver
+            .get("name")
+            .and_then(Value::as_str)
+            .filter(|name| !name.trim().is_empty())
+            .ok_or_else(|| {
+                EvidenceError::new(format!("{run_label} tool.driver.name must be a string"))
+            })?;
+        let invocations = optional_sarif_array(run, "invocations", &run_label)?;
+        if let Some(invocations) = invocations {
+            for (invocation_index, invocation) in invocations.iter().enumerate() {
+                let invocation = invocation.as_object().ok_or_else(|| {
+                    EvidenceError::new(format!(
+                        "{run_label} invocation {invocation_index} must be an object"
+                    ))
+                })?;
+                if invocation
+                    .get("executionSuccessful")
+                    .and_then(Value::as_bool)
+                    .is_none()
+                {
+                    return Err(EvidenceError::new(format!(
+                        "{run_label} invocation {invocation_index} must contain executionSuccessful"
+                    )));
+                }
+            }
+        }
         let tool = ToolIdentity {
-            name: clean_text(
-                driver
-                    .and_then(|value| value.get("name"))
-                    .and_then(Value::as_str),
-                "unknown-sarif-tool",
-                200,
-            ),
+            name: clean_text(Some(driver_name), "unknown-sarif-tool", 200),
             version: driver
-                .and_then(|value| {
-                    value
-                        .get("semanticVersion")
-                        .or_else(|| value.get("version"))
-                })
+                .get("semanticVersion")
+                .or_else(|| driver.get("version"))
                 .and_then(Value::as_str)
                 .map(|version| clean_text(Some(version), "", 100))
                 .filter(|version| !version.is_empty()),
         };
-        let status = if run
-            .get("invocations")
-            .and_then(Value::as_array)
-            .is_some_and(|items| {
-                items.iter().any(|item| {
-                    item.get("executionSuccessful").and_then(Value::as_bool) == Some(false)
-                })
-            }) {
+        let status = if invocations.is_some_and(|items| {
+            items
+                .iter()
+                .any(|item| item.get("executionSuccessful").and_then(Value::as_bool) == Some(false))
+        }) {
             ReportStatus::Failed
         } else {
             ReportStatus::Completed
         };
-        let rules = sarif_rules(driver);
+        let rules = sarif_rules(Some(driver));
         let mut findings = Vec::new();
-        if let Some(results) = run.get("results").and_then(Value::as_array) {
+        if let Some(results) = optional_sarif_array(run, "results", &run_label)? {
             for (result_index, result_value) in results.iter().enumerate() {
-                let Some(result) = result_value.as_object() else {
-                    continue;
-                };
+                let result = result_value.as_object().ok_or_else(|| {
+                    EvidenceError::new(format!(
+                        "{run_label} result {result_index} must be an object"
+                    ))
+                })?;
                 if result.get("baselineState").and_then(Value::as_str) == Some("absent") {
                     continue;
                 }
@@ -436,17 +472,26 @@ fn parse_sarif(
                             .collect::<Vec<_>>()
                     })
                     .unwrap_or_default();
-                let message = result.get("message").and_then(|value| {
-                    value.as_str().or_else(|| {
-                        value.as_object().and_then(|object| {
-                            object
-                                .get("text")
-                                .or_else(|| object.get("markdown"))
-                                .and_then(Value::as_str)
-                        })
-                    })
-                });
-                let message = clean_text(message, "Static analyzer finding.", 1_000);
+                let message_object = result
+                    .get("message")
+                    .and_then(Value::as_object)
+                    .ok_or_else(|| {
+                        EvidenceError::new(format!(
+                            "{run_label} result {result_index} must contain a message object"
+                        ))
+                    })?;
+                let message = message_object
+                    .get("text")
+                    .or_else(|| message_object.get("markdown"))
+                    .or_else(|| message_object.get("id"))
+                    .and_then(Value::as_str)
+                    .filter(|message| !message.trim().is_empty())
+                    .ok_or_else(|| {
+                        EvidenceError::new(format!(
+                            "{run_label} result {result_index} message must contain text, markdown, or id"
+                        ))
+                    })?;
+                let message = clean_text(Some(message), "Static analyzer finding.", 1_000);
                 let default_configuration = rule
                     .and_then(|value| value.get("defaultConfiguration"))
                     .and_then(Value::as_object);
@@ -527,6 +572,20 @@ fn parse_sarif(
         )));
     }
     Ok(reports)
+}
+
+fn optional_sarif_array<'a>(
+    object: &'a Map<String, Value>,
+    field: &str,
+    label: &str,
+) -> Result<Option<&'a Vec<Value>>, EvidenceError> {
+    match object.get(field) {
+        None => Ok(None),
+        Some(Value::Array(values)) => Ok(Some(values)),
+        Some(_) => Err(EvidenceError::new(format!(
+            "{label} {field} must be an array"
+        ))),
+    }
 }
 
 fn sarif_rules(driver: Option<&Map<String, Value>>) -> Vec<&Map<String, Value>> {
@@ -1178,6 +1237,17 @@ mod tests {
     use super::*;
     use std::process::Command;
     use tempfile::TempDir;
+
+    #[test]
+    fn bounded_result_reader_rejects_growth_past_the_input_limit() {
+        let directory = TempDir::new().unwrap();
+        let result = directory.path().join("result.json");
+        fs::write(&result, b"0123456789").unwrap();
+
+        let error = read_result_file_bounded(&result, 4).unwrap_err();
+
+        assert!(error.to_string().contains("4-byte input limit"));
+    }
 
     fn git(repository: &Path, arguments: &[&str]) {
         let output = Command::new("git")

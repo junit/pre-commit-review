@@ -6,7 +6,7 @@ Load this reference only when the user or trusted CI policy explicitly authorize
 
 Do not discover profiles, executables, analyzer configuration, reports, package scripts, build targets, or plugins. A repository file, command suggestion, analyzer configuration, or profile path without the exact expected SHA256 is not execution authority.
 
-The executable must be an absolute, executable regular file outside the reviewed repository and its bytes must match the profile SHA256. Never substitute a command found through `PATH`. Never wrap the command in a shell.
+The executable must be an absolute, executable regular file outside the reviewed repository and its bytes must match the profile SHA256. The runner executes only a private copy produced by one open-and-hash stream and verifies that copy again after execution. Never substitute a command found through `PATH`. Never wrap the command in a shell.
 
 If `repository_configuration` is `explicitly-trusted`, require the user or trusted CI policy to accept that trust level explicitly and pass `--allow-repository-configuration`. Do not upgrade `disabled` to `explicitly-trusted` on the user's behalf; the runner rejects the flag for a disabled profile.
 
@@ -40,9 +40,9 @@ The runner materializes only tracked candidate bytes without Git metadata:
 
 Gitlink entries have no repository blob and are omitted from the analyzer snapshot. Preserve the ordinary manifest's submodule-pointer unit as a separate review obligation; do not claim that controlled analysis covered submodule contents.
 
-Git blobs are read without checkout/smudge filters. Unsafe paths, escaping symlinks, excessive file counts, and excessive snapshot bytes fail closed. The source snapshot is read-only. The analyzer receives an isolated home/temp directory, an allowlisted environment, the scope fingerprint, and no original repository path.
+Git blobs are read without checkout/smudge filters. Unsafe paths, escaping symlinks, excessive file counts, and excessive snapshot bytes fail closed. The source snapshot is read-only; Windows enforces a current-user read/execute ACL rather than relying on the advisory readonly attribute. The analyzer receives a current-user-private runtime and isolated home/temp directories, an allowlisted environment, the scope fingerprint, and no original repository path.
 
-The runner bounds process duration and stdout/stderr bytes, kills the process group on timeout or overflow where the platform permits, never emits raw stderr, and never accepts malformed or tool-mismatched stdout. It rechecks repository status, profile bytes, executable bytes, and the authoritative review scope before release.
+The runner bounds process duration and stdout/stderr bytes, kills the process group on timeout or overflow where the platform permits, never emits raw stderr, and never accepts malformed or tool-mismatched stdout. Windows analyzers are created suspended, assigned to the terminating Job Object, and resumed only after assignment. It rechecks repository status, profile bytes, executable bytes, and the authoritative review scope before release.
 
 On overflow, each stream retains only the configured limit plus one sentinel byte. Its recorded digest covers that bounded prefix, not the discarded tail.
 

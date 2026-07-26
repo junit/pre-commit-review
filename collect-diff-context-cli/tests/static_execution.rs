@@ -117,6 +117,72 @@ fn execution_repository() -> TempDir {
 }
 
 #[cfg(unix)]
+#[test]
+fn snapshot_file_limit_excludes_staged_gitlinks() {
+    let repository = execution_repository();
+    let head = Command::new("git")
+        .args(["rev-parse", "HEAD"])
+        .current_dir(repository.path())
+        .output()
+        .unwrap();
+    assert!(head.status.success());
+    let head = String::from_utf8(head.stdout).unwrap();
+    git(
+        repository.path(),
+        &[
+            "update-index",
+            "--add",
+            "--cacheinfo",
+            &format!("160000,{},vendor/submodule", head.trim()),
+        ],
+    );
+
+    let snapshot = CandidateSnapshot::materialize(
+        repository.path(),
+        collect_diff_context_cli::review_scope::ReviewSource::Staged,
+        SnapshotLimits {
+            max_files: 1,
+            max_bytes: 1024,
+        },
+    )
+    .unwrap();
+
+    assert_eq!(snapshot.files, 1);
+    assert!(!snapshot.path().join("vendor/submodule").exists());
+}
+
+#[cfg(unix)]
+#[test]
+fn snapshot_file_limit_excludes_deleted_unstaged_paths() {
+    let repository = TempDir::new().unwrap();
+    git(repository.path(), &["init", "-q"]);
+    git(
+        repository.path(),
+        &["config", "user.email", "review@example.test"],
+    );
+    git(repository.path(), &["config", "user.name", "Review Test"]);
+    fs::write(repository.path().join("present.txt"), "present\n").unwrap();
+    fs::write(repository.path().join("deleted.txt"), "deleted\n").unwrap();
+    git(repository.path(), &["add", "present.txt", "deleted.txt"]);
+    git(repository.path(), &["commit", "-qm", "base"]);
+    fs::remove_file(repository.path().join("deleted.txt")).unwrap();
+
+    let snapshot = CandidateSnapshot::materialize(
+        repository.path(),
+        collect_diff_context_cli::review_scope::ReviewSource::Unstaged,
+        SnapshotLimits {
+            max_files: 1,
+            max_bytes: 1024,
+        },
+    )
+    .unwrap();
+
+    assert_eq!(snapshot.files, 1);
+    assert!(snapshot.path().join("present.txt").exists());
+    assert!(!snapshot.path().join("deleted.txt").exists());
+}
+
+#[cfg(unix)]
 fn sha256_file(path: &Path) -> String {
     let bytes = fs::read(path).unwrap();
     format!("{:x}", Sha256::digest(bytes))
@@ -583,6 +649,33 @@ fn executor_rejects_prepared_artifact_replacement_before_spawn() {
 }
 
 #[cfg(unix)]
+#[test]
+fn executor_runs_a_private_pinned_executable_copy() {
+    let marker_root = TempDir::new().unwrap();
+    let invoked_path = marker_root.path().join("invoked-path");
+    let script = "#!/bin/sh\nprintf '%s' \"$0\" > \"$1\"\n";
+    let (_repository, _tools, snapshot, prepared) =
+        prepared_fixture(script, json!([invoked_path]), json!([0]));
+
+    let outcome = execute_prepared(
+        &prepared,
+        &snapshot,
+        collect_diff_context_cli::review_scope::ReviewSource::Staged,
+        "0123456789abcdef0123456789abcdef01234567",
+        ExecutionLimits {
+            timeout: Duration::from_secs(2),
+            max_stream_output_bytes: 4096,
+            max_combined_output_bytes: 8192,
+        },
+    )
+    .unwrap();
+
+    let invoked_path = PathBuf::from(fs::read_to_string(invoked_path).unwrap());
+    assert!(invoked_path.starts_with(outcome.runtime_path()));
+    assert_ne!(invoked_path, prepared.executable_path);
+}
+
+#[cfg(unix)]
 fn run_fixture(
     script: &str,
     success_exit_codes: serde_json::Value,
@@ -743,6 +836,51 @@ printf '{"schema_version":1,"kind":"static_analysis_input","scope_fingerprint":"
         assert!(artifact.evidence.findings.is_empty());
         assert_eq!(artifact.evidence.counts.blocking_candidates, 0);
     }
+}
+
+#[cfg(unix)]
+#[test]
+fn run_artifact_rejects_success_output_in_an_unapproved_format() {
+    let sarif_script = r#"#!/bin/sh
+printf '{"version":"2.1.0","runs":[{"properties":{"preCommitReviewScopeFingerprint":"%s"},"tool":{"driver":{"name":"fixture","version":"1.0"}},"results":[]}]}' "$PRE_COMMIT_REVIEW_SCOPE_FINGERPRINT"
+"#;
+    let (repository, _tools, profile, profile_hash, fingerprint) =
+        run_fixture(sarif_script, json!([0]));
+    let artifact = run_analysis(run_request(
+        repository.path(),
+        profile,
+        profile_hash,
+        fingerprint,
+    ))
+    .unwrap();
+
+    assert_eq!(
+        artifact.execution.execution.status,
+        ExecutionStatus::InvalidOutput
+    );
+    assert!(!artifact.execution.execution.result_accepted);
+
+    let normalized_script = r#"#!/bin/sh
+printf '{"schema_version":1,"kind":"static_analysis_input","scope_fingerprint":"%s","tool":{"name":"fixture","version":"1.0"},"status":"completed","findings":[]}' "$PRE_COMMIT_REVIEW_SCOPE_FINGERPRINT"
+"#;
+    let (repository, _tools, profile, _profile_hash, fingerprint) =
+        run_fixture(normalized_script, json!([0]));
+    let profile_hash = rewrite_profile(&profile, |value| {
+        value["output_format"] = json!("sarif");
+    });
+    let artifact = run_analysis(run_request(
+        repository.path(),
+        profile,
+        profile_hash,
+        fingerprint,
+    ))
+    .unwrap();
+
+    assert_eq!(
+        artifact.execution.execution.status,
+        ExecutionStatus::InvalidOutput
+    );
+    assert!(!artifact.execution.execution.result_accepted);
 }
 
 #[cfg(unix)]

@@ -2418,15 +2418,40 @@ scope_fingerprint() {
   run_diff --binary --full-index > "$fingerprint_diff_tmp"
   diff_length="$(wc -c < "$fingerprint_diff_tmp" | tr -d ' ')"
   {
-    printf 'pre-commit-review-diff-fingerprint-v1\0'
+    printf 'pre-commit-review-scope-fingerprint-v2\0'
     emit_fingerprint_field 'source' "$mode"
     emit_fingerprint_field 'selected-ref' "$selected_ref"
     emit_fingerprint_field 'head' "$head_oid"
     printf 'diff\0%s\0' "$diff_length"
     cat "$fingerprint_diff_tmp"
     printf '\0'
+    emit_fingerprint_field 'group-target-bytes' "$GROUP_TARGET_BYTES"
+    emit_fingerprint_field 'group-hard-bytes' "$GROUP_HARD_BYTES"
+    normalized_risk_patterns "$repo_root/.pre-commit-review/risk-paths" |
+      while IFS= read -r pattern; do
+        emit_fingerprint_field 'risk-path' "$pattern"
+      done
+    normalized_risk_patterns "$repo_root/.pre-commit-review/risk-content" |
+      while IFS= read -r pattern; do
+        emit_fingerprint_field 'risk-content' "$pattern"
+      done
   } | git hash-object --stdin
   rm -f "$fingerprint_diff_tmp"
+}
+
+normalized_risk_patterns() {
+  local patterns_file="$1"
+  [ -f "$patterns_file" ] || return 0
+  awk '
+    {
+      line=$0
+      sub(/\r$/, "", line)
+      sub(/^[[:space:]]+/, "", line)
+      sub(/[[:space:]]+$/, "", line)
+      if (line == "" || line ~ /^#/) next
+      print line
+    }
+  ' "$patterns_file" | LC_ALL=C sort -u
 }
 
 file_content_fingerprint_from_file() {

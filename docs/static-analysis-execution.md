@@ -21,6 +21,9 @@ profile and executable integrity checks
 temporary tracked-file candidate snapshot
           |
           v
+private hash-verified executable copy
+          |
+          v
 direct process execution (no shell)
           |
           v
@@ -104,9 +107,11 @@ Only Git-tracked files are materialized, without `.git`, untracked files, ignore
 
 Gitlink entries are omitted because they do not contain a repository blob to materialize. The ordinary review manifest still records the submodule pointer change; controlled analyzer evidence does not cover the submodule's internal contents.
 
-The snapshot rejects unsafe paths and symlinks that escape its root, enforces profile file/byte limits, records a deterministic content digest, and is made read-only before execution. Analyzer cache and temporary paths use an isolated runtime directory.
+The snapshot rejects unsafe paths and symlinks that escape its root, enforces profile file/byte limits, records a deterministic content digest, and is made read-only before execution. Unix permissions remove write access. On Windows, the runner replaces inherited access with a current-user read/execute ACL and verifies that files cannot be rewritten or deleted and directories cannot accept new files. Analyzer cache and temporary paths use an isolated current-user-private runtime directory.
 
-The executable must be an absolute executable regular file outside the reviewed repository. It is invoked directly with the exact argument array; no shell expansion occurs. The child receives an allowlisted environment with an isolated home/temp directory, the source type, and the review fingerprint. Original repository paths and ambient credentials are not forwarded.
+The executable must be an absolute executable regular file outside the reviewed repository. The runner opens it once, streams it into the private runtime while computing SHA256, rejects any mismatch, applies read/execute-only permissions, and invokes that fixed copy with the exact argument array. It verifies the copy again after execution, so path replacement of the original executable cannot change the bytes that run. No shell expansion occurs. The child receives an allowlisted environment with an isolated home/temp directory, the source type, and the review fingerprint. Original repository paths and ambient credentials are not forwarded.
+
+Timeout and output-limit termination covers the analyzer process tree. On Windows, the analyzer is created suspended, assigned to a terminating Job Object, and only then resumed so startup-time descendants cannot escape the job.
 
 This is process isolation for a trusted tool, not a hostile-code security sandbox. A malicious pinned executable could still probe the host through native APIs. Only authorize binaries and repository configuration whose exact bytes and behavior are trusted.
 

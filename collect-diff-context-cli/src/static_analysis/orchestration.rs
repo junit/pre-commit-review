@@ -135,10 +135,13 @@ pub fn prepare_orchestration(
         .map_err(|error| OrchestrationError::new(error.to_string()))?;
 
     let mut profiles = Vec::with_capacity(manifest.profiles.len());
+    let mut has_explicitly_trusted_profile = false;
     for profile_ref in &manifest.profiles {
         let profile_path = Path::new(&profile_ref.path);
         let repository_configuration =
             profile_repository_configuration(profile_path, &profile_ref.sha256)?;
+        has_explicitly_trusted_profile |=
+            repository_configuration == RepositoryConfiguration::ExplicitlyTrusted;
         let allow_profile_configuration = request.allow_repository_configuration
             && repository_configuration == RepositoryConfiguration::ExplicitlyTrusted;
         let prepared = prepare_profile(
@@ -152,6 +155,11 @@ pub fn prepare_orchestration(
             profile_id: profile_ref.profile_id.clone(),
             prepared,
         });
+    }
+    if request.allow_repository_configuration && !has_explicitly_trusted_profile {
+        return Err(OrchestrationError::new(
+            "--allow-repository-configuration is valid only when at least one profile is explicitly trusted",
+        ));
     }
 
     let manifest_path = fs::canonicalize(&request.manifest_path).map_err(|error| {

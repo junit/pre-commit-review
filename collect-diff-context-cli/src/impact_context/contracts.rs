@@ -456,18 +456,27 @@ impl ImpactContext {
                         validate_hex(sha256, &[64], "unit content SHA256")?;
                     }
                     (None, None)
-                        if unit.syntax_status == UnitStatus::Unavailable
-                            && unit.text_status == UnitStatus::Unavailable
-                            && unit.limitation_ids.iter().any(|limitation_id| {
-                                limitations
-                                    .get(limitation_id.as_str())
-                                    .is_some_and(|limitation| {
-                                        limitation.code == "candidate-read-unavailable"
-                                    })
-                            }) => {}
+                        if unit.limitation_ids.iter().any(|limitation_id| {
+                            limitations
+                                .get(limitation_id.as_str())
+                                .is_some_and(|limitation| {
+                                    (unit.syntax_status == UnitStatus::Unavailable
+                                        && unit.text_status == UnitStatus::Unavailable
+                                        && limitation.code == "candidate-read-unavailable")
+                                        || (unit.syntax_status == UnitStatus::BudgetExhausted
+                                            && unit.text_status == UnitStatus::BudgetExhausted
+                                            && matches!(
+                                                limitation.code.as_str(),
+                                                "file-byte-budget-exhausted"
+                                                    | "total-byte-budget-exhausted"
+                                                    | "changed-file-budget-exhausted"
+                                                    | "deadline-exhausted"
+                                            ))
+                                })
+                        }) => {}
                     (None, None) => {
                         return invalid(
-                            "present unit without content metadata must report candidate-read-unavailable",
+                            "present unit without content metadata must report candidate-read-unavailable or a preparation budget exhaustion",
                         )
                     }
                     _ => {

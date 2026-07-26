@@ -152,8 +152,9 @@ pub fn build_impact_context(
         let mut content_bytes = None;
         let mut source_bytes = None;
         let mut binary = false;
+        let mut read_budget_exhausted = false;
         if file.presence == CandidatePresence::Present {
-            match candidate.read(&file.path) {
+            match candidate.read_bounded(&file.path, request.budget.max_file_bytes) {
                 Ok(content) => {
                     binary = content.binary;
                     content_sha256 = Some(content.sha256.clone());
@@ -161,6 +162,14 @@ pub fn build_impact_context(
                     candidate_input_sizes
                         .insert(file.path.as_str().to_string(), content.bytes.len());
                     source_bytes = Some(content.bytes);
+                }
+                Err(error) if error.budget_limitation_code().is_some() => {
+                    read_budget_exhausted = true;
+                    let code = error
+                        .budget_limitation_code()
+                        .unwrap_or("file-byte-budget-exhausted");
+                    let id = resource_limitation(&mut limitations, code, Some(file.path.as_str()));
+                    unit_limitation_ids.push(id);
                 }
                 Err(error) => {
                     let id = insert_limitation(
@@ -216,6 +225,10 @@ pub fn build_impact_context(
                 Some(file.path.as_str()),
             );
             unit_limitation_ids.push(id);
+        } else if read_budget_exhausted {
+            syntax_eligible = false;
+            syntax_status = UnitStatus::BudgetExhausted;
+            text_status = UnitStatus::BudgetExhausted;
         } else {
             match file.presence {
                 CandidatePresence::Deleted => {
@@ -324,10 +337,11 @@ pub fn build_impact_context(
                                         missing_node_count = output.missing_node_count;
                                         parse_affected_ranges = output.affected_ranges.clone();
                                         parse_quality = Some(output.parse_quality);
-                                        let budget_limited = output
-                                            .limitation_codes
-                                            .iter()
-                                            .any(|code| code.ends_with("budget-exhausted"));
+                                        let budget_limited =
+                                            output.limitation_codes.iter().any(|code| {
+                                                code.ends_with("budget-exhausted")
+                                                    || code == "deadline-exhausted"
+                                            });
                                         syntax_status = if budget_limited {
                                             UnitStatus::BudgetExhausted
                                         } else if output.parse_quality == ParseQuality::Clean {
@@ -350,6 +364,21 @@ pub fn build_impact_context(
                                             syntax_stats.limitation_ids.push(id);
                                         }
                                         syntax_output = Some(output);
+                                    }
+                                    Err(_) if tracker.deadline_exhausted() => {
+                                        syntax_status = UnitStatus::BudgetExhausted;
+                                        let id = insert_limitation(
+                                            &mut limitations,
+                                            "deadline-exhausted",
+                                            Some(&syntax_provider_id),
+                                            Some(file.path.as_str()),
+                                            None,
+                                            "The fast-path structural deadline was exhausted.",
+                                            "Earlier accepted facts remain valid; this unit may be incomplete.",
+                                            true,
+                                        );
+                                        unit_limitation_ids.push(id.clone());
+                                        syntax_stats.limitation_ids.push(id);
                                     }
                                     Err(error) => {
                                         syntax_status = UnitStatus::Unavailable;
@@ -890,7 +919,7 @@ pub fn enforce_presentation_budget(
 
 fn output_exceeds_budget(context: &mut ImpactContext, maximum: usize) -> bool {
     update_output_bytes(context);
-    context.metrics.output_bytes > maximum
+    presentation_budget_len(context) > maximum
 }
 
 fn update_output_bytes(context: &mut ImpactContext) {
@@ -903,6 +932,16 @@ fn serialized_len(context: &ImpactContext) -> usize {
     serde_json::to_vec(context)
         .map(|bytes| bytes.len())
         .unwrap_or(usize::MAX)
+}
+
+fn presentation_budget_len(context: &ImpactContext) -> usize {
+    let mut normalized = context.clone();
+    normalized.metrics.elapsed_ms = u64::MAX;
+    for provider in &mut normalized.providers {
+        provider.elapsed_ms = u64::MAX;
+    }
+    update_output_bytes(&mut normalized);
+    normalized.metrics.output_bytes
 }
 
 fn summary_priority(kind: crate::impact_context::contracts::SummaryKind) -> u8 {

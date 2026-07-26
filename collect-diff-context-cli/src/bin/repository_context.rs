@@ -1,18 +1,19 @@
-use collect_diff_context_cli::candidate::GitCandidateContent;
+use collect_diff_context_cli::candidate::{CandidateOpenLimits, GitCandidateContent};
 use collect_diff_context_cli::impact_context::budget::ImpactBudget;
 use collect_diff_context_cli::impact_context::contracts::{
-    Completeness, ImpactContext, ImpactMode, ImpactStatus, Limitation, ProviderStatus, UnitStatus,
+    Completeness, ImpactContext, ImpactMode, ImpactPresence, ImpactStatus, Limitation,
+    ProviderStatus, UnitStatus,
 };
 use collect_diff_context_cli::impact_context::engine::{
     build_impact_context, enforce_presentation_budget, ImpactRequest,
 };
 use collect_diff_context_cli::impact_context::normalizer::stable_id;
 use collect_diff_context_cli::review_scope::{
-    open_authoritative_scope, revalidate_scope, ReviewSource, ScopeRequest,
+    open_authoritative_scope_bounded, revalidate_scope_bounded, ReviewSource, ScopeRequest,
 };
 use collect_diff_context_cli::secret_scan;
 use std::env;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 const HELP: &str = "Usage: repository-context-cli collect --source <staged|unstaged|branch> --expect-scope <fingerprint> --mode fast [options]\n";
 const COLLECT_HELP: &str = "Usage: repository-context-cli collect --source <staged|unstaged|branch> --expect-scope <fingerprint> --mode fast [options]\n\nOptions:\n  --deadline-ms <1..750>\n  --max-changed-files <1..30>\n  --max-file-bytes <1..2097152>\n  --max-total-bytes <1..8388608>\n  --max-nodes <1..250000>\n  --max-facts <1..5000>\n  --max-edges <1..500>\n  --max-output-bytes <1..1048576>\n  -h, --help\n";
@@ -171,30 +172,47 @@ fn parse_fingerprint(value: &str) -> Result<String, String> {
 
 fn run_collect(arguments: CollectArgs) -> i32 {
     let maximum_output_bytes = arguments.budget.max_output_bytes;
+    let total_deadline = arguments.budget.deadline;
+    let collection_started = Instant::now();
     let repository = match env::current_dir() {
         Ok(repository) => repository,
         Err(error) => return cli_error(&format!("cannot resolve current directory: {error}"), 2),
     };
-    let scope = match open_authoritative_scope(ScopeRequest {
-        repository,
-        source: Some(arguments.source),
-        expected_fingerprint: Some(arguments.expected_scope),
-    }) {
+    let scope = match open_authoritative_scope_bounded(
+        ScopeRequest {
+            repository,
+            source: Some(arguments.source),
+            expected_fingerprint: Some(arguments.expected_scope),
+        },
+        total_deadline.saturating_sub(collection_started.elapsed()),
+    ) {
         Ok(scope) => scope,
         Err(error) => return cli_error(&error.to_string(), 2),
     };
-    let candidate = match GitCandidateContent::open(&scope) {
+    let candidate = match GitCandidateContent::open_bounded(
+        &scope,
+        CandidateOpenLimits {
+            deadline: total_deadline.saturating_sub(collection_started.elapsed()),
+            max_changed_files: arguments.budget.max_changed_files,
+            max_file_bytes: arguments.budget.max_file_bytes,
+            max_total_bytes: arguments.budget.max_total_bytes,
+        },
+    ) {
         Ok(candidate) => candidate,
         Err(error) => return cli_error(&error.to_string(), 2),
     };
     let mut request = ImpactRequest::fast_defaults();
     request.budget = arguments.budget;
+    request.budget.deadline = total_deadline.saturating_sub(collection_started.elapsed());
     let context = match build_impact_context(&candidate, request) {
         Ok(context) => context,
         Err(error) => return cli_error(&error.to_string(), 2),
     };
 
-    if let Err(error) = revalidate_scope(&scope) {
+    if let Err(error) = revalidate_scope_bounded(
+        &scope,
+        total_deadline.saturating_sub(collection_started.elapsed()),
+    ) {
         return match render_context(
             invalidated_context(context, &error.to_string()),
             maximum_output_bytes,
@@ -290,11 +308,29 @@ fn static_limitation(code: &str, reason: &str, interpretation: &str) -> Limitati
 }
 
 fn invalidate_facts(context: &mut ImpactContext, status: ImpactStatus, limitation: &Limitation) {
+    let candidate_unavailable = context
+        .units
+        .iter()
+        .any(|unit| {
+            unit.presence == ImpactPresence::Present
+                && unit.content_sha256.is_none()
+                && unit.content_bytes.is_none()
+        })
+        .then(|| {
+            static_limitation(
+                "candidate-read-unavailable",
+                "Candidate bytes were unavailable before context invalidation.",
+                "No structural or text facts were retained for affected units.",
+            )
+        });
     context.status = status;
     context.changed_symbols.clear();
     context.impact_edges.clear();
     context.domain_summaries.clear();
     context.limitations = vec![limitation.clone()];
+    if let Some(candidate_unavailable) = candidate_unavailable.as_ref() {
+        context.limitations.push(candidate_unavailable.clone());
+    }
     for provider in &mut context.providers {
         provider.status = match status {
             ImpactStatus::Invalidated => ProviderStatus::Stale,
@@ -313,6 +349,16 @@ fn invalidate_facts(context: &mut ImpactContext, status: ImpactStatus, limitatio
         unit.parse_affected_symbol_ids.clear();
         unit.changed_symbol_ids.clear();
         unit.limitation_ids = vec![limitation.limitation_id.clone()];
+        if unit.presence == ImpactPresence::Present
+            && unit.content_sha256.is_none()
+            && unit.content_bytes.is_none()
+        {
+            if let Some(candidate_unavailable) = candidate_unavailable.as_ref() {
+                unit.limitation_ids
+                    .push(candidate_unavailable.limitation_id.clone());
+                unit.limitation_ids.sort();
+            }
+        }
     }
     context.coverage.parsed_files = 0;
     context.coverage.clean_parse_files = 0;

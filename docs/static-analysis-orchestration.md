@@ -148,4 +148,3 @@ Report and finding ids are namespaced by execution so different analyzers remain
 Only reports from an executed profile with `status: completed` and `result_accepted: true` may supply candidates. Every candidate still passes the normal source-location, changed-line, reachability, impact, framework, and blocking verification gates. Failed, timed-out, output-limited, invalid, invalidated, and not-run profiles are unavailable verification.
 
 Before releasing authoritative output, the orchestrator revalidates the repository scope, repository state, manifest bytes, every profile, every executable, and the shared snapshot integrity. Any drift fails closed and releases no authoritative orchestration/evidence pair.
-

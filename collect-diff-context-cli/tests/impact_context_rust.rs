@@ -13,7 +13,9 @@ use collect_diff_context_cli::impact_context::contracts::{
     ImpactContext, ImpactMode, ImpactPresence, ImpactStatus, ParseQuality, ProviderStatus,
     Resolution, SourceRange, UnitStatus,
 };
-use collect_diff_context_cli::impact_context::engine::{build_impact_context, ImpactRequest};
+use collect_diff_context_cli::impact_context::engine::{
+    build_impact_context, enforce_presentation_budget, ImpactRequest,
+};
 use collect_diff_context_cli::impact_context::normalizer::{
     merge_normalized_units, normalize_unit,
 };
@@ -68,12 +70,19 @@ impl CandidateContent for MemoryCandidate {
         &self.files
     }
 
-    fn read(&self, path: &RepoPath) -> Result<CandidateBytes, CandidateError> {
-        let bytes = self
+    fn read_bounded(
+        &self,
+        path: &RepoPath,
+        max_bytes: usize,
+    ) -> Result<CandidateBytes, CandidateError> {
+        let source = self
             .contents
             .get(path.as_str())
-            .expect("memory candidate path must exist")
-            .clone();
+            .expect("memory candidate path must exist");
+        if source.len() > max_bytes {
+            return Err(CandidateError::byte_limit_exceeded(path, max_bytes));
+        }
+        let bytes = source.clone();
         Ok(CandidateBytes {
             sha256: format!("{:x}", Sha256::digest(&bytes)),
             binary: bytes.iter().take(8192).any(|byte| *byte == 0),
@@ -112,7 +121,11 @@ impl CandidateContent for UnreadableCandidate {
         &self.files
     }
 
-    fn read(&self, _path: &RepoPath) -> Result<CandidateBytes, CandidateError> {
+    fn read_bounded(
+        &self,
+        _path: &RepoPath,
+        _max_bytes: usize,
+    ) -> Result<CandidateBytes, CandidateError> {
         Err(RepoPath::new("").unwrap_err())
     }
 }
@@ -143,9 +156,13 @@ impl CandidateContent for TrackingCandidate {
         self.inner.files()
     }
 
-    fn read(&self, path: &RepoPath) -> Result<CandidateBytes, CandidateError> {
+    fn read_bounded(
+        &self,
+        path: &RepoPath,
+        max_bytes: usize,
+    ) -> Result<CandidateBytes, CandidateError> {
         self.reads.borrow_mut().push(path.as_str().to_string());
-        self.inner.read(path)
+        self.inner.read_bounded(path, max_bytes)
     }
 }
 
@@ -166,11 +183,15 @@ impl CandidateContent for UnreadableConfigCandidate {
         self.inner.files()
     }
 
-    fn read(&self, path: &RepoPath) -> Result<CandidateBytes, CandidateError> {
+    fn read_bounded(
+        &self,
+        path: &RepoPath,
+        max_bytes: usize,
+    ) -> Result<CandidateBytes, CandidateError> {
         if path.as_str().starts_with(".pre-commit-review/") {
             return Err(RepoPath::new("").unwrap_err());
         }
-        self.inner.read(path)
+        self.inner.read_bounded(path, max_bytes)
     }
 }
 
@@ -293,6 +314,28 @@ fn budget_deadline_exhaustion_is_stable_and_monotonic() {
 
     assert_eq!(first.code(), "deadline-exhausted");
     assert_eq!(second.code(), "deadline-exhausted");
+    assert!(tracker.deadline_exhausted());
+}
+
+#[test]
+fn tree_sitter_adapter_honors_an_exhausted_deadline() {
+    let source = b"pub fn changed() {}\n";
+    let mut budget = ImpactBudget::fast_defaults();
+    budget.deadline = Duration::ZERO;
+    let mut tracker = BudgetTracker::new(budget);
+
+    let error = TreeSitterRustAdapter::analyze(
+        source,
+        &[ChangedRange {
+            start_line: 1,
+            end_line: 1,
+            deletion_anchor: false,
+        }],
+        &mut tracker,
+    )
+    .unwrap_err();
+
+    assert_eq!(error.to_string(), "deadline-exhausted");
     assert!(tracker.deadline_exhausted());
 }
 
@@ -1364,6 +1407,43 @@ fn engine_output_truncation_is_bounded_and_deterministic() {
         second.metrics.output_bytes = serde_json::to_vec(&second).unwrap().len();
     }
     assert_eq!(first, second);
+}
+
+#[test]
+fn presentation_selection_is_independent_of_runtime_telemetry() {
+    let source = include_bytes!("fixtures/impact_context/rust-clean.rs");
+    let mut candidate = MemoryCandidate::new(&[("src/lib.rs", source, true)]);
+    candidate.files[0].changed_ranges = vec![ChangedRange {
+        start_line: 1,
+        end_line: std::str::from_utf8(source).unwrap().lines().count() as u32,
+        deletion_anchor: false,
+    }];
+    let mut baseline = build_impact_context(&candidate, ImpactRequest::fast_defaults()).unwrap();
+    baseline.metrics.elapsed_ms = 0;
+    for provider in &mut baseline.providers {
+        provider.elapsed_ms = 0;
+    }
+    for _ in 0..3 {
+        baseline.metrics.output_bytes = serde_json::to_vec(&baseline).unwrap().len();
+    }
+    let maximum = baseline.metrics.output_bytes;
+    let mut long_running = baseline.clone();
+    long_running.metrics.elapsed_ms = u64::MAX;
+    for provider in &mut long_running.providers {
+        provider.elapsed_ms = u64::MAX;
+    }
+
+    enforce_presentation_budget(&mut baseline, maximum).unwrap();
+    enforce_presentation_budget(&mut long_running, maximum).unwrap();
+
+    assert_eq!(baseline.changed_symbols, long_running.changed_symbols);
+    assert_eq!(baseline.impact_edges, long_running.impact_edges);
+    assert_eq!(baseline.domain_summaries, long_running.domain_summaries);
+    assert_eq!(
+        baseline.coverage.output_truncated,
+        long_running.coverage.output_truncated
+    );
+    assert!(long_running.metrics.output_bytes <= maximum);
 }
 
 #[test]

@@ -6,15 +6,17 @@ use super::contracts::{
 };
 use super::evidence::{collect_evidence, CollectRequest};
 use crate::candidate::snapshot::{CandidateSnapshot, SnapshotLimits};
+use crate::process_group::{configure_process_group, ProcessGroup};
 use crate::review_scope::{
     open_authoritative_scope, revalidate_scope, AuthoritativeScope, ReviewSource, ScopeRequest,
 };
 use serde::Serialize;
 use sha2::{Digest, Sha256};
-use std::fs::{self, File};
+use std::ffi::OsString;
+use std::fs::{self, File, OpenOptions};
 use std::io::{Read, Seek, SeekFrom, Write};
 use std::path::{Component, Path, PathBuf};
-use std::process::{Child, Command, ExitStatus, Stdio};
+use std::process::{Command, ExitStatus, Stdio};
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::{mpsc, Arc, Mutex};
 use std::thread;
@@ -277,6 +279,7 @@ pub(crate) fn execute_prepared_with_clock(
 
     let runtime = tempfile::tempdir()
         .map_err(|error| RunError::new(format!("cannot create analyzer runtime: {error}")))?;
+    set_private_directory(runtime.path())?;
     let runtime_home = runtime.path().join("home");
     let runtime_tmp = runtime.path().join("tmp");
     fs::create_dir(&runtime_home)
@@ -286,8 +289,9 @@ pub(crate) fn execute_prepared_with_clock(
     set_private_directory(&runtime_tmp)?;
     let stdout_path = runtime.path().join("analyzer.stdout");
     let stderr_path = runtime.path().join("analyzer.stderr");
+    let runtime_executable = materialize_pinned_executable(prepared, runtime.path())?;
 
-    let mut command = Command::new(&prepared.executable_path);
+    let mut command = Command::new(runtime_executable.path());
     command
         .args(&prepared.profile.arguments)
         .current_dir(snapshot.path())
@@ -302,7 +306,9 @@ pub(crate) fn execute_prepared_with_clock(
         source,
         scope_fingerprint,
     );
-    configure_process_group(&mut command)?;
+    configure_process_group(&mut command).map_err(|error| {
+        RunError::new(format!("cannot configure analyzer process group: {error}"))
+    })?;
     let mut child = command
         .spawn()
         .map_err(|error| RunError::new(format!("cannot start trusted analyzer: {error}")))?;
@@ -312,7 +318,9 @@ pub(crate) fn execute_prepared_with_clock(
         Err(error) => {
             let _ = child.kill();
             let _ = child.wait();
-            return Err(error);
+            return Err(RunError::new(format!(
+                "cannot attach analyzer process group: {error}"
+            )));
         }
     };
     let stdout = match child.stdout.take() {
@@ -383,6 +391,7 @@ pub(crate) fn execute_prepared_with_clock(
         .verify_unchanged()
         .map_err(|error| RunError::new(error.to_string()))?;
     verify_prepared_integrity(prepared, "during execution")?;
+    runtime_executable.verify(&prepared.executable_sha256)?;
 
     let duration_ms =
         u64::try_from(clock.now().saturating_sub(start).as_millis()).unwrap_or(u64::MAX);
@@ -421,6 +430,117 @@ pub(crate) fn execute_prepared_with_clock(
         stderr_sha256,
         failure_reason,
     })
+}
+
+struct MaterializedExecutable {
+    path: PathBuf,
+}
+
+impl MaterializedExecutable {
+    fn path(&self) -> &Path {
+        &self.path
+    }
+
+    fn verify(&self, expected_sha256: &str) -> Result<(), RunError> {
+        let (observed_sha256, _) = sha256_file(&self.path, None)?;
+        if observed_sha256 != expected_sha256 {
+            return Err(RunError::new(
+                "trusted analyzer executable changed during execution",
+            ));
+        }
+        Ok(())
+    }
+}
+
+impl Drop for MaterializedExecutable {
+    fn drop(&mut self) {
+        #[cfg(not(unix))]
+        if let Ok(mut permissions) = fs::metadata(&self.path).map(|metadata| metadata.permissions())
+        {
+            permissions.set_readonly(false);
+            let _ = fs::set_permissions(&self.path, permissions);
+        }
+    }
+}
+
+fn materialize_pinned_executable(
+    prepared: &PreparedProfile,
+    runtime: &Path,
+) -> Result<MaterializedExecutable, RunError> {
+    let mut file_name = OsString::from("trusted-analyzer");
+    if let Some(extension) = prepared.executable_path.extension() {
+        file_name.push(".");
+        file_name.push(extension);
+    }
+    let path = runtime.join(file_name);
+    let mut input = File::open(&prepared.executable_path).map_err(|error| {
+        RunError::new(format!("cannot open trusted analyzer executable: {error}"))
+    })?;
+    let metadata = input.metadata().map_err(|error| {
+        RunError::new(format!(
+            "cannot inspect trusted analyzer executable: {error}"
+        ))
+    })?;
+    if !metadata.is_file() || !is_executable(&metadata) {
+        return Err(RunError::new(
+            "profile executable must remain an executable regular file",
+        ));
+    }
+    let mut output = OpenOptions::new()
+        .write(true)
+        .create_new(true)
+        .open(&path)
+        .map_err(|error| {
+            RunError::new(format!(
+                "cannot materialize trusted analyzer executable: {error}"
+            ))
+        })?;
+    let mut digest = Sha256::new();
+    let mut buffer = [0_u8; 1024 * 1024];
+    loop {
+        let read = input.read(&mut buffer).map_err(|error| {
+            RunError::new(format!("cannot read trusted analyzer executable: {error}"))
+        })?;
+        if read == 0 {
+            break;
+        }
+        digest.update(&buffer[..read]);
+        output.write_all(&buffer[..read]).map_err(|error| {
+            RunError::new(format!(
+                "cannot materialize trusted analyzer executable: {error}"
+            ))
+        })?;
+    }
+    output.flush().map_err(|error| {
+        RunError::new(format!(
+            "cannot materialize trusted analyzer executable: {error}"
+        ))
+    })?;
+    let observed_sha256 = format!("{:x}", digest.finalize());
+    if observed_sha256 != prepared.executable_sha256 {
+        return Err(RunError::new(
+            "trusted analyzer executable changed before execution",
+        ));
+    }
+    set_materialized_executable_permissions(&path)?;
+    Ok(MaterializedExecutable { path })
+}
+
+#[cfg(unix)]
+fn set_materialized_executable_permissions(path: &Path) -> Result<(), RunError> {
+    use std::os::unix::fs::PermissionsExt;
+    fs::set_permissions(path, fs::Permissions::from_mode(0o500))
+        .map_err(|error| RunError::new(format!("cannot secure trusted analyzer copy: {error}")))
+}
+
+#[cfg(not(unix))]
+fn set_materialized_executable_permissions(path: &Path) -> Result<(), RunError> {
+    let mut permissions = fs::metadata(path)
+        .map_err(|error| RunError::new(format!("cannot secure trusted analyzer copy: {error}")))?
+        .permissions();
+    permissions.set_readonly(true);
+    fs::set_permissions(path, permissions)
+        .map_err(|error| RunError::new(format!("cannot secure trusted analyzer copy: {error}")))
 }
 
 pub fn run_analysis(request: RunRequest) -> Result<RunArtifact, RunError> {
@@ -696,10 +816,11 @@ fn evidence_matches_profile(
     profile: &StaticAnalysisProfile,
 ) -> bool {
     !evidence.reports.is_empty()
-        && evidence
-            .reports
-            .iter()
-            .all(|report| report.tool == profile.tool && report.status == ReportStatus::Completed)
+        && evidence.reports.iter().all(|report| {
+            report.format == profile.output_format
+                && report.tool == profile.tool
+                && report.status == ReportStatus::Completed
+        })
 }
 
 fn compact_execution_id(
@@ -756,6 +877,7 @@ mod tests {
     };
     use std::collections::VecDeque;
     use std::os::unix::fs::PermissionsExt;
+    use std::os::unix::net::UnixStream;
     use std::sync::Mutex;
 
     struct SequenceClock {
@@ -878,6 +1000,31 @@ mod tests {
         assert_eq!(outcome.status, ExecutionStatus::Timeout);
         assert_eq!(outcome.duration_ms, 2_000);
     }
+
+    #[test]
+    fn capture_shutdown_timeout_does_not_block_on_join() {
+        let (reader, writer) = UnixStream::pair().unwrap();
+        let output = tempfile::NamedTempFile::new().unwrap();
+        let capture = spawn_capture(
+            reader,
+            output.path().to_path_buf(),
+            1024,
+            Arc::new(AtomicBool::new(false)),
+            Arc::new(Mutex::new(1024)),
+        );
+        let (sender, receiver) = mpsc::channel();
+        thread::spawn(move || {
+            let _ = sender.send(finish_capture(capture, "stdout"));
+        });
+
+        let result = receiver
+            .recv_timeout(CAPTURE_SHUTDOWN_TIMEOUT + Duration::from_secs(1))
+            .expect("capture shutdown must return after its timeout")
+            .unwrap_err();
+
+        assert!(result.to_string().contains("capture did not terminate"));
+        drop(writer);
+    }
 }
 
 pub(crate) fn repository_state_digest(repository: &Path) -> Result<String, RunError> {
@@ -911,17 +1058,13 @@ fn update_digest_from_git(
         .try_clone()
         .map_err(|error| RunError::new(format!("cannot capture Git state: {error}")))?;
     let mut command = Command::new("git");
+    crate::git_policy::configure_read_only(&mut command);
     command
         .args(arguments)
         .current_dir(repository)
         .stdin(Stdio::null())
         .stdout(Stdio::piped())
-        .stderr(Stdio::from(stderr_child))
-        .env("GIT_OPTIONAL_LOCKS", "0")
-        .env("GIT_NO_LAZY_FETCH", "1")
-        .env("GIT_CONFIG_NOSYSTEM", "1");
-    #[cfg(not(windows))]
-    command.env("GIT_CONFIG_GLOBAL", "/dev/null");
+        .stderr(Stdio::from(stderr_child));
     let mut child = command
         .spawn()
         .map_err(|error| RunError::new(format!("cannot inspect Git repository state: {error}")))?;
@@ -1151,9 +1294,10 @@ fn set_private_directory(path: &Path) -> Result<(), RunError> {
         .map_err(|error| RunError::new(format!("cannot secure analyzer runtime: {error}")))
 }
 
-#[cfg(not(unix))]
-fn set_private_directory(_path: &Path) -> Result<(), RunError> {
-    Ok(())
+#[cfg(windows)]
+fn set_private_directory(path: &Path) -> Result<(), RunError> {
+    crate::windows_acl::restrict_tree_private(path)
+        .map_err(|error| RunError::new(format!("cannot secure analyzer runtime: {error}")))
 }
 
 struct CaptureHandle {
@@ -1222,123 +1366,26 @@ fn capture_stream(
 }
 
 fn finish_capture(capture: CaptureHandle, stream_name: &str) -> Result<(), RunError> {
-    let result = capture.receiver.recv_timeout(CAPTURE_SHUTDOWN_TIMEOUT);
+    let result = match capture.receiver.recv_timeout(CAPTURE_SHUTDOWN_TIMEOUT) {
+        Ok(result) => result,
+        Err(mpsc::RecvTimeoutError::Timeout) => {
+            return Err(RunError::new(format!(
+                "analyzer {stream_name} capture did not terminate"
+            )))
+        }
+        Err(mpsc::RecvTimeoutError::Disconnected) => {
+            let _ = capture.thread.join();
+            return Err(RunError::new(format!(
+                "analyzer {stream_name} capture channel disconnected"
+            )));
+        }
+    };
     let joined = capture
         .thread
         .join()
         .map_err(|_| RunError::new(format!("analyzer {stream_name} capture panicked")));
     joined?;
-    result
-        .map_err(|_| RunError::new(format!("analyzer {stream_name} capture did not terminate")))?
-        .map_err(RunError::new)
-}
-
-#[cfg(unix)]
-fn configure_process_group(command: &mut Command) -> Result<(), RunError> {
-    use std::os::unix::process::CommandExt;
-    // SAFETY: this closure calls only async-signal-safe setpgid before exec.
-    unsafe {
-        command.pre_exec(|| {
-            if libc::setpgid(0, 0) == -1 {
-                Err(std::io::Error::last_os_error())
-            } else {
-                Ok(())
-            }
-        });
-    }
-    Ok(())
-}
-
-#[cfg(windows)]
-fn configure_process_group(command: &mut Command) -> Result<(), RunError> {
-    use std::os::windows::process::CommandExt;
-    use windows_sys::Win32::System::Threading::CREATE_NEW_PROCESS_GROUP;
-    command.creation_flags(CREATE_NEW_PROCESS_GROUP);
-    Ok(())
-}
-
-#[cfg(unix)]
-struct ProcessGroup {
-    process_group_id: i32,
-}
-
-#[cfg(unix)]
-impl ProcessGroup {
-    fn attach(child: &mut Child) -> Result<Self, RunError> {
-        let process_group_id = i32::try_from(child.id())
-            .map_err(|_| RunError::new("analyzer process id exceeds i32"))?;
-        Ok(Self { process_group_id })
-    }
-
-    fn terminate(&self, child: &mut Child) {
-        // SAFETY: the process group id was created for this child immediately before exec.
-        unsafe {
-            libc::killpg(self.process_group_id, libc::SIGKILL);
-        }
-        let _ = child.kill();
-    }
-}
-
-#[cfg(windows)]
-struct ProcessGroup {
-    job: windows_sys::Win32::Foundation::HANDLE,
-}
-
-#[cfg(windows)]
-impl ProcessGroup {
-    fn attach(child: &mut Child) -> Result<Self, RunError> {
-        use std::ffi::c_void;
-        use std::mem::size_of;
-        use std::os::windows::io::AsRawHandle;
-        use windows_sys::Win32::Foundation::CloseHandle;
-        use windows_sys::Win32::System::JobObjects::{
-            AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
-            SetInformationJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
-            JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
-        };
-        // SAFETY: Windows handles are checked for null and owned until Drop.
-        unsafe {
-            let job = CreateJobObjectW(std::ptr::null(), std::ptr::null());
-            if job.is_null() {
-                return Err(RunError::new("cannot create analyzer Job Object"));
-            }
-            let mut information: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = std::mem::zeroed();
-            information.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
-            if SetInformationJobObject(
-                job,
-                JobObjectExtendedLimitInformation,
-                &mut information as *mut _ as *mut c_void,
-                size_of::<JOBOBJECT_EXTENDED_LIMIT_INFORMATION>() as u32,
-            ) == 0
-                || AssignProcessToJobObject(job, child.as_raw_handle() as _) == 0
-            {
-                CloseHandle(job);
-                let _ = child.kill();
-                return Err(RunError::new("cannot assign analyzer to Job Object"));
-            }
-            Ok(Self { job })
-        }
-    }
-
-    fn terminate(&self, child: &mut Child) {
-        use windows_sys::Win32::System::JobObjects::TerminateJobObject;
-        // SAFETY: self.job is a live Job Object handle owned by this guard.
-        unsafe {
-            TerminateJobObject(self.job, 1);
-        }
-        let _ = child.kill();
-    }
-}
-
-#[cfg(windows)]
-impl Drop for ProcessGroup {
-    fn drop(&mut self) {
-        use windows_sys::Win32::Foundation::CloseHandle;
-        // SAFETY: self.job is owned by this guard and closed exactly once.
-        unsafe {
-            CloseHandle(self.job);
-        }
-    }
+    result.map_err(RunError::new)
 }
 
 #[cfg(unix)]

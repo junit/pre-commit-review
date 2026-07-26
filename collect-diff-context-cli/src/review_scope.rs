@@ -1,3 +1,4 @@
+use crate::git_policy::{configure_read_only, output_bounded, GitOutputError};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
@@ -146,13 +147,26 @@ impl AuthoritativeScope {
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ScopeError {
     reason: String,
+    deadline_exceeded: bool,
 }
 
 impl ScopeError {
     pub(crate) fn new(reason: impl Into<String>) -> Self {
         Self {
             reason: reason.into(),
+            deadline_exceeded: false,
         }
+    }
+
+    pub(crate) fn deadline(reason: impl Into<String>) -> Self {
+        Self {
+            reason: reason.into(),
+            deadline_exceeded: true,
+        }
+    }
+
+    pub(crate) fn is_deadline_exceeded(&self) -> bool {
+        self.deadline_exceeded
     }
 }
 
@@ -168,25 +182,22 @@ pub fn open_authoritative_scope(request: ScopeRequest) -> Result<AuthoritativeSc
     crate::app::open_authoritative_scope_impl(request)
 }
 
-pub fn revalidate_scope(scope: &AuthoritativeScope) -> Result<(), ScopeError> {
-    let observed = open_authoritative_scope(ScopeRequest {
-        repository: scope.repository.clone(),
-        source: Some(scope.source),
-        expected_fingerprint: Some(scope.fingerprint.clone()),
-    })?;
+pub fn open_authoritative_scope_bounded(
+    request: ScopeRequest,
+    deadline: std::time::Duration,
+) -> Result<AuthoritativeScope, ScopeError> {
+    crate::app::open_authoritative_scope_impl_bounded(request, deadline)
+}
 
-    if observed.head != scope.head
-        || observed.base != scope.base
-        || observed.selected_ref != scope.selected_ref
-        || observed.units != scope.units
-        || observed.groups != scope.groups
-        || observed.work_order != scope.work_order
-    {
-        return Err(ScopeError::new(
-            "review scope structure changed during revalidation",
-        ));
-    }
-    Ok(())
+pub fn revalidate_scope(scope: &AuthoritativeScope) -> Result<(), ScopeError> {
+    revalidate_scope_bounded(scope, std::time::Duration::MAX)
+}
+
+pub fn revalidate_scope_bounded(
+    scope: &AuthoritativeScope,
+    deadline: std::time::Duration,
+) -> Result<(), ScopeError> {
+    crate::app::revalidate_authoritative_scope_impl_bounded(scope, deadline)
 }
 
 pub fn added_lines(
@@ -195,7 +206,13 @@ pub fn added_lines(
     selected_ref: &str,
     path: &str,
 ) -> Result<BTreeSet<u32>, ScopeError> {
-    parse_added_lines(&diff_for_path(repository, source, selected_ref, path)?)
+    parse_added_lines(&diff_for_path(
+        repository,
+        source,
+        selected_ref,
+        path,
+        std::time::Duration::MAX,
+    )?)
 }
 
 pub fn changed_ranges(
@@ -204,7 +221,29 @@ pub fn changed_ranges(
     selected_ref: &str,
     path: &str,
 ) -> Result<Vec<crate::candidate::ChangedRange>, ScopeError> {
-    parse_changed_ranges(&diff_for_path(repository, source, selected_ref, path)?)
+    changed_ranges_bounded(
+        repository,
+        source,
+        selected_ref,
+        path,
+        std::time::Duration::MAX,
+    )
+}
+
+pub(crate) fn changed_ranges_bounded(
+    repository: &Path,
+    source: ReviewSource,
+    selected_ref: &str,
+    path: &str,
+    timeout: std::time::Duration,
+) -> Result<Vec<crate::candidate::ChangedRange>, ScopeError> {
+    parse_changed_ranges(&diff_for_path(
+        repository,
+        source,
+        selected_ref,
+        path,
+        timeout,
+    )?)
 }
 
 fn diff_for_path(
@@ -212,8 +251,10 @@ fn diff_for_path(
     source: ReviewSource,
     selected_ref: &str,
     path: &str,
+    timeout: std::time::Duration,
 ) -> Result<Vec<u8>, ScopeError> {
     let mut command = Command::new("git");
+    configure_read_only(&mut command);
     command.current_dir(repository).args([
         "-c",
         "color.ui=false",
@@ -236,8 +277,17 @@ fn diff_for_path(
         }
     }
     command.arg("--").arg(crate::app::unquote_git_path(path));
-    let output = command.output().map_err(|error| {
-        ScopeError::new(format!("cannot map changed lines for {path}: {error}"))
+    let output = output_bounded(&mut command, timeout).map_err(|error| match error {
+        GitOutputError::DeadlineExceeded => ScopeError::deadline(format!(
+            "candidate deadline exceeded while mapping changed lines for {path}"
+        )),
+        GitOutputError::OutputLimitExceeded => ScopeError::new(format!(
+            "Git output exceeded the {}-byte capture limit while mapping changed lines for {path}",
+            crate::git_policy::MAX_GIT_OUTPUT_BYTES
+        )),
+        GitOutputError::Io(error) => {
+            ScopeError::new(format!("cannot map changed lines for {path}: {error}"))
+        }
     })?;
     if !output.status.success() {
         let detail = String::from_utf8_lossy(&output.stderr)

@@ -2,7 +2,11 @@ use crate::candidate::ChangedRange;
 use crate::impact_context::budget::{BudgetResource, BudgetTracker};
 use crate::impact_context::contracts::{ParseQuality, Resolution, SourceRange};
 use serde::Serialize;
-use tree_sitter::{Node, Parser, Query, QueryCursor, StreamingIterator};
+use std::ops::ControlFlow;
+use tree_sitter::{
+    Node, ParseOptions, ParseState, Parser, Query, QueryCursor, QueryCursorOptions,
+    QueryCursorState, StreamingIterator,
+};
 
 const RUST_FACT_QUERY: &str = r#"
 (function_item name: (identifier) @definition.function)
@@ -92,6 +96,9 @@ impl TreeSitterRustAdapter {
         changed_ranges: &[ChangedRange],
         budget: &mut BudgetTracker,
     ) -> Result<RustSyntaxOutput, RustAdapterError> {
+        budget
+            .check_deadline()
+            .map_err(|exhaustion| RustAdapterError::new(exhaustion.code()))?;
         let language: tree_sitter::Language = tree_sitter_rust::LANGUAGE.into();
         let mut parser = Parser::new();
         parser
@@ -100,9 +107,28 @@ impl TreeSitterRustAdapter {
         let query = Query::new(&language, RUST_FACT_QUERY).map_err(|error| {
             RustAdapterError::new(format!("cannot compile Rust query: {error}"))
         })?;
-        let tree = parser
-            .parse(source, None)
-            .ok_or_else(|| RustAdapterError::new("Tree-sitter returned no Rust syntax tree"))?;
+        let tree = {
+            let mut parse_progress = |_: &ParseState| {
+                if budget.check_deadline().is_err() {
+                    ControlFlow::Break(())
+                } else {
+                    ControlFlow::Continue(())
+                }
+            };
+            let mut read_source = |offset: usize, _| source.get(offset..).unwrap_or_default();
+            parser.parse_with_options(
+                &mut read_source,
+                None,
+                Some(ParseOptions::new().progress_callback(&mut parse_progress)),
+            )
+        };
+        let tree = tree.ok_or_else(|| {
+            if budget.deadline_exhausted() {
+                RustAdapterError::new("deadline-exhausted")
+            } else {
+                RustAdapterError::new("Tree-sitter returned no Rust syntax tree")
+            }
+        })?;
 
         let mut errors = Vec::new();
         let mut error_node_count = 0;
@@ -113,6 +139,11 @@ impl TreeSitterRustAdapter {
         let mut traversal_complete = true;
         let mut stack = vec![(tree.root_node(), 1usize)];
         while let Some((node, depth)) = stack.pop() {
+            if budget.check_deadline().is_err() {
+                push_unique(&mut limitation_codes, "deadline-exhausted");
+                traversal_complete = false;
+                break;
+            }
             if let Err(exhaustion) = budget.consume(BudgetResource::Nodes, 1) {
                 push_unique(&mut limitation_codes, exhaustion.code());
                 traversal_complete = false;
@@ -146,11 +177,25 @@ impl TreeSitterRustAdapter {
             let capture_names = query.capture_names();
             let mut cursor = QueryCursor::new();
             cursor.set_match_limit(65_536);
-            let mut matches = cursor.matches(&query, tree.root_node(), source);
-            while let Some(query_match) = matches.next() {
-                for capture in query_match.captures {
-                    captures.push((capture_names[capture.index as usize], capture.node));
+            {
+                let mut query_progress = |_: &QueryCursorState| {
+                    if budget.check_deadline().is_err() {
+                        ControlFlow::Break(())
+                    } else {
+                        ControlFlow::Continue(())
+                    }
+                };
+                let options = QueryCursorOptions::new().progress_callback(&mut query_progress);
+                let mut matches =
+                    cursor.matches_with_options(&query, tree.root_node(), source, options);
+                while let Some(query_match) = matches.next() {
+                    for capture in query_match.captures {
+                        captures.push((capture_names[capture.index as usize], capture.node));
+                    }
                 }
+            }
+            if budget.deadline_exhausted() {
+                push_unique(&mut limitation_codes, "deadline-exhausted");
             }
             if cursor.did_exceed_match_limit() {
                 push_unique(&mut limitation_codes, "tree-sitter-query-match-limit");
@@ -159,6 +204,10 @@ impl TreeSitterRustAdapter {
 
         let mut changed_symbols = Vec::new();
         for (capture, node) in captures.iter().copied() {
+            if budget.check_deadline().is_err() {
+                push_unique(&mut limitation_codes, "deadline-exhausted");
+                break;
+            }
             let Some(mut symbol) = symbol_from_capture(capture, node, source) else {
                 continue;
             };
@@ -187,6 +236,10 @@ impl TreeSitterRustAdapter {
         let mut macros = Vec::new();
         let mut attributes = Vec::new();
         for (capture, node) in captures.iter().copied() {
+            if budget.check_deadline().is_err() {
+                push_unique(&mut limitation_codes, "deadline-exhausted");
+                break;
+            }
             let limitation_code = match capture {
                 "import" => (!push_text_fact(&mut imports, node, source, budget))
                     .then_some("fact-budget-exhausted"),

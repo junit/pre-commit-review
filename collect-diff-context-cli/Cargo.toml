@@ -2,6 +2,10 @@
 name = "collect-diff-context-cli"
 version = "0.1.0"
 edition = "2021"
+autobins = false
+
+[features]
+test-fixture = []
 
 [[bin]]
 name = "collect-diff-context-cli"
@@ -14,6 +18,11 @@ path = "src/bin/static_analysis.rs"
 [[bin]]
 name = "repository-context-cli"
 path = "src/bin/repository_context.rs"
+
+[[bin]]
+name = "static-analysis-fixture"
+path = "src/bin/static_analysis_fixture.rs"
+required-features = ["test-fixture"]
 
 [dependencies]
 serde = { version = "1.0", features = ["derive"] }
@@ -32,6 +41,8 @@ libc = "0.2"
 windows-sys = { version = "0.59", features = [
   "Win32_Foundation",
   "Win32_Security",
+  "Win32_Storage_FileSystem",
+  "Win32_System_Diagnostics_ToolHelp",
   "Win32_System_JobObjects",
   "Win32_System_Threading",
 ] }

@@ -248,6 +248,55 @@ fn parsing_sarif_records_embedded_scope() {
 }
 
 #[test]
+fn parsing_rejects_structurally_invalid_sarif() {
+    let (repo, fingerprint) = staged_repository();
+    let invalid_runs = [
+        json!({
+            "properties": {"preCommitReviewScopeFingerprint": fingerprint},
+            "results": []
+        }),
+        json!({
+            "properties": {"preCommitReviewScopeFingerprint": fingerprint},
+            "tool": {"driver": {"name": "fixture-sarif"}},
+            "results": {}
+        }),
+        json!({
+            "properties": {"preCommitReviewScopeFingerprint": fingerprint},
+            "tool": {"driver": {"name": "fixture-sarif"}},
+            "results": ["not-a-result"]
+        }),
+        json!({
+            "properties": {"preCommitReviewScopeFingerprint": fingerprint},
+            "tool": {"driver": {"name": "fixture-sarif"}},
+            "results": [{"ruleId": "missing-message"}]
+        }),
+    ];
+
+    for (index, run) in invalid_runs.into_iter().enumerate() {
+        let result = repo.path().join(format!("invalid-{index}.sarif"));
+        fs::write(
+            &result,
+            serde_json::to_vec(&json!({"version": "2.1.0", "runs": [run]})).unwrap(),
+        )
+        .unwrap();
+
+        let error = collect_evidence(CollectRequest {
+            repository: repo.path().to_path_buf(),
+            source: Some(ReviewSource::Staged),
+            expected_scope: fingerprint.clone(),
+            result_paths: vec![result],
+            asserted_result_scope: Some(fingerprint.clone()),
+            max_findings: 500,
+            trust: EvidenceTrust::ExplicitInput,
+            execution_id: None,
+        })
+        .unwrap_err();
+
+        assert!(error.to_string().contains("SARIF run 0"), "{error}");
+    }
+}
+
+#[test]
 fn parsing_rejects_malformed_json() {
     let (repo, fingerprint) = staged_repository();
     let result = repo.path().join("broken.json");
@@ -432,7 +481,7 @@ fn parsing_sarif_supports_explicit_scope_and_multiple_runs() {
                         "ruleId": "type-error",
                         "level": "warning",
                         "properties": {"precision": "moderate"},
-                        "message": "Type mismatch.",
+                        "message": {"text": "Type mismatch."},
                         "locations": [{"physicalLocation": {
                             "artifactLocation": {"uri": "./src/app.rs"},
                             "region": {"startLine": 1, "endLine": 1}

@@ -9,10 +9,11 @@ use serde::Serialize;
 use std::collections::{HashMap, HashSet};
 use std::env;
 use std::fs::{self, File};
-use std::io::{BufRead, BufReader, Read, Write};
+use std::io::{BufRead, BufReader, Read};
 use std::path::{Path, PathBuf};
-use std::process::{Command, Stdio};
+use std::process::Command;
 use std::sync::OnceLock;
+use std::time::{Duration, Instant};
 
 // Core Constants and Defaults
 const DEFAULT_MAX_DIFF_BYTES: usize = 200000;
@@ -34,6 +35,8 @@ enum AppError {
     SecretScan(secret_scan::SecretScanError),
     IoError(std::io::Error),
     InvalidArgument(String),
+    DeadlineExceeded,
+    GitOutputLimitExceeded,
 }
 
 impl std::fmt::Display for AppError {
@@ -50,7 +53,44 @@ impl std::fmt::Display for AppError {
             AppError::SecretScan(error) => write!(f, "Secret scan error: {}", error),
             AppError::IoError(e) => write!(f, "I/O error: {}", e),
             AppError::InvalidArgument(s) => write!(f, "Invalid argument: {}", s),
+            AppError::DeadlineExceeded => f.write_str("repository context deadline exceeded"),
+            AppError::GitOutputLimitExceeded => write!(
+                f,
+                "Git output exceeded the {}-byte capture limit",
+                crate::git_policy::MAX_GIT_OUTPUT_BYTES
+            ),
         }
+    }
+}
+
+#[derive(Debug, Clone, Copy)]
+struct OperationDeadline {
+    started: Instant,
+    limit: Duration,
+}
+
+impl OperationDeadline {
+    fn new(limit: Duration) -> Self {
+        Self {
+            started: Instant::now(),
+            limit,
+        }
+    }
+
+    fn remaining(self) -> Result<Duration, AppError> {
+        if self.limit == Duration::MAX {
+            return Ok(Duration::MAX);
+        }
+        let remaining = self.limit.saturating_sub(self.started.elapsed());
+        if remaining.is_zero() {
+            Err(AppError::DeadlineExceeded)
+        } else {
+            Ok(remaining)
+        }
+    }
+
+    fn check(self) -> Result<(), AppError> {
+        self.remaining().map(|_| ())
     }
 }
 
@@ -356,13 +396,30 @@ fn sanitize_tsv_field(s: &str) -> String {
 
 // Run an arbitrary command returning raw stdout bytes (preserving non-UTF8 binary outputs)
 fn run_command_bytes(args: &[&str], cwd: &str) -> Result<Vec<u8>, AppError> {
+    run_command_bytes_bounded(args, cwd, OperationDeadline::new(Duration::MAX))
+}
+
+fn run_command_bytes_bounded(
+    args: &[&str],
+    cwd: &str,
+    deadline: OperationDeadline,
+) -> Result<Vec<u8>, AppError> {
     let mut cmd = Command::new(args[0]);
+    if args[0] == "git" {
+        crate::git_policy::configure_read_only(&mut cmd);
+    }
     cmd.args(&args[1..]);
     cmd.current_dir(cwd);
 
-    let output = match cmd.output() {
+    let output = match crate::git_policy::output_bounded(&mut cmd, deadline.remaining()?) {
         Ok(out) => out,
-        Err(e) => {
+        Err(crate::git_policy::GitOutputError::DeadlineExceeded) => {
+            return Err(AppError::DeadlineExceeded);
+        }
+        Err(crate::git_policy::GitOutputError::OutputLimitExceeded) => {
+            return Err(AppError::GitOutputLimitExceeded);
+        }
+        Err(crate::git_policy::GitOutputError::Io(e)) => {
             if e.kind() == std::io::ErrorKind::NotFound {
                 return Err(AppError::GitMissing {
                     details: e.to_string(),
@@ -386,21 +443,31 @@ fn run_command_bytes(args: &[&str], cwd: &str) -> Result<Vec<u8>, AppError> {
 
 // Run a command with exact stdin bytes. This is used for Git's repository-native
 // object hashing so the helper works with both SHA-1 and SHA-256 repositories.
-fn run_command_bytes_with_stdin(
+fn run_command_bytes_with_stdin_bounded(
     args: &[&str],
     stdin_bytes: &[u8],
     cwd: &str,
+    deadline: OperationDeadline,
 ) -> Result<Vec<u8>, AppError> {
     let mut cmd = Command::new(args[0]);
+    if args[0] == "git" {
+        crate::git_policy::configure_read_only(&mut cmd);
+    }
     cmd.args(&args[1..]);
     cmd.current_dir(cwd);
-    cmd.stdin(Stdio::piped());
-    cmd.stdout(Stdio::piped());
-    cmd.stderr(Stdio::piped());
-
-    let mut child = match cmd.spawn() {
-        Ok(child) => child,
-        Err(e) => {
+    let output = match crate::git_policy::output_bounded_with_stdin(
+        &mut cmd,
+        stdin_bytes,
+        deadline.remaining()?,
+    ) {
+        Ok(output) => output,
+        Err(crate::git_policy::GitOutputError::DeadlineExceeded) => {
+            return Err(AppError::DeadlineExceeded);
+        }
+        Err(crate::git_policy::GitOutputError::OutputLimitExceeded) => {
+            return Err(AppError::GitOutputLimitExceeded);
+        }
+        Err(crate::git_policy::GitOutputError::Io(e)) => {
             if e.kind() == std::io::ErrorKind::NotFound {
                 return Err(AppError::GitMissing {
                     details: e.to_string(),
@@ -411,11 +478,6 @@ fn run_command_bytes_with_stdin(
             return Err(AppError::IoError(e));
         }
     };
-
-    if let Some(mut stdin) = child.stdin.take() {
-        stdin.write_all(stdin_bytes).map_err(AppError::IoError)?;
-    }
-    let output = child.wait_with_output().map_err(AppError::IoError)?;
     if output.status.success() {
         Ok(output.stdout)
     } else {
@@ -432,6 +494,15 @@ fn run_command_string(args: &[&str], cwd: &str) -> Result<String, AppError> {
     Ok(String::from_utf8_lossy(&bytes).into_owned())
 }
 
+fn run_command_string_bounded(
+    args: &[&str],
+    cwd: &str,
+    deadline: OperationDeadline,
+) -> Result<String, AppError> {
+    let bytes = run_command_bytes_bounded(args, cwd, deadline)?;
+    Ok(String::from_utf8_lossy(&bytes).into_owned())
+}
+
 // Git Helpers
 fn git_rev_parse_toplevel() -> Result<String, AppError> {
     let out = run_command_string(&["git", "rev-parse", "--show-toplevel"], ".")?;
@@ -439,11 +510,19 @@ fn git_rev_parse_toplevel() -> Result<String, AppError> {
 }
 
 fn git_has_staged_changes(cwd: &str) -> Result<bool, AppError> {
+    git_has_staged_changes_bounded(cwd, OperationDeadline::new(Duration::MAX))
+}
+
+fn git_has_staged_changes_bounded(
+    cwd: &str,
+    deadline: OperationDeadline,
+) -> Result<bool, AppError> {
     let mut cmd = Command::new("git");
+    crate::git_policy::configure_read_only(&mut cmd);
     cmd.args(["diff", "--cached", "--quiet", "--exit-code", "--", "."]);
     cmd.current_dir(cwd);
-    match cmd.status() {
-        Ok(status) => match status.code() {
+    match crate::git_policy::output_bounded(&mut cmd, deadline.remaining()?) {
+        Ok(output) => match output.status.code() {
             Some(0) => Ok(false),
             Some(1) => Ok(true),
             Some(code) => Err(AppError::GitError {
@@ -455,7 +534,11 @@ fn git_has_staged_changes(cwd: &str) -> Result<bool, AppError> {
                 details: "process terminated by signal".to_string(),
             }),
         },
-        Err(e) => {
+        Err(crate::git_policy::GitOutputError::DeadlineExceeded) => Err(AppError::DeadlineExceeded),
+        Err(crate::git_policy::GitOutputError::OutputLimitExceeded) => {
+            Err(AppError::GitOutputLimitExceeded)
+        }
+        Err(crate::git_policy::GitOutputError::Io(e)) => {
             if e.kind() == std::io::ErrorKind::NotFound {
                 Err(AppError::GitMissing {
                     details: e.to_string(),
@@ -470,11 +553,19 @@ fn git_has_staged_changes(cwd: &str) -> Result<bool, AppError> {
 }
 
 fn git_has_unstaged_changes(cwd: &str) -> Result<bool, AppError> {
+    git_has_unstaged_changes_bounded(cwd, OperationDeadline::new(Duration::MAX))
+}
+
+fn git_has_unstaged_changes_bounded(
+    cwd: &str,
+    deadline: OperationDeadline,
+) -> Result<bool, AppError> {
     let mut cmd = Command::new("git");
+    crate::git_policy::configure_read_only(&mut cmd);
     cmd.args(["diff", "--quiet", "--exit-code", "--", "."]);
     cmd.current_dir(cwd);
-    match cmd.status() {
-        Ok(status) => match status.code() {
+    match crate::git_policy::output_bounded(&mut cmd, deadline.remaining()?) {
+        Ok(output) => match output.status.code() {
             Some(0) => Ok(false),
             Some(1) => Ok(true),
             Some(code) => Err(AppError::GitError {
@@ -486,7 +577,11 @@ fn git_has_unstaged_changes(cwd: &str) -> Result<bool, AppError> {
                 details: "process terminated by signal".to_string(),
             }),
         },
-        Err(e) => {
+        Err(crate::git_policy::GitOutputError::DeadlineExceeded) => Err(AppError::DeadlineExceeded),
+        Err(crate::git_policy::GitOutputError::OutputLimitExceeded) => {
+            Err(AppError::GitOutputLimitExceeded)
+        }
+        Err(crate::git_policy::GitOutputError::Io(e)) => {
             if e.kind() == std::io::ErrorKind::NotFound {
                 Err(AppError::GitMissing {
                     details: e.to_string(),
@@ -501,12 +596,21 @@ fn git_has_unstaged_changes(cwd: &str) -> Result<bool, AppError> {
 }
 
 fn git_has_diff_for_ref(ref_name: &str, cwd: &str) -> Result<bool, AppError> {
+    git_has_diff_for_ref_bounded(ref_name, cwd, OperationDeadline::new(Duration::MAX))
+}
+
+fn git_has_diff_for_ref_bounded(
+    ref_name: &str,
+    cwd: &str,
+    deadline: OperationDeadline,
+) -> Result<bool, AppError> {
     let mut cmd = Command::new("git");
+    crate::git_policy::configure_read_only(&mut cmd);
     let ref_expr = format!("{}...HEAD", ref_name);
     cmd.args(["diff", "--quiet", "--exit-code", &ref_expr, "--", "."]);
     cmd.current_dir(cwd);
-    match cmd.status() {
-        Ok(status) => match status.code() {
+    match crate::git_policy::output_bounded(&mut cmd, deadline.remaining()?) {
+        Ok(output) => match output.status.code() {
             Some(0) => Ok(false),
             Some(1) => Ok(true),
             Some(code) => Err(AppError::GitError {
@@ -518,7 +622,11 @@ fn git_has_diff_for_ref(ref_name: &str, cwd: &str) -> Result<bool, AppError> {
                 details: "process terminated by signal".to_string(),
             }),
         },
-        Err(e) => {
+        Err(crate::git_policy::GitOutputError::DeadlineExceeded) => Err(AppError::DeadlineExceeded),
+        Err(crate::git_policy::GitOutputError::OutputLimitExceeded) => {
+            Err(AppError::GitOutputLimitExceeded)
+        }
+        Err(crate::git_policy::GitOutputError::Io(e)) => {
             if e.kind() == std::io::ErrorKind::NotFound {
                 Err(AppError::GitMissing {
                     details: e.to_string(),
@@ -533,7 +641,15 @@ fn git_has_diff_for_ref(ref_name: &str, cwd: &str) -> Result<bool, AppError> {
 }
 
 fn git_detect_base_branch(cwd: &str) -> String {
-    let sym_ref = run_command_string(
+    git_detect_base_branch_bounded(cwd, OperationDeadline::new(Duration::MAX))
+        .unwrap_or_else(|_| "main".to_string())
+}
+
+fn git_detect_base_branch_bounded(
+    cwd: &str,
+    deadline: OperationDeadline,
+) -> Result<String, AppError> {
+    let sym_ref = run_command_string_bounded(
         &[
             "git",
             "symbolic-ref",
@@ -542,28 +658,40 @@ fn git_detect_base_branch(cwd: &str) -> String {
             "refs/remotes/origin/HEAD",
         ],
         cwd,
+        deadline,
     );
-    if let Ok(out) = sym_ref {
-        let trimmed = out.trim();
-        if let Some(stripped) = trimmed.strip_prefix("origin/") {
-            return stripped.to_string();
+    match sym_ref {
+        Ok(out) => {
+            let trimmed = out.trim();
+            if let Some(stripped) = trimmed.strip_prefix("origin/") {
+                return Ok(stripped.to_string());
+            }
+            if !trimmed.is_empty() {
+                return Ok(trimmed.to_string());
+            }
         }
-        if !trimmed.is_empty() {
-            return trimmed.to_string();
-        }
+        Err(AppError::DeadlineExceeded) => return Err(AppError::DeadlineExceeded),
+        Err(_) => {}
     }
 
     for branch in &["origin/main", "origin/master", "main", "master"] {
-        let verify = run_command_string(&["git", "rev-parse", "--verify", "--quiet", branch], cwd);
-        if verify.is_ok() {
-            if let Some(stripped) = branch.strip_prefix("origin/") {
-                return stripped.to_string();
+        match run_command_string_bounded(
+            &["git", "rev-parse", "--verify", "--quiet", branch],
+            cwd,
+            deadline,
+        ) {
+            Ok(_) => {
+                if let Some(stripped) = branch.strip_prefix("origin/") {
+                    return Ok(stripped.to_string());
+                }
+                return Ok(branch.to_string());
             }
-            return branch.to_string();
+            Err(AppError::DeadlineExceeded) => return Err(AppError::DeadlineExceeded),
+            Err(_) => {}
         }
     }
 
-    "main".to_string()
+    Ok("main".to_string())
 }
 
 fn git_get_head_sha(cwd: &str) -> String {
@@ -574,10 +702,13 @@ fn git_get_head_sha(cwd: &str) -> String {
 }
 
 fn git_get_head_oid(cwd: &str) -> String {
-    let out = run_command_string(&["git", "rev-parse", "HEAD"], cwd);
-    out.unwrap_or_else(|_| "unknown".to_string())
-        .trim()
-        .to_string()
+    git_get_head_oid_bounded(cwd, OperationDeadline::new(Duration::MAX))
+        .unwrap_or_else(|_| "unknown".to_string())
+}
+
+fn git_get_head_oid_bounded(cwd: &str, deadline: OperationDeadline) -> Result<String, AppError> {
+    let out = run_command_string_bounded(&["git", "rev-parse", "HEAD"], cwd, deadline)?;
+    Ok(out.trim().to_string())
 }
 
 fn git_get_branch_name(cwd: &str) -> String {
@@ -644,6 +775,24 @@ fn git_run_diff_bytes(
     path: Option<&str>,
     cwd: &str,
 ) -> Result<Vec<u8>, AppError> {
+    git_run_diff_bytes_bounded(
+        mode,
+        selected_ref,
+        extra_args,
+        path,
+        cwd,
+        OperationDeadline::new(Duration::MAX),
+    )
+}
+
+fn git_run_diff_bytes_bounded(
+    mode: &str,
+    selected_ref: &str,
+    extra_args: &[&str],
+    path: Option<&str>,
+    cwd: &str,
+    deadline: OperationDeadline,
+) -> Result<Vec<u8>, AppError> {
     let mut args = vec![
         "git",
         "-c",
@@ -674,7 +823,7 @@ fn git_run_diff_bytes(
         args.push(".");
     }
 
-    run_command_bytes(&args, cwd)
+    run_command_bytes_bounded(&args, cwd, deadline)
 }
 
 fn git_run_diff_string(
@@ -697,8 +846,17 @@ fn append_fingerprint_field(material: &mut Vec<u8>, name: &str, value: &[u8]) {
     material.push(0);
 }
 
-fn git_hash_object_bytes(bytes: &[u8], cwd: &str) -> Result<String, AppError> {
-    let out = run_command_bytes_with_stdin(&["git", "hash-object", "--stdin"], bytes, cwd)?;
+fn git_hash_object_bytes_bounded(
+    bytes: &[u8],
+    cwd: &str,
+    deadline: OperationDeadline,
+) -> Result<String, AppError> {
+    let out = run_command_bytes_with_stdin_bounded(
+        &["git", "hash-object", "--stdin"],
+        bytes,
+        cwd,
+        deadline,
+    )?;
     let oid = String::from_utf8_lossy(&out).trim().to_string();
     if oid.is_empty() {
         return Err(AppError::GitError {
@@ -709,38 +867,6 @@ fn git_hash_object_bytes(bytes: &[u8], cwd: &str) -> Result<String, AppError> {
     Ok(oid)
 }
 
-fn diff_fingerprint(
-    mode: &str,
-    selected_ref: &str,
-    head_oid: &str,
-    path: Option<&str>,
-    identity_path: Option<&str>,
-    cwd: &str,
-) -> Result<String, AppError> {
-    let diff_bytes = if mode == "none" {
-        Vec::new()
-    } else {
-        // The full-scope fingerprint uses binary-safe, full-index output. Keep
-        // per-unit framing on the ordinary helper diff because that is the
-        // exact review unit emitted by both native and legacy implementations.
-        let fingerprint_args: &[&str] = if path.is_none() {
-            &["--binary", "--full-index"]
-        } else {
-            &[]
-        };
-        git_run_diff_bytes(mode, selected_ref, fingerprint_args, path, cwd)?
-    };
-
-    diff_fingerprint_from_bytes(
-        mode,
-        selected_ref,
-        head_oid,
-        identity_path.or(path),
-        &diff_bytes,
-        cwd,
-    )
-}
-
 fn diff_fingerprint_from_bytes(
     mode: &str,
     selected_ref: &str,
@@ -748,6 +874,26 @@ fn diff_fingerprint_from_bytes(
     identity_path: Option<&str>,
     diff_bytes: &[u8],
     cwd: &str,
+) -> Result<String, AppError> {
+    diff_fingerprint_from_bytes_bounded(
+        mode,
+        selected_ref,
+        head_oid,
+        identity_path,
+        diff_bytes,
+        cwd,
+        OperationDeadline::new(Duration::MAX),
+    )
+}
+
+fn diff_fingerprint_from_bytes_bounded(
+    mode: &str,
+    selected_ref: &str,
+    head_oid: &str,
+    identity_path: Option<&str>,
+    diff_bytes: &[u8],
+    cwd: &str,
+    deadline: OperationDeadline,
 ) -> Result<String, AppError> {
     let mut material = b"pre-commit-review-diff-fingerprint-v1\0".to_vec();
     append_fingerprint_field(&mut material, "source", mode.as_bytes());
@@ -757,7 +903,142 @@ fn diff_fingerprint_from_bytes(
         append_fingerprint_field(&mut material, "path", path.as_bytes());
     }
     append_fingerprint_field(&mut material, "diff", diff_bytes);
-    git_hash_object_bytes(&material, cwd)
+    git_hash_object_bytes_bounded(&material, cwd, deadline)
+}
+
+#[derive(Debug, Default)]
+struct CustomRiskConfiguration {
+    path_patterns: Vec<String>,
+    content_patterns: Vec<String>,
+    paths: Vec<Regex>,
+    content: Vec<Regex>,
+}
+
+#[derive(Debug)]
+struct ScopeConfiguration {
+    custom_risk: CustomRiskConfiguration,
+    group_target_bytes: usize,
+    group_hard_bytes: usize,
+    helper_path: String,
+}
+
+fn load_custom_risk_configuration(repo_root: &Path) -> CustomRiskConfiguration {
+    let (path_patterns, paths) =
+        load_custom_regexes(repo_root.join(".pre-commit-review/risk-paths").as_path());
+    let (content_patterns, content) =
+        load_custom_regexes(repo_root.join(".pre-commit-review/risk-content").as_path());
+    CustomRiskConfiguration {
+        path_patterns,
+        content_patterns,
+        paths,
+        content,
+    }
+}
+
+fn effective_group_budgets() -> (usize, usize) {
+    let mut target = env::var("PRE_COMMIT_REVIEW_GROUP_TARGET_BYTES")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or(DEFAULT_GROUP_TARGET_BYTES);
+    let hard = env::var("PRE_COMMIT_REVIEW_GROUP_HARD_BYTES")
+        .ok()
+        .and_then(|value| value.parse::<usize>().ok())
+        .unwrap_or(DEFAULT_GROUP_HARD_BYTES);
+    target = target.min(hard);
+    (target, hard)
+}
+
+fn effective_helper_path() -> String {
+    env::var("PRE_COMMIT_REVIEW_HELPER_PATH").unwrap_or_else(|_| {
+        env::current_exe()
+            .unwrap_or_else(|_| PathBuf::from("collect_diff_context"))
+            .to_string_lossy()
+            .into_owned()
+    })
+}
+
+fn load_scope_configuration(repo_root: &Path) -> ScopeConfiguration {
+    let (group_target_bytes, group_hard_bytes) = effective_group_budgets();
+    ScopeConfiguration {
+        custom_risk: load_custom_risk_configuration(repo_root),
+        group_target_bytes,
+        group_hard_bytes,
+        helper_path: effective_helper_path(),
+    }
+}
+
+fn append_regex_set_fingerprint(material: &mut Vec<u8>, name: &str, patterns: &[String]) {
+    let mut patterns = patterns.iter().map(String::as_str).collect::<Vec<_>>();
+    patterns.sort_unstable();
+    patterns.dedup();
+    for pattern in patterns {
+        append_fingerprint_field(material, name, pattern.as_bytes());
+    }
+}
+
+fn scope_fingerprint_bounded(
+    mode: &str,
+    selected_ref: &str,
+    head_oid: &str,
+    configuration: &ScopeConfiguration,
+    cwd: &str,
+    deadline: OperationDeadline,
+) -> Result<String, AppError> {
+    let diff_bytes = if mode == "none" {
+        Vec::new()
+    } else {
+        git_run_diff_bytes_bounded(
+            mode,
+            selected_ref,
+            &["--binary", "--full-index"],
+            None,
+            cwd,
+            deadline,
+        )?
+    };
+    let mut material = b"pre-commit-review-scope-fingerprint-v2\0".to_vec();
+    append_fingerprint_field(&mut material, "source", mode.as_bytes());
+    append_fingerprint_field(&mut material, "selected-ref", selected_ref.as_bytes());
+    append_fingerprint_field(&mut material, "head", head_oid.as_bytes());
+    append_fingerprint_field(&mut material, "diff", &diff_bytes);
+    append_fingerprint_field(
+        &mut material,
+        "group-target-bytes",
+        configuration.group_target_bytes.to_string().as_bytes(),
+    );
+    append_fingerprint_field(
+        &mut material,
+        "group-hard-bytes",
+        configuration.group_hard_bytes.to_string().as_bytes(),
+    );
+    append_regex_set_fingerprint(
+        &mut material,
+        "risk-path",
+        &configuration.custom_risk.path_patterns,
+    );
+    append_regex_set_fingerprint(
+        &mut material,
+        "risk-content",
+        &configuration.custom_risk.content_patterns,
+    );
+    git_hash_object_bytes_bounded(&material, cwd, deadline)
+}
+
+fn scope_fingerprint(
+    mode: &str,
+    selected_ref: &str,
+    head_oid: &str,
+    configuration: &ScopeConfiguration,
+    cwd: &str,
+) -> Result<String, AppError> {
+    scope_fingerprint_bounded(
+        mode,
+        selected_ref,
+        head_oid,
+        configuration,
+        cwd,
+        OperationDeadline::new(Duration::MAX),
+    )
 }
 
 struct ScopeIdentity<'a> {
@@ -979,7 +1260,8 @@ fn get_lockfile_regex() -> &'static Regex {
     })
 }
 
-fn load_custom_regexes(path: &Path) -> Vec<Regex> {
+fn load_custom_regexes(path: &Path) -> (Vec<String>, Vec<Regex>) {
+    let mut patterns = Vec::new();
     let mut regexes = Vec::new();
     if let Ok(file) = File::open(path) {
         let reader = BufReader::new(file);
@@ -988,6 +1270,7 @@ fn load_custom_regexes(path: &Path) -> Vec<Regex> {
             if trimmed.is_empty() || trimmed.starts_with('#') {
                 continue;
             }
+            patterns.push(trimmed.to_string());
             if let Ok(re) = Regex::new(trimmed) {
                 regexes.push(re);
             } else {
@@ -999,7 +1282,7 @@ fn load_custom_regexes(path: &Path) -> Vec<Regex> {
             }
         }
     }
-    regexes
+    (patterns, regexes)
 }
 
 fn group_component_for_path(path: &str) -> String {
@@ -1427,54 +1710,78 @@ fn build_review_plan(
 pub(crate) fn open_authoritative_scope_impl(
     request: ScopeRequest,
 ) -> Result<AuthoritativeScope, ScopeError> {
+    open_authoritative_scope_impl_bounded(request, Duration::MAX)
+}
+
+fn scope_error_from_app(error: AppError) -> ScopeError {
+    match error {
+        AppError::DeadlineExceeded => ScopeError::deadline(error.to_string()),
+        _ => ScopeError::new(error.to_string()),
+    }
+}
+
+pub(crate) fn open_authoritative_scope_impl_bounded(
+    request: ScopeRequest,
+    limit: Duration,
+) -> Result<AuthoritativeScope, ScopeError> {
+    let deadline = OperationDeadline::new(limit);
     let requested_repository = fs::canonicalize(&request.repository)
         .map_err(|error| ScopeError::new(format!("cannot resolve repository: {error}")))?;
+    deadline.check().map_err(scope_error_from_app)?;
     let requested_cwd = requested_repository.to_string_lossy().into_owned();
-    let repo_root_output =
-        run_command_string(&["git", "rev-parse", "--show-toplevel"], &requested_cwd)
-            .map_err(|error| ScopeError::new(error.to_string()))?;
+    let repo_root_output = run_command_string_bounded(
+        &["git", "rev-parse", "--show-toplevel"],
+        &requested_cwd,
+        deadline,
+    )
+    .map_err(scope_error_from_app)?;
     let repo_root = fs::canonicalize(repo_root_output.trim())
         .map_err(|error| ScopeError::new(format!("cannot resolve Git root: {error}")))?;
+    deadline.check().map_err(scope_error_from_app)?;
     let repo_root_text = repo_root.to_string_lossy().into_owned();
 
-    let mut group_target_bytes = env::var("PRE_COMMIT_REVIEW_GROUP_TARGET_BYTES")
-        .ok()
-        .and_then(|value| value.parse::<usize>().ok())
-        .unwrap_or(DEFAULT_GROUP_TARGET_BYTES);
-    let group_hard_bytes = env::var("PRE_COMMIT_REVIEW_GROUP_HARD_BYTES")
-        .ok()
-        .and_then(|value| value.parse::<usize>().ok())
-        .unwrap_or(DEFAULT_GROUP_HARD_BYTES);
-    group_target_bytes = group_target_bytes.min(group_hard_bytes);
-
-    let head_oid = git_get_head_oid(&repo_root_text);
-    let base = git_detect_base_branch(&repo_root_text);
-    let staged_available = git_has_staged_changes(&repo_root_text)
-        .map_err(|error| ScopeError::new(error.to_string()))?;
-    let unstaged_available = git_has_unstaged_changes(&repo_root_text)
-        .map_err(|error| ScopeError::new(error.to_string()))?;
+    let head_oid =
+        git_get_head_oid_bounded(&repo_root_text, deadline).map_err(scope_error_from_app)?;
+    let base =
+        git_detect_base_branch_bounded(&repo_root_text, deadline).map_err(scope_error_from_app)?;
+    let staged_available =
+        git_has_staged_changes_bounded(&repo_root_text, deadline).map_err(scope_error_from_app)?;
+    let unstaged_available = git_has_unstaged_changes_bounded(&repo_root_text, deadline)
+        .map_err(scope_error_from_app)?;
 
     let mut selected_ref = String::new();
     let mut branch_available = false;
     let remote_ref = format!("origin/{base}");
-    if run_command_string(
+    match run_command_string_bounded(
         &["git", "rev-parse", "--verify", "--quiet", &remote_ref],
         &repo_root_text,
-    )
-    .is_ok()
-    {
-        selected_ref = remote_ref;
-        branch_available = git_has_diff_for_ref(&selected_ref, &repo_root_text)
-            .map_err(|error| ScopeError::new(error.to_string()))?;
-    } else if run_command_string(
-        &["git", "rev-parse", "--verify", "--quiet", &base],
-        &repo_root_text,
-    )
-    .is_ok()
-    {
-        selected_ref = base.clone();
-        branch_available = git_has_diff_for_ref(&selected_ref, &repo_root_text)
-            .map_err(|error| ScopeError::new(error.to_string()))?;
+        deadline,
+    ) {
+        Ok(_) => {
+            selected_ref = remote_ref;
+            branch_available =
+                git_has_diff_for_ref_bounded(&selected_ref, &repo_root_text, deadline)
+                    .map_err(scope_error_from_app)?;
+        }
+        Err(AppError::DeadlineExceeded) => {
+            return Err(ScopeError::deadline("repository context deadline exceeded"));
+        }
+        Err(_) => match run_command_string_bounded(
+            &["git", "rev-parse", "--verify", "--quiet", &base],
+            &repo_root_text,
+            deadline,
+        ) {
+            Ok(_) => {
+                selected_ref = base.clone();
+                branch_available =
+                    git_has_diff_for_ref_bounded(&selected_ref, &repo_root_text, deadline)
+                        .map_err(scope_error_from_app)?;
+            }
+            Err(AppError::DeadlineExceeded) => {
+                return Err(ScopeError::deadline("repository context deadline exceeded"));
+            }
+            Err(_) => {}
+        },
     }
 
     let detected_source = if staged_available {
@@ -1503,15 +1810,16 @@ pub(crate) fn open_authoritative_scope_impl(
         selected_ref.clear();
     }
 
-    let collection_start = diff_fingerprint(
+    let configuration = load_scope_configuration(&repo_root);
+    let collection_start = scope_fingerprint_bounded(
         source.as_str(),
         &selected_ref,
         &head_oid,
-        None,
-        None,
+        &configuration,
         &repo_root_text,
+        deadline,
     )
-    .map_err(|error| ScopeError::new(error.to_string()))?;
+    .map_err(scope_error_from_app)?;
     if let Some(expected) = request.expected_fingerprint.as_deref() {
         if expected != collection_start {
             return Err(ScopeError::new(
@@ -1521,42 +1829,51 @@ pub(crate) fn open_authoritative_scope_impl(
     }
 
     let name_status_entries = parse_name_status_z(
-        &git_run_diff_bytes(
+        &git_run_diff_bytes_bounded(
             source.as_str(),
             &selected_ref,
             &["--name-status", "-z"],
             None,
             &repo_root_text,
+            deadline,
         )
-        .map_err(|error| ScopeError::new(error.to_string()))?,
+        .map_err(scope_error_from_app)?,
     );
     let numstat_entries = parse_numstat_z(
-        &git_run_diff_bytes(
+        &git_run_diff_bytes_bounded(
             source.as_str(),
             &selected_ref,
             &["--numstat", "-z"],
             None,
             &repo_root_text,
+            deadline,
         )
-        .map_err(|error| ScopeError::new(error.to_string()))?,
+        .map_err(scope_error_from_app)?,
     );
-    let global_diff_bytes =
-        git_run_diff_bytes(source.as_str(), &selected_ref, &[], None, &repo_root_text)
-            .map_err(|error| ScopeError::new(error.to_string()))?;
+    let global_diff_bytes = git_run_diff_bytes_bounded(
+        source.as_str(),
+        &selected_ref,
+        &[],
+        None,
+        &repo_root_text,
+        deadline,
+    )
+    .map_err(scope_error_from_app)?;
     let global_diff = String::from_utf8_lossy(&global_diff_bytes);
 
     let path_risk_regexes = get_path_risk_regexes();
     let content_risk_regexes = get_content_risk_regexes();
     let generated_regexes = get_generated_regexes();
     let lockfile_regex = get_lockfile_regex();
-    let custom_risk_paths =
-        load_custom_regexes(repo_root.join(".pre-commit-review/risk-paths").as_path());
-    let custom_risk_content =
-        load_custom_regexes(repo_root.join(".pre-commit-review/risk-content").as_path());
+    let custom_risk_paths = configuration.custom_risk.paths;
+    let custom_risk_content = configuration.custom_risk.content;
+    let group_target_bytes = configuration.group_target_bytes;
+    let group_hard_bytes = configuration.group_hard_bytes;
 
     let mut content_risk_files = HashSet::new();
     let mut current_file = String::new();
     for line in global_diff.lines() {
+        deadline.check().map_err(scope_error_from_app)?;
         if let Some(path) = line.strip_prefix("+++ b/") {
             current_file = unquote_git_path(path);
             continue;
@@ -1594,6 +1911,7 @@ pub(crate) fn open_authoritative_scope_impl(
     let mut generated_files = HashSet::new();
     let mut lock_files = HashSet::new();
     for entry in &name_status_entries {
+        deadline.check().map_err(scope_error_from_app)?;
         if path_risk_regexes
             .iter()
             .any(|regex| regex.is_match(&entry.path))
@@ -1615,12 +1933,7 @@ pub(crate) fn open_authoritative_scope_impl(
         }
     }
 
-    let self_exe = env::var("PRE_COMMIT_REVIEW_HELPER_PATH").unwrap_or_else(|_| {
-        env::current_exe()
-            .unwrap_or_else(|_| PathBuf::from("collect_diff_context"))
-            .to_string_lossy()
-            .into_owned()
-    });
+    let self_exe = configuration.helper_path;
     let mut units = Vec::new();
     let mut group_sizes = HashMap::<String, usize>::new();
     let mut group_files = HashMap::<String, Vec<String>>::new();
@@ -1631,23 +1944,25 @@ pub(crate) fn open_authoritative_scope_impl(
         let display_path = quote_git_path(&entry.path);
         let (additions, deletions) =
             lookup_numstat(&numstat_entries, &entry.path, entry.old_path.as_deref());
-        let file_diff = git_run_diff_bytes(
+        let file_diff = git_run_diff_bytes_bounded(
             source.as_str(),
             &selected_ref,
             &[],
             Some(&entry.path),
             &repo_root_text,
+            deadline,
         )
-        .map_err(|error| ScopeError::new(error.to_string()))?;
-        let content_fingerprint = diff_fingerprint_from_bytes(
+        .map_err(scope_error_from_app)?;
+        let content_fingerprint = diff_fingerprint_from_bytes_bounded(
             source.as_str(),
             &selected_ref,
             &head_oid,
             Some(&display_path),
             &file_diff,
             &repo_root_text,
+            deadline,
         )
-        .map_err(|error| ScopeError::new(error.to_string()))?;
+        .map_err(scope_error_from_app)?;
         let component = safe_group_component(&group_component_for_path(&display_path));
 
         let (risk_tag, group_id, group_risk, group_reason) =
@@ -1748,15 +2063,16 @@ pub(crate) fn open_authoritative_scope_impl(
         .collect::<Vec<_>>();
     groups.sort_by(|left, right| left.group_id.cmp(&right.group_id));
 
-    let collection_end = diff_fingerprint(
+    let final_configuration = load_scope_configuration(&repo_root);
+    let collection_end = scope_fingerprint_bounded(
         source.as_str(),
         &selected_ref,
         &head_oid,
-        None,
-        None,
+        &final_configuration,
         &repo_root_text,
+        deadline,
     )
-    .map_err(|error| ScopeError::new(error.to_string()))?;
+    .map_err(scope_error_from_app)?;
     if collection_end != collection_start {
         return Err(ScopeError::new("scope changed during collection"));
     }
@@ -1782,6 +2098,44 @@ pub(crate) fn open_authoritative_scope_impl(
     }))
 }
 
+pub(crate) fn revalidate_authoritative_scope_impl_bounded(
+    scope: &AuthoritativeScope,
+    limit: Duration,
+) -> Result<(), ScopeError> {
+    let deadline = OperationDeadline::new(limit);
+    let repository = fs::canonicalize(&scope.repository)
+        .map_err(|error| ScopeError::new(format!("cannot resolve repository: {error}")))?;
+    if repository != scope.repository {
+        return Err(ScopeError::new(
+            "review scope repository changed during revalidation",
+        ));
+    }
+    let repository_text = repository.to_string_lossy().into_owned();
+    let head =
+        git_get_head_oid_bounded(&repository_text, deadline).map_err(scope_error_from_app)?;
+    if head != scope.head {
+        return Err(ScopeError::new(
+            "review scope HEAD changed during revalidation",
+        ));
+    }
+    let configuration = load_scope_configuration(&repository);
+    let fingerprint = scope_fingerprint_bounded(
+        scope.source.as_str(),
+        &scope.selected_ref,
+        &head,
+        &configuration,
+        &repository_text,
+        deadline,
+    )
+    .map_err(scope_error_from_app)?;
+    if fingerprint != scope.fingerprint {
+        return Err(ScopeError::new(
+            "review scope diff changed, risk configuration changed, or authoritative group budgets changed during revalidation",
+        ));
+    }
+    Ok(())
+}
+
 fn run_app() -> Result<(), AppError> {
     let args = CliArgs::parse()?;
 
@@ -1801,12 +2155,7 @@ fn run_app() -> Result<(), AppError> {
             expected_fingerprint: args.expect_scope.clone(),
         };
         if let Ok(scope) = open_authoritative_scope_impl(request) {
-            let self_exe = env::var("PRE_COMMIT_REVIEW_HELPER_PATH").unwrap_or_else(|_| {
-                env::current_exe()
-                    .unwrap_or_else(|_| PathBuf::from("collect_diff_context"))
-                    .to_string_lossy()
-                    .into_owned()
-            });
+            let self_exe = effective_helper_path();
             emit_control_plane(&scope, &self_exe);
             return Ok(());
         }
@@ -1823,19 +2172,9 @@ fn run_app() -> Result<(), AppError> {
         .and_then(|val| val.parse::<usize>().ok())
         .unwrap_or(DEFAULT_INLINE_DIFF_BYTES);
 
-    let mut group_target_bytes = env::var("PRE_COMMIT_REVIEW_GROUP_TARGET_BYTES")
-        .ok()
-        .and_then(|val| val.parse::<usize>().ok())
-        .unwrap_or(DEFAULT_GROUP_TARGET_BYTES);
-
-    let group_hard_bytes = env::var("PRE_COMMIT_REVIEW_GROUP_HARD_BYTES")
-        .ok()
-        .and_then(|val| val.parse::<usize>().ok())
-        .unwrap_or(DEFAULT_GROUP_HARD_BYTES);
-
-    if group_target_bytes > group_hard_bytes {
-        group_target_bytes = group_hard_bytes;
-    }
+    let configuration = load_scope_configuration(Path::new(&repo_root));
+    let group_target_bytes = configuration.group_target_bytes;
+    let group_hard_bytes = configuration.group_hard_bytes;
 
     // Git state detection
     let branch = git_get_branch_name(&repo_root);
@@ -1963,7 +2302,7 @@ fn run_app() -> Result<(), AppError> {
     // comparable with the authoritative parent manifest.
     let defer_output_for_authority = args.control_plane || args.expect_scope.is_some();
     let collection_start_fingerprint = if defer_output_for_authority {
-        diff_fingerprint(mode, &selected_ref, &head_oid, None, None, &repo_root)?
+        scope_fingerprint(mode, &selected_ref, &head_oid, &configuration, &repo_root)?
     } else {
         String::new()
     };
@@ -2031,12 +2370,7 @@ fn run_app() -> Result<(), AppError> {
     }
 
     // Executable path for context commands
-    let self_exe = env::var("PRE_COMMIT_REVIEW_HELPER_PATH").unwrap_or_else(|_| {
-        env::current_exe()
-            .unwrap_or_else(|_| PathBuf::from("collect_diff_context"))
-            .to_string_lossy()
-            .to_string()
-    });
+    let self_exe = configuration.helper_path;
 
     // 1. Gather all name-status changes globally
     let global_name_status_bytes = if mode != "none" {
@@ -2113,16 +2447,8 @@ fn run_app() -> Result<(), AppError> {
     let lockfile_regex = get_lockfile_regex();
 
     // Custom regexes
-    let custom_risk_paths = load_custom_regexes(
-        Path::new(&repo_root)
-            .join(".pre-commit-review/risk-paths")
-            .as_path(),
-    );
-    let custom_risk_content = load_custom_regexes(
-        Path::new(&repo_root)
-            .join(".pre-commit-review/risk-content")
-            .as_path(),
-    );
+    let custom_risk_paths = configuration.custom_risk.paths;
+    let custom_risk_content = configuration.custom_risk.content;
 
     // Write global diff to memory to parse content risk and dependency summary (preserving raw byte size)
     let global_diff_bytes = if mode != "none" {
@@ -2711,8 +3037,14 @@ fn run_app() -> Result<(), AppError> {
     groups.sort_by(|a, b| a.group_id.cmp(&b.group_id));
 
     if defer_output_for_authority {
-        let collection_end_fingerprint =
-            diff_fingerprint(mode, &selected_ref, &head_oid, None, None, &repo_root)?;
+        let final_configuration = load_scope_configuration(Path::new(&repo_root));
+        let collection_end_fingerprint = scope_fingerprint(
+            mode,
+            &selected_ref,
+            &head_oid,
+            &final_configuration,
+            &repo_root,
+        )?;
         if collection_end_fingerprint != collection_start_fingerprint {
             emit_authority_failure(
                 &scope_identity,
@@ -3800,6 +4132,17 @@ pub(crate) fn main_entry() -> i32 {
             AppError::SecretScan(error) => {
                 eprintln!("collect_diff_context: secret scan failed: {}", error);
                 3
+            }
+            AppError::DeadlineExceeded => {
+                eprintln!("collect_diff_context: repository context deadline exceeded");
+                2
+            }
+            AppError::GitOutputLimitExceeded => {
+                eprintln!(
+                    "collect_diff_context: Git output exceeded the {}-byte capture limit",
+                    crate::git_policy::MAX_GIT_OUTPUT_BYTES
+                );
+                2
             }
         },
     }

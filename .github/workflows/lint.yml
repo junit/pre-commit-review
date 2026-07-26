@@ -56,12 +56,19 @@ jobs:
       - name: Compile release binary
         run: cargo build --release
         working-directory: collect-diff-context-cli
+      - name: Run fast impact-context release gates
+        run: cargo test --release --test impact_context_performance -- --nocapture
+        working-directory: collect-diff-context-cli
       - name: Set up nightly fuzz toolchain
         run: rustup toolchain install nightly --profile minimal
       - name: Install cargo-fuzz
         run: cargo install --locked --version 0.13.2 cargo-fuzz
       - name: Compile structural-context fuzz targets
         run: cargo +nightly fuzz build --fuzz-dir collect-diff-context-cli/fuzz
+      - name: Run bounded structural-context fuzz smoke
+        run: |
+          cargo +nightly fuzz run tree_sitter_rust --fuzz-dir collect-diff-context-cli/fuzz -- -max_total_time=10 -timeout=5
+          cargo +nightly fuzz run impact_contract --fuzz-dir collect-diff-context-cli/fuzz -- -max_total_time=10 -timeout=5
 
   static-analysis-platforms:
     name: Static analysis (${{ matrix.target }})
@@ -110,7 +117,7 @@ jobs:
           "$static_binary" orchestrate --help
           "$repository_binary" collect --help
       - name: Run focused Rust contracts
-        run: cargo test --target ${{ matrix.target }} --test static_evidence --test static_execution --test static_execution_modes --test static_orchestration
+        run: cargo test --target ${{ matrix.target }} --features test-fixture --test candidate_content --test impact_context_contracts --test static_evidence --test static_execution --test static_execution_modes --test static_execution_platform --test static_orchestration
         working-directory: collect-diff-context-cli
 
   integration-tests:

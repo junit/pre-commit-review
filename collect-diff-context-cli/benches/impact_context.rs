@@ -66,8 +66,16 @@ impl CandidateContent for BenchCandidate {
         &self.files
     }
 
-    fn read(&self, path: &RepoPath) -> Result<CandidateBytes, CandidateError> {
-        let bytes = self.contents[path.as_str()].clone();
+    fn read_bounded(
+        &self,
+        path: &RepoPath,
+        max_bytes: usize,
+    ) -> Result<CandidateBytes, CandidateError> {
+        let source = &self.contents[path.as_str()];
+        if source.len() > max_bytes {
+            return Err(CandidateError::byte_limit_exceeded(path, max_bytes));
+        }
+        let bytes = source.clone();
         Ok(CandidateBytes {
             sha256: format!("{:x}", Sha256::digest(&bytes)),
             binary: bytes.iter().take(8192).any(|byte| *byte == 0),

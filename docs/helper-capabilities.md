@@ -71,11 +71,15 @@ The wrapper resolves the Rust `static-analysis-cli` from an explicit absolute `P
 
 The collector:
 
-- requires the opening `scope_fingerprint` and fails closed on scope drift or report mismatch
+- requires the opening `scope_fingerprint`, which binds the binary-safe Git candidate and
+  normalized repository authority configuration (risk rules and effective group budgets), and
+  fails closed on scope drift or report mismatch
 - normalizes and deduplicates tool findings
 - maps paths to authoritative manifest units and locations to added or unchanged lines
 - classifies findings as blocking candidates, priority candidates, notes, or outside-scope evidence
-- revalidates fingerprint, units, groups, and work order before emitting `static_analysis_evidence/v1`
+- revalidates the complete scope identity before emitting `static_analysis_evidence/v1`; unchanged
+  candidate and authority-configuration inputs deterministically preserve units, groups, and work
+  order
 - applies optional local secret sanitization to its machine-readable output
 
 Static evidence feeds the existing candidate ledger and reducer finding merge, but never marks a manifest unit reviewed. See [static-analysis-evidence.md](static-analysis-evidence.md) for the protocol and command examples.

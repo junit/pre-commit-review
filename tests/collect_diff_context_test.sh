@@ -30,6 +30,7 @@ run_impact_context() {
   local output_file="$2"
   local control_file="$tmp_dir/impact-control.json"
   local fingerprint
+  local impact_status=0
 
   (
     cd "$workdir"
@@ -51,7 +52,11 @@ PY
     PRE_COMMIT_REVIEW_SECRET_SCAN=off \
     PRE_COMMIT_REVIEW_REPOSITORY_CONTEXT_BIN="$context_bin" \
       "$impact_helper" --source staged --expect-scope "$fingerprint" --mode fast
-  ) >"$output_file" 2>&1
+  ) >"$output_file" 2>&1 || impact_status=$?
+  if [ "$impact_status" -ne 0 ]; then
+    cat "$output_file" >&2
+    fail "impact context helper exited with status $impact_status"
+  fi
 }
 
 assert_contains() {

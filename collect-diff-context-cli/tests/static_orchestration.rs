@@ -708,6 +708,38 @@ fn preflight_requires_manifest_level_repository_configuration_authority() {
 
 #[cfg(unix)]
 #[test]
+fn preflight_rejects_unused_repository_configuration_authority() {
+    let repository = preflight_repository();
+    let fixtures = TempDir::new().unwrap();
+    let marker = fixtures.path().join("disabled.marker");
+    let executable = marker_executable(fixtures.path(), "disabled.sh", &marker);
+    let executable_sha256 = sha256_file(&executable);
+    let (profile, profile_sha256) = write_preflight_profile(
+        fixtures.path(),
+        "disabled",
+        &executable,
+        &executable_sha256,
+        "disabled",
+    );
+    let (manifest, manifest_sha256) =
+        write_preflight_manifest(fixtures.path(), &[("disabled", &profile, &profile_sha256)]);
+
+    let error = prepare_orchestration(&preflight_request(
+        repository.path(),
+        &manifest,
+        &manifest_sha256,
+        true,
+    ))
+    .unwrap_err();
+
+    assert!(error
+        .to_string()
+        .contains("valid only when at least one profile is explicitly trusted"));
+    assert!(!marker.exists());
+}
+
+#[cfg(unix)]
+#[test]
 fn preflight_revalidation_rejects_manifest_profile_and_entrypoint_drift() {
     for drift in ["manifest", "profile", "entrypoint"] {
         let repository = preflight_repository();

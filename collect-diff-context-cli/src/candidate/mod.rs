@@ -3,5 +3,5 @@ pub mod snapshot;
 
 pub use content::{
     decode_git_quoted_path, CandidateBytes, CandidateContent, CandidateError, CandidateFile,
-    CandidatePresence, ChangedRange, GitCandidateContent, RepoPath,
+    CandidateOpenLimits, CandidatePresence, ChangedRange, GitCandidateContent, RepoPath,
 };

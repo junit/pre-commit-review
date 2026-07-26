@@ -2,7 +2,9 @@
 
 ## Status
 
-Approved design. Implementation has not started.
+Approved design. Subproject A (Fast Structural Context MVP) is implemented on
+`feature/SAST` and has completed release-readiness hardening. Subprojects B-D
+remain pending; Subproject B (Persistent Symbol Index) is the next delivery.
 
 This design introduces a dual-mode repository-context system for
 `pre-commit-review`:
@@ -54,7 +56,9 @@ The repository also already has the essential integrity primitives that the new
 system must reuse:
 
 - authoritative staged, unstaged, and branch scope selection;
-- a full `scope_fingerprint` and per-unit content fingerprints;
+- a full `scope_fingerprint` bound to the binary-safe Git candidate and normalized repository
+  authority configuration (risk rules and effective group budgets), plus per-unit content
+  fingerprints;
 - bounded follow-up retrieval with `--expect-scope`;
 - read-only tracked-file candidate snapshots;
 - explicit completed, partial, failed, timeout, invalidated, and unavailable
@@ -226,6 +230,9 @@ Implementations:
 - staged reads stage-zero index blobs;
 - unstaged reads tracked working-tree candidate bytes;
 - branch reads the selected Git tree;
+- bounded manifest preparation gives Git metadata and changed-range subprocesses
+  the remaining fast deadline, terminates them on exhaustion, and reports an
+  explicit deadline failure or per-unit limitation;
 - deep semantic providers can request a materialized read-only
   `CandidateSnapshot` built from the same interface.
 

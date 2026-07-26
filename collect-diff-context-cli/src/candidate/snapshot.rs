@@ -1,3 +1,4 @@
+use crate::git_policy::configure_read_only;
 use crate::review_scope::ReviewSource;
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, VecDeque};
@@ -128,18 +129,9 @@ impl Drop for CandidateSnapshot {
     }
 }
 
-fn configure_git(command: &mut Command) {
-    command
-        .env("GIT_OPTIONAL_LOCKS", "0")
-        .env("GIT_NO_LAZY_FETCH", "1")
-        .env("GIT_CONFIG_NOSYSTEM", "1");
-    #[cfg(not(windows))]
-    command.env("GIT_CONFIG_GLOBAL", "/dev/null");
-}
-
 fn run_git(repository: &Path, arguments: &[&str]) -> Result<Vec<u8>, SnapshotError> {
     let mut command = Command::new("git");
-    configure_git(&mut command);
+    configure_read_only(&mut command);
     let output = command
         .args(arguments)
         .current_dir(repository)
@@ -289,7 +281,11 @@ fn materialize_blobs(
     entries: &[GitEntry],
     limits: SnapshotLimits,
 ) -> Result<(), SnapshotError> {
-    if entries.len() > limits.max_files {
+    let materialized_files = entries
+        .iter()
+        .filter(|entry| entry.mode != "160000")
+        .count();
+    if materialized_files > limits.max_files {
         return Err(SnapshotError::new(format!(
             "analysis snapshot exceeds the {}-file profile limit",
             limits.max_files
@@ -301,7 +297,7 @@ fn materialize_blobs(
         .try_clone()
         .map_err(|error| SnapshotError::new(format!("cannot capture git cat-file: {error}")))?;
     let mut command = Command::new("git");
-    configure_git(&mut command);
+    configure_read_only(&mut command);
     let mut child = command
         .args(["cat-file", "--batch"])
         .current_dir(repository)
@@ -464,13 +460,8 @@ fn materialize_unstaged(
         .split(|byte| *byte == 0)
         .filter(|path| !path.is_empty())
         .collect::<Vec<_>>();
-    if paths.len() > limits.max_files {
-        return Err(SnapshotError::new(format!(
-            "analysis snapshot exceeds the {}-file profile limit",
-            limits.max_files
-        )));
-    }
     let mut total_bytes = 0_u64;
+    let mut materialized_files = 0_usize;
     for raw_path in paths {
         let relative = safe_relative_path(raw_path)?;
         let source = repository.join(&relative);
@@ -487,6 +478,18 @@ fn materialize_unstaged(
         let file_type = metadata.file_type();
         if file_type.is_dir() {
             continue;
+        }
+        if !file_type.is_symlink() && !file_type.is_file() {
+            return Err(SnapshotError::new(
+                "tracked working-tree path is not a regular file or symlink",
+            ));
+        }
+        materialized_files = materialized_files.saturating_add(1);
+        if materialized_files > limits.max_files {
+            return Err(SnapshotError::new(format!(
+                "analysis snapshot exceeds the {}-file profile limit",
+                limits.max_files
+            )));
         }
         create_parent(&destination)?;
         if file_type.is_symlink() {
@@ -510,10 +513,6 @@ fn materialize_unstaged(
             )?;
             total_bytes = checked_snapshot_bytes(total_bytes, copied, limits)?;
             set_mode(&destination, metadata_mode(&metadata))?;
-        } else {
-            return Err(SnapshotError::new(
-                "tracked working-tree path is not a regular file or symlink",
-            ));
         }
     }
     Ok(())
@@ -894,6 +893,10 @@ fn make_snapshot_read_only(root: &Path) -> Result<(), SnapshotError> {
     for directory in directories.into_iter().rev() {
         set_directory_read_only(&directory)?;
     }
+    #[cfg(windows)]
+    crate::windows_acl::restrict_tree_read_execute(root).map_err(|error| {
+        SnapshotError::new(format!("cannot secure Windows analysis snapshot: {error}"))
+    })?;
     Ok(())
 }
 
@@ -1000,9 +1003,30 @@ fn directory_is_writable(path: &Path) -> Result<bool, SnapshotError> {
     is_writable(path)
 }
 
-#[cfg(not(unix))]
-fn directory_is_writable(_path: &Path) -> Result<bool, SnapshotError> {
-    Ok(false)
+#[cfg(windows)]
+fn directory_is_writable(path: &Path) -> Result<bool, SnapshotError> {
+    for attempt in 0..10 {
+        let probe = path.join(format!(
+            ".pre-commit-review-write-probe-{}-{attempt}",
+            std::process::id()
+        ));
+        match OpenOptions::new().write(true).create_new(true).open(&probe) {
+            Ok(_) => {
+                let _ = fs::remove_file(probe);
+                return Ok(true);
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => return Ok(false),
+            Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+            Err(error) => {
+                return Err(SnapshotError::new(format!(
+                    "cannot verify snapshot directory permissions: {error}"
+                )))
+            }
+        }
+    }
+    Err(SnapshotError::new(
+        "cannot allocate a snapshot directory permission probe",
+    ))
 }
 
 #[cfg(unix)]
@@ -1018,17 +1042,20 @@ fn is_writable(path: &Path) -> Result<bool, SnapshotError> {
         != 0)
 }
 
-#[cfg(not(unix))]
+#[cfg(windows)]
 fn is_writable(path: &Path) -> Result<bool, SnapshotError> {
-    Ok(!fs::metadata(path)
-        .map_err(|error| {
-            SnapshotError::new(format!("cannot inspect snapshot permissions: {error}"))
-        })?
-        .permissions()
-        .readonly())
+    match OpenOptions::new().write(true).open(path) {
+        Ok(_) => Ok(true),
+        Err(error) if error.kind() == std::io::ErrorKind::PermissionDenied => Ok(false),
+        Err(error) => Err(SnapshotError::new(format!(
+            "cannot verify snapshot file permissions: {error}"
+        ))),
+    }
 }
 
 fn make_snapshot_writable(root: &Path) {
+    #[cfg(windows)]
+    let _ = crate::windows_acl::grant_tree_full_control(root);
     let _ = make_directory_writable(root);
 }
 

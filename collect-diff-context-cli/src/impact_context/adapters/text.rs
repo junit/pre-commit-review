@@ -1,4 +1,4 @@
-use crate::candidate::{CandidateContent, CandidatePresence, RepoPath};
+use crate::candidate::{CandidateContent, CandidateError, CandidatePresence, RepoPath};
 use crate::impact_context::budget::{BudgetResource, BudgetTracker};
 use crate::impact_context::contracts::{SourceRange, UnitStatus};
 use regex::Regex;
@@ -106,14 +106,6 @@ pub struct TextAdapterError {
     message: String,
 }
 
-impl TextAdapterError {
-    fn new(message: impl Into<String>) -> Self {
-        Self {
-            message: message.into(),
-        }
-    }
-}
-
 impl std::fmt::Display for TextAdapterError {
     fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
         formatter.write_str(&self.message)
@@ -132,13 +124,20 @@ impl TextAdapter {
         let mut limitation_codes = Vec::new();
         let mut queries = Vec::new();
         let mut input_sizes = BTreeMap::new();
-        let context_query_bytes = match read_optional_candidate(candidate, CONTEXT_QUERIES_PATH) {
-            Ok(bytes) => bytes,
-            Err(_) => {
-                push_unique(&mut limitation_codes, "context-query-config-unavailable");
-                None
-            }
-        };
+        let max_file_bytes = budget.budget().max_file_bytes;
+        let context_query_bytes =
+            match read_optional_candidate(candidate, CONTEXT_QUERIES_PATH, max_file_bytes) {
+                Ok(bytes) => bytes,
+                Err(error) => {
+                    push_unique(
+                        &mut limitation_codes,
+                        error
+                            .budget_limitation_code()
+                            .unwrap_or("context-query-config-unavailable"),
+                    );
+                    None
+                }
+            };
         if let Some(bytes) = context_query_bytes {
             input_sizes.insert(CONTEXT_QUERIES_PATH.to_string(), bytes.len());
             if !configuration_bytes_allowed(bytes.len(), budget, &mut limitation_codes) {
@@ -172,13 +171,19 @@ impl TextAdapter {
         }
 
         let mut test_hints = Vec::new();
-        let test_hint_bytes = match read_optional_candidate(candidate, TEST_HINTS_PATH) {
-            Ok(bytes) => bytes,
-            Err(_) => {
-                push_unique(&mut limitation_codes, "test-hint-config-unavailable");
-                None
-            }
-        };
+        let test_hint_bytes =
+            match read_optional_candidate(candidate, TEST_HINTS_PATH, max_file_bytes) {
+                Ok(bytes) => bytes,
+                Err(error) => {
+                    push_unique(
+                        &mut limitation_codes,
+                        error
+                            .budget_limitation_code()
+                            .unwrap_or("test-hint-config-unavailable"),
+                    );
+                    None
+                }
+            };
         if let Some(bytes) = test_hint_bytes {
             input_sizes.insert(TEST_HINTS_PATH.to_string(), bytes.len());
             if !configuration_bytes_allowed(bytes.len(), budget, &mut limitation_codes) {
@@ -432,9 +437,9 @@ fn configuration_bytes_allowed(
 fn read_optional_candidate(
     candidate: &dyn CandidateContent,
     path: &str,
-) -> Result<Option<Vec<u8>>, TextAdapterError> {
-    let repo_path = RepoPath::new(path)
-        .map_err(|error| TextAdapterError::new(format!("invalid config path: {error}")))?;
+    max_bytes: usize,
+) -> Result<Option<Vec<u8>>, CandidateError> {
+    let repo_path = RepoPath::new(path)?;
     let present = candidate
         .files()
         .iter()
@@ -443,9 +448,8 @@ fn read_optional_candidate(
         return Ok(None);
     }
     candidate
-        .read(&repo_path)
+        .read_bounded(&repo_path, max_bytes)
         .map(|content| Some(content.bytes))
-        .map_err(|error| TextAdapterError::new(format!("cannot read {path}: {error}")))
 }
 
 fn compile_optional_regex(pattern: &str) -> Result<Option<Regex>, regex::Error> {
