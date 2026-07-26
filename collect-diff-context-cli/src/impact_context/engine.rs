@@ -945,7 +945,7 @@ fn line_range(source: &[u8], range: &ChangedRange) -> SourceRange {
     }
 }
 
-fn detect_language(path: &str) -> &'static str {
+pub fn detect_language(path: &str) -> &'static str {
     let lower = path.to_ascii_lowercase();
     if lower.ends_with(".rs") {
         "rust"
