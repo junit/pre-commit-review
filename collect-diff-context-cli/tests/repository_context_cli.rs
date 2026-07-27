@@ -53,13 +53,19 @@ fn help_and_unsupported_subcommands_are_stable() -> Result<(), Box<dyn Error>> {
     let repo = GitRepo::new()?;
     let help = repository_context(&repo, &["--help"])?;
     assert!(help.status.success());
-    assert!(String::from_utf8(help.stdout)?.contains("repository-context-cli collect"));
+    let help = String::from_utf8(help.stdout)?;
+    assert!(help.contains("repository-context-cli collect"));
+    assert!(help.contains("repository-context-cli index"));
 
     let collect_help = repository_context(&repo, &["collect", "--help"])?;
     assert!(collect_help.status.success());
-    assert!(String::from_utf8(collect_help.stdout)?.contains("--mode fast"));
+    assert!(String::from_utf8(collect_help.stdout)?.contains("--mode <fast|deep>"));
 
-    for arguments in [&["index"][..], &["collect", "--mode", "deep"][..]] {
+    let index_help = repository_context(&repo, &["index", "--help"])?;
+    assert!(index_help.status.success());
+    assert!(String::from_utf8(index_help.stdout)?.contains("index build"));
+
+    for arguments in [&["unknown"][..], &["index", "unknown"][..]] {
         let output = repository_context(&repo, arguments)?;
         assert_eq!(output.status.code(), Some(2));
         assert!(String::from_utf8(output.stderr)?.starts_with("repository-context-cli:"));

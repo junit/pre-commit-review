@@ -31,13 +31,13 @@ pub struct CacheLayout {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
-struct FileFactsEnvelope {
-    magic: String,
-    schema_version: u16,
-    key: FileFactKey,
-    payload_length: usize,
-    payload_sha256: String,
-    payload: RustFileFacts,
+pub(crate) struct FileFactsEnvelope {
+    pub(crate) magic: String,
+    pub(crate) schema_version: u16,
+    pub(crate) key: FileFactKey,
+    pub(crate) payload_length: usize,
+    pub(crate) payload_sha256: String,
+    pub(crate) payload: RustFileFacts,
 }
 
 #[derive(Debug, Clone)]

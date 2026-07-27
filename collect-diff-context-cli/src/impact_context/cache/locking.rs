@@ -25,16 +25,10 @@ pub(crate) fn acquire_writer_lock(
         message: error.to_string(),
     })?;
     let path = layout.locks_dir.join(format!("{generation_key}.lock"));
-    let file = OpenOptions::new()
-        .create(true)
-        .truncate(false)
-        .read(true)
-        .write(true)
-        .open(&path)
-        .map_err(|error| WriterLockError {
-            code: "writer-lock-failed",
-            message: format!("cannot open writer lock {}: {error}", path.display()),
-        })?;
+    let file = open_lock_file_no_follow(&path).map_err(|error| WriterLockError {
+        code: "writer-lock-failed",
+        message: format!("cannot open writer lock {}: {error}", path.display()),
+    })?;
     set_private_file_permissions(&file).map_err(|error| WriterLockError {
         code: "writer-lock-permission-failed",
         message: error.to_string(),
@@ -62,4 +56,43 @@ pub(crate) fn acquire_writer_lock(
             }
         }
     }
+}
+
+#[cfg(unix)]
+fn open_lock_file_no_follow(path: &std::path::Path) -> std::io::Result<File> {
+    use std::os::unix::fs::OpenOptionsExt;
+    let file = OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .custom_flags(libc::O_NOFOLLOW)
+        .open(path)?;
+    if !file.metadata()?.is_file() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "writer lock is not a regular file",
+        ));
+    }
+    Ok(file)
+}
+
+#[cfg(windows)]
+fn open_lock_file_no_follow(path: &std::path::Path) -> std::io::Result<File> {
+    use std::os::windows::fs::OpenOptionsExt;
+    use windows_sys::Win32::Storage::FileSystem::FILE_FLAG_OPEN_REPARSE_POINT;
+    let file = OpenOptions::new()
+        .create(true)
+        .truncate(false)
+        .read(true)
+        .write(true)
+        .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
+        .open(path)?;
+    if !file.metadata()?.is_file() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "writer lock is not a regular file",
+        ));
+    }
+    Ok(file)
 }

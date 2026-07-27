@@ -55,6 +55,7 @@ pub struct RepositoryIndexRequest<'a> {
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct RepositoryIndexOutput {
+    pub generation_key: String,
     pub provider: ProviderRecord,
     pub symbols: Vec<ChangedSymbol>,
     pub edges: Vec<ImpactEdge>,
@@ -329,6 +330,9 @@ impl RepositoryIndexAdapter {
             elapsed_ms(started),
         );
         Ok(RepositoryIndexOutput {
+            generation_key: prepared.identity.generation_key().map_err(|error| {
+                RepositoryIndexError::new("repository-index-identity-invalid", error.to_string())
+            })?,
             provider,
             symbols: query.symbols,
             edges: query.edges,
@@ -706,6 +710,10 @@ fn finalize_unavailable(
         output_truncated: false,
     };
     RepositoryIndexOutput {
+        generation_key: prepared
+            .identity
+            .generation_key()
+            .expect("prepared repository index identity is valid"),
         provider: provider_record(
             provider_id,
             &prepared.identity,

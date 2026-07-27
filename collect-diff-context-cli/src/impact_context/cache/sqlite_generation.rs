@@ -221,6 +221,66 @@ impl RepositoryGraphWriter {
 }
 
 impl RepositoryGraphReader {
+    pub fn read_identity_immutable(
+        path: &Path,
+        limits: ReaderLimits,
+    ) -> Result<CacheLookup<GraphGenerationIdentity>, RepositoryGraphError> {
+        validate_reader_limits(limits)?;
+        let metadata = match fs::symlink_metadata(path) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                return Ok(CacheLookup::Miss)
+            }
+            Err(error) => {
+                return Err(RepositoryGraphError::new(
+                    "reader-metadata-failed",
+                    format!("cannot inspect graph generation: {error}"),
+                ))
+            }
+        };
+        if !metadata.file_type().is_file() {
+            return Ok(reader_corrupt("generation-not-regular"));
+        }
+        if metadata.len() > limits.maximum_database_bytes {
+            return Ok(reader_corrupt("generation-database-too-large"));
+        }
+        let connection = match open_immutable_connection(path) {
+            Ok(connection) => connection,
+            Err(_) => return Ok(reader_corrupt("generation-open-failed")),
+        };
+        let identity_json =
+            match connection.query_row("SELECT identity_json FROM generation_meta", [], |row| {
+                row.get::<_, String>(0)
+            }) {
+                Ok(identity_json) => identity_json,
+                Err(_) => return Ok(reader_corrupt("generation-metadata-invalid")),
+            };
+        if bounded_reader_text(
+            &identity_json,
+            limits.maximum_string_bytes.saturating_mul(16),
+        )
+        .is_err()
+        {
+            return Ok(reader_corrupt("generation-identity-too-large"));
+        }
+        let identity: GraphGenerationIdentity = match serde_json::from_str(&identity_json) {
+            Ok(identity) => identity,
+            Err(_) => return Ok(reader_corrupt("generation-identity-invalid")),
+        };
+        if identity.validate().is_err() {
+            return Ok(reader_corrupt("generation-identity-invalid"));
+        }
+        let expected_key = identity.generation_key().map_err(|error| {
+            RepositoryGraphError::new("reader-identity-invalid", error.to_string())
+        })?;
+        if generation_key_from_path(path).as_deref() != Some(expected_key.as_str()) {
+            return Ok(CacheLookup::Stale {
+                code: "generation-filename-stale".to_string(),
+            });
+        }
+        Ok(CacheLookup::Hit(identity))
+    }
+
     pub fn open_immutable(
         path: &Path,
         expected: &GraphGenerationIdentity,
@@ -292,6 +352,21 @@ impl RepositoryGraphReader {
 
     pub fn query_only(&self) -> bool {
         self.query_only
+    }
+
+    pub fn integrity_check(&self) -> Result<(), RepositoryGraphError> {
+        let result: String = self
+            .connection
+            .query_row("PRAGMA integrity_check", [], |row| row.get(0))
+            .map_err(sqlite_error)?;
+        if result == "ok" {
+            Ok(())
+        } else {
+            Err(RepositoryGraphError::new(
+                "generation-integrity-check-failed",
+                "SQLite integrity_check did not return ok",
+            ))
+        }
     }
 
     pub fn maximum_rows_per_query(&self) -> usize {
