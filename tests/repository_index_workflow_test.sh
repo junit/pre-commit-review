@@ -31,6 +31,11 @@ grep -Fq 'index doctor --cache-dir' "$release" \
   || fail 'release workflow does not doctor the production repository index'
 grep -Fq 'index inspect --generation' "$release" \
   || fail 'release workflow does not run an immutable production query'
+grep -Fq 'inspect_report="$(cd "$repository" && PRE_COMMIT_REVIEW_CACHE_DIR="$cache" \' "$release" \
+  || fail 'release workflow does not bind inspect to the smoke cache through the supported environment override'
+if grep -Eq 'index inspect .*--cache-dir' "$release"; then
+  fail 'release workflow passes unsupported --cache-dir to index inspect'
+fi
 grep -Fq 'rusqlite@0.40.1' "$release" \
   || fail 'release SBOM gate does not require rusqlite'
 grep -Fq 'libsqlite3-sys@0.38.1' "$release" \

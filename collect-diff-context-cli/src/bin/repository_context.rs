@@ -848,38 +848,47 @@ fn render_index_report(mut report: IndexReport) -> Result<String, String> {
     if env::var("PRE_COMMIT_REVIEW_SECRET_SCAN").as_deref() == Ok("off") {
         return Ok(compact);
     }
-    let sanitized = match secret_scan::sanitize_for_model(&compact) {
-        Ok(sanitized) => sanitized,
-        Err(error) => {
-            let mut failed = report;
-            failed.status = IndexReportStatus::Failed;
-            failed.limitations = vec![IndexLimitation {
-                code: "output-sanitization-unavailable".to_string(),
-                path: None,
-                symbol_id: None,
-                reason: "index report could not be sanitized".to_string(),
-                interpretation: error.reason_code().to_string(),
-            }];
-            for _ in 0..3 {
-                failed.metrics.output_bytes = serde_json::to_vec(&failed)
-                    .map_err(|error| error.to_string())?
-                    .len();
-            }
-            failed.validate().map_err(|error| error.to_string())?;
-            return serde_json::to_string(&failed).map_err(|error| error.to_string());
+    if let Err(error) =
+        sanitize_index_report_text_fields(&mut report, secret_scan::sanitize_for_model)
+    {
+        let mut failed = report;
+        failed.status = IndexReportStatus::Failed;
+        failed.limitations = vec![IndexLimitation {
+            code: "output-sanitization-unavailable".to_string(),
+            path: None,
+            symbol_id: None,
+            reason: "index report could not be sanitized".to_string(),
+            interpretation: error.reason_code().to_string(),
+        }];
+        for _ in 0..3 {
+            failed.metrics.output_bytes = serde_json::to_vec(&failed)
+                .map_err(|error| error.to_string())?
+                .len();
         }
-    };
-    let mut sanitized_report: IndexReport =
-        serde_json::from_str(&sanitized.content).map_err(|error| error.to_string())?;
+        failed.validate().map_err(|error| error.to_string())?;
+        return serde_json::to_string(&failed).map_err(|error| error.to_string());
+    }
     for _ in 0..3 {
-        sanitized_report.metrics.output_bytes = serde_json::to_vec(&sanitized_report)
+        report.metrics.output_bytes = serde_json::to_vec(&report)
             .map_err(|error| error.to_string())?
             .len();
     }
-    sanitized_report
-        .validate()
-        .map_err(|error| error.to_string())?;
-    serde_json::to_string(&sanitized_report).map_err(|error| error.to_string())
+    report.validate().map_err(|error| error.to_string())?;
+    serde_json::to_string(&report).map_err(|error| error.to_string())
+}
+
+fn sanitize_index_report_text_fields<F>(
+    report: &mut IndexReport,
+    mut sanitize: F,
+) -> Result<(), secret_scan::SecretScanError>
+where
+    F: FnMut(&str) -> Result<secret_scan::SanitizedOutput, secret_scan::SecretScanError>,
+{
+    for limitation in &mut report.limitations {
+        limitation.reason = sanitize(&limitation.reason)?.content;
+        limitation.interpretation = sanitize(&limitation.interpretation)?.content;
+    }
+    Ok(())
 }
 
 fn elapsed_ms(started: Instant) -> u64 {
@@ -1041,4 +1050,84 @@ fn invalidate_facts(context: &mut ImpactContext, status: ImpactStatus, limitatio
 fn cli_error(message: &str, exit_code: i32) -> i32 {
     eprintln!("repository-context-cli: {message}");
     exit_code
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use collect_diff_context_cli::impact_context::index::model::IndexMetrics;
+    use collect_diff_context_cli::secret_scan::{SanitizedOutput, SecretScanStatus};
+
+    #[test]
+    fn index_report_sanitization_scans_only_free_text_fields() {
+        let mut report = IndexReport {
+            schema_version: 1,
+            kind: "repository_index_report".to_string(),
+            action: IndexAction::Build,
+            status: IndexReportStatus::Completed,
+            scope_fingerprint: Some("a".repeat(40)),
+            repository_id: "b".repeat(64),
+            generation_key: Some("c".repeat(64)),
+            metrics: IndexMetrics {
+                elapsed_ms: 0,
+                manifest_files: 0,
+                manifest_bytes: 0,
+                file_fact_hits: 0,
+                file_fact_misses: 0,
+                file_fact_writes: 0,
+                parsed_files: 0,
+                parsed_bytes: 0,
+                symbols: 0,
+                edges: 0,
+                query_rows: 0,
+                generation_bytes: 0,
+                output_bytes: 0,
+            },
+            limitations: vec![IndexLimitation {
+                code: "example-limitation".to_string(),
+                path: None,
+                symbol_id: Some("d".repeat(64)),
+                reason: "token=secret-value".to_string(),
+                interpretation: "review secret-value before continuing".to_string(),
+            }],
+        };
+        let mut scanned = Vec::new();
+
+        sanitize_index_report_text_fields(&mut report, |value| {
+            scanned.push(value.to_string());
+            Ok(SanitizedOutput {
+                content: value.replace("secret-value", "[redacted:test]"),
+                redactions: Vec::new(),
+                status: SecretScanStatus::Redacted,
+            })
+        })
+        .unwrap();
+
+        assert_eq!(
+            scanned,
+            vec![
+                "token=secret-value".to_string(),
+                "review secret-value before continuing".to_string(),
+            ]
+        );
+        assert_eq!(
+            report.scope_fingerprint.as_deref(),
+            Some("a".repeat(40).as_str())
+        );
+        assert_eq!(report.repository_id, "b".repeat(64));
+        assert_eq!(
+            report.generation_key.as_deref(),
+            Some("c".repeat(64).as_str())
+        );
+        assert_eq!(
+            report.limitations[0].symbol_id.as_deref(),
+            Some("d".repeat(64).as_str())
+        );
+        assert_eq!(report.limitations[0].reason, "token=[redacted:test]");
+        assert_eq!(
+            report.limitations[0].interpretation,
+            "review [redacted:test] before continuing"
+        );
+        report.validate().unwrap();
+    }
 }

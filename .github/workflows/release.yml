@@ -129,7 +129,8 @@ jobs:
           doctor_report="$(cd "$repository" && "$repository_binary" index doctor --cache-dir "$cache" --generation "$generation")"
           REPORT="$doctor_report" python3 -c \
             'import json, os; report=json.loads(os.environ["REPORT"]); assert report["status"] == "completed"'
-          inspect_report="$(cd "$repository" && "$repository_binary" index inspect --generation "$generation" --path src/lib.rs --max-rows 10 --cache-dir "$cache")"
+          inspect_report="$(cd "$repository" && PRE_COMMIT_REVIEW_CACHE_DIR="$cache" \
+            "$repository_binary" index inspect --generation "$generation" --path src/lib.rs --max-rows 10)"
           REPORT="$inspect_report" python3 -c \
             'import json, os; report=json.loads(os.environ["REPORT"]); assert report["status"] in {"completed", "partial"}; assert report["metrics"]["query_rows"] > 0'
           if find "$cache" -type f \( -name '*-wal' -o -name '*-shm' -o -name '*-journal' \) \
