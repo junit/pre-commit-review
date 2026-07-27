@@ -260,6 +260,23 @@ pub fn stable_id(namespace: &str, fields: &[&str]) -> String {
     format!("{:x}", digest.finalize())[..16].to_string()
 }
 
+pub(crate) fn stable_local_symbol_id(
+    kind: &str,
+    owner_local_id: Option<&str>,
+    name: &str,
+    range: &SourceRange,
+) -> String {
+    stable_id(
+        "rust-file-local-symbol/v1",
+        &[
+            kind,
+            owner_local_id.unwrap_or(""),
+            name,
+            &range_identity(range),
+        ],
+    )
+}
+
 fn syntax_text_fact(
     provider_id: &str,
     path: &str,
