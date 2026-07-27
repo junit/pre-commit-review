@@ -17,6 +17,24 @@ struct SpikeReport {
     limitations: Vec<String>,
 }
 
+#[derive(Debug, Deserialize)]
+struct BenchmarkReport {
+    action: String,
+    status: String,
+    generation_key: Option<String>,
+    symbols: usize,
+    edges: usize,
+    database_bytes: u64,
+    peak_rss_bytes: Option<u64>,
+    build_ms: u64,
+    cold_open_ms: u64,
+    query_p50_us: u64,
+    query_p95_us: u64,
+    query_p99_us: u64,
+    sidecar_files: usize,
+    sqlite_version: String,
+}
+
 fn spike(arguments: &[&str]) -> Output {
     spike_command()
         .args(arguments)
@@ -435,4 +453,39 @@ fn reader_of_generation_a_does_not_wait_for_writer_of_generation_b() {
         String::from_utf8_lossy(&writer_output.stderr)
     );
     assert_eq!(generation_files(cache.path()).len(), 2);
+}
+
+#[test]
+fn benchmark_report_contains_ordered_resource_and_latency_fields() {
+    let cache = tempfile::tempdir().unwrap();
+    let output = spike(&[
+        "benchmark",
+        "--cache-dir",
+        cache.path().to_str().unwrap(),
+        "--symbols",
+        "10000",
+        "--edges",
+        "10000",
+        "--queries",
+        "100",
+    ]);
+    assert!(
+        output.status.success(),
+        "{}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    let report: BenchmarkReport = serde_json::from_slice(&output.stdout).unwrap();
+    assert_eq!(report.action, "benchmark");
+    assert_eq!(report.status, "completed");
+    assert!(report.generation_key.is_some());
+    assert_eq!(report.symbols, 10_000);
+    assert_eq!(report.edges, 10_000);
+    assert!(report.database_bytes > 0);
+    assert!(report.peak_rss_bytes.is_none() || report.peak_rss_bytes.unwrap() > 0);
+    assert!(report.build_ms < 60_000);
+    assert!(report.cold_open_ms < 60_000);
+    assert!(report.query_p50_us <= report.query_p95_us);
+    assert!(report.query_p95_us <= report.query_p99_us);
+    assert_eq!(report.sidecar_files, 0);
+    assert!(!report.sqlite_version.is_empty());
 }

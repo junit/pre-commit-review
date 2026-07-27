@@ -28,6 +28,21 @@ struct SpikeReport {
     elapsed_ms: u64,
     output_bytes: usize,
     limitations: Vec<String>,
+    #[serde(flatten)]
+    benchmark: Option<BenchmarkFields>,
+}
+
+#[derive(Serialize)]
+struct BenchmarkFields {
+    database_bytes: u64,
+    peak_rss_bytes: Option<u64>,
+    build_ms: u64,
+    cold_open_ms: u64,
+    query_p50_us: u64,
+    query_p95_us: u64,
+    query_p99_us: u64,
+    sidecar_files: usize,
+    sqlite_version: String,
 }
 
 #[derive(Debug, Clone)]
@@ -138,15 +153,8 @@ fn run() -> Result<i32, SpikeError> {
         }
         Command::Doctor(arguments) => run_doctor(arguments),
         Command::Benchmark(arguments) => {
-            let _ = (
-                arguments.cache_dir,
-                arguments.symbols,
-                arguments.edges,
-                arguments.queries,
-            );
-            Err(SpikeError::InvalidInput(
-                "benchmark is not implemented".into(),
-            ))
+            run_benchmark(arguments)?;
+            Ok(0)
         }
     }
 }
@@ -366,6 +374,7 @@ fn run_build(arguments: BuildArgs) -> Result<(), SpikeError> {
         elapsed_ms: duration_ms(started.elapsed()),
         output_bytes: 0,
         limitations: Vec::new(),
+        benchmark: None,
     })
 }
 
@@ -387,6 +396,7 @@ fn run_doctor(arguments: DoctorArgs) -> Result<i32, SpikeError> {
                 elapsed_ms: duration_ms(started.elapsed()),
                 output_bytes: 0,
                 limitations: Vec::new(),
+                benchmark: None,
             })?;
             Ok(0)
         }
@@ -402,6 +412,7 @@ fn run_doctor(arguments: DoctorArgs) -> Result<i32, SpikeError> {
                 elapsed_ms: duration_ms(started.elapsed()),
                 output_bytes: 0,
                 limitations: vec![error.code().to_owned()],
+                benchmark: None,
             })?;
             Ok(2)
         }
@@ -433,7 +444,127 @@ fn run_query(arguments: QueryArgs) -> Result<(), SpikeError> {
         } else {
             Vec::new()
         },
+        benchmark: None,
     })
+}
+
+fn run_benchmark(arguments: BenchmarkArgs) -> Result<(), SpikeError> {
+    let started = Instant::now();
+    let build_arguments = BuildArgs {
+        cache_dir: arguments.cache_dir.clone(),
+        symbols: arguments.symbols,
+        edges: arguments.edges,
+        crash_at: None,
+    };
+
+    let build_started = Instant::now();
+    let (stats, publish_outcome, generation) = build_generation(&build_arguments)?;
+    let build_ms = duration_ms(build_started.elapsed());
+    let database_bytes = std::fs::metadata(&generation)?.len();
+
+    let cold_open_started = Instant::now();
+    let cold_connection = open_immutable(&generation)?;
+    validate_generation(&cold_connection, &stats.generation_key)?;
+    drop(cold_connection);
+    let cold_open_ms = duration_ms(cold_open_started.elapsed());
+
+    let warm_connection = open_immutable(&generation)?;
+    validate_generation(&warm_connection, &stats.generation_key)?;
+    let query_symbols = (0..arguments.queries)
+        .map(|index| symbol_id(index % arguments.symbols))
+        .collect::<Vec<_>>();
+    let mut samples = Vec::with_capacity(arguments.queries);
+    for (index, symbol) in query_symbols.iter().enumerate() {
+        let query = QueryArgs {
+            generation: generation.clone(),
+            symbol: symbol.clone(),
+            direction: if index % 2 == 0 {
+                Direction::Outgoing
+            } else {
+                Direction::Incoming
+            },
+            depth: if index % 2 == 0 { 1 } else { 2 },
+            max_edges: MAX_QUERY_EDGES,
+        };
+        let query_started = Instant::now();
+        let _ = query_graph(&warm_connection, &query)?;
+        samples.push(duration_us(query_started.elapsed()));
+    }
+    samples.sort_unstable();
+
+    let sidecar_files = sidecar_count(&arguments.cache_dir.join("graphs"))?;
+    write_report(SpikeReport {
+        schema_version: SCHEMA_VERSION as u8,
+        kind: "sqlite-storage-spike-report",
+        action: "benchmark",
+        status: "completed",
+        generation_key: Some(stats.generation_key),
+        symbols: stats.symbols,
+        edges: stats.edges,
+        elapsed_ms: duration_ms(started.elapsed()),
+        output_bytes: 0,
+        limitations: if publish_outcome == PublishOutcome::Reused {
+            vec!["generation-reused".to_owned()]
+        } else {
+            Vec::new()
+        },
+        benchmark: Some(BenchmarkFields {
+            database_bytes,
+            peak_rss_bytes: peak_rss_bytes(),
+            build_ms,
+            cold_open_ms,
+            query_p50_us: percentile(&samples, 50, 100),
+            query_p95_us: percentile(&samples, 95, 100),
+            query_p99_us: percentile(&samples, 99, 100),
+            sidecar_files,
+            sqlite_version: rusqlite::version().to_owned(),
+        }),
+    })
+}
+
+fn percentile(sorted: &[u64], numerator: usize, denominator: usize) -> u64 {
+    let index = sorted
+        .len()
+        .saturating_mul(numerator)
+        .saturating_add(denominator - 1)
+        / denominator;
+    sorted[index.saturating_sub(1).min(sorted.len() - 1)]
+}
+
+fn sidecar_count(graph_directory: &Path) -> Result<usize, SpikeError> {
+    let mut count = 0;
+    for entry in std::fs::read_dir(graph_directory)? {
+        let name = entry?.file_name().to_string_lossy().into_owned();
+        if name.ends_with("-journal") || name.ends_with("-wal") || name.ends_with("-shm") {
+            count += 1;
+        }
+    }
+    Ok(count)
+}
+
+#[cfg(unix)]
+fn peak_rss_bytes() -> Option<u64> {
+    let mut usage = std::mem::MaybeUninit::<libc::rusage>::zeroed();
+    // SAFETY: getrusage initializes the provided rusage on a successful return.
+    if unsafe { libc::getrusage(libc::RUSAGE_SELF, usage.as_mut_ptr()) } != 0 {
+        return None;
+    }
+    // SAFETY: the successful getrusage call initialized the value.
+    let maximum = unsafe { usage.assume_init() }.ru_maxrss;
+    let maximum = u64::try_from(maximum).ok()?;
+    #[cfg(target_os = "macos")]
+    {
+        Some(maximum)
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        maximum.checked_mul(1024)
+    }
+}
+
+#[cfg(not(unix))]
+fn peak_rss_bytes() -> Option<u64> {
+    None
 }
 
 fn query_graph(connection: &Connection, arguments: &QueryArgs) -> Result<QueryOutcome, SpikeError> {
@@ -871,6 +1002,10 @@ fn write_report(mut report: SpikeReport) -> Result<(), SpikeError> {
 
 fn duration_ms(duration: std::time::Duration) -> u64 {
     duration.as_millis().try_into().unwrap_or(u64::MAX)
+}
+
+fn duration_us(duration: std::time::Duration) -> u64 {
+    duration.as_micros().try_into().unwrap_or(u64::MAX)
 }
 
 fn invalid(message: impl Into<String>) -> SpikeError {
