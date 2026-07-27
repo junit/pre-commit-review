@@ -148,7 +148,7 @@ impl CacheLayout {
         })
     }
 
-    fn ensure_private_directories(&self) -> Result<(), CacheError> {
+    pub(crate) fn ensure_private_directories(&self) -> Result<(), CacheError> {
         if !self.root.exists() {
             create_private_path(&self.root)?;
         }
@@ -589,7 +589,7 @@ fn normalize_absolute_path(path: &Path) -> Result<PathBuf, CacheError> {
     Ok(normalized)
 }
 
-fn create_private_directory(path: &Path) -> Result<(), CacheError> {
+pub(crate) fn create_private_directory(path: &Path) -> Result<(), CacheError> {
     match fs::symlink_metadata(path) {
         Ok(metadata) => {
             if !metadata.file_type().is_dir() || metadata.file_type().is_symlink() {
@@ -680,7 +680,7 @@ fn set_private_directory_permissions(_path: &Path) -> Result<(), CacheError> {
 }
 
 #[cfg(unix)]
-fn set_private_file_permissions(file: &File) -> Result<(), CacheError> {
+pub(crate) fn set_private_file_permissions(file: &File) -> Result<(), CacheError> {
     use std::os::unix::fs::PermissionsExt;
     file.set_permissions(fs::Permissions::from_mode(0o600))
         .map_err(|error| {
@@ -692,7 +692,7 @@ fn set_private_file_permissions(file: &File) -> Result<(), CacheError> {
 }
 
 #[cfg(windows)]
-fn set_private_file_permissions(_file: &File) -> Result<(), CacheError> {
+pub(crate) fn set_private_file_permissions(_file: &File) -> Result<(), CacheError> {
     Ok(())
 }
 
@@ -730,7 +730,7 @@ fn open_regular_file_no_follow(path: &Path) -> std::io::Result<File> {
 }
 
 #[cfg(unix)]
-fn sync_directory(path: &Path) -> Result<(), CacheError> {
+pub(crate) fn sync_directory(path: &Path) -> Result<(), CacheError> {
     File::open(path)
         .and_then(|directory| directory.sync_all())
         .map_err(|error| {
@@ -742,6 +742,6 @@ fn sync_directory(path: &Path) -> Result<(), CacheError> {
 }
 
 #[cfg(windows)]
-fn sync_directory(_path: &Path) -> Result<(), CacheError> {
+pub(crate) fn sync_directory(_path: &Path) -> Result<(), CacheError> {
     Ok(())
 }

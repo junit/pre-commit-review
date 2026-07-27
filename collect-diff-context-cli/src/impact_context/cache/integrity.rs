@@ -3,7 +3,7 @@ use crate::impact_context::adapters::tree_sitter_rust::{
     RustModuleDeclarationFact, RustReferenceFact,
 };
 use crate::impact_context::contracts::SourceRange;
-use crate::impact_context::index::model::FileFactKey;
+use crate::impact_context::index::model::{FileFactKey, RepositoryGraph};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeSet;
 
@@ -23,6 +23,56 @@ pub(crate) fn file_fact_key_digest(key: &FileFactKey) -> Result<String, String> 
 
 pub(crate) fn payload_digest(payload: &[u8]) -> String {
     format!("{:x}", Sha256::digest(payload))
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub(crate) struct CanonicalGraphRows {
+    pub identity: String,
+    pub completeness: String,
+    pub files: Vec<String>,
+    pub modules: Vec<String>,
+    pub symbols: Vec<String>,
+    pub edges: Vec<String>,
+    pub limitations: Vec<String>,
+}
+
+pub(crate) fn canonical_graph_rows(graph: &RepositoryGraph) -> Result<CanonicalGraphRows, String> {
+    Ok(CanonicalGraphRows {
+        identity: serde_json::to_string(&graph.identity).map_err(|error| error.to_string())?,
+        completeness: serde_json::to_string(&graph.completeness)
+            .map_err(|error| error.to_string())?,
+        files: serialize_rows(&graph.files)?,
+        modules: serialize_rows(&graph.modules)?,
+        symbols: serialize_rows(&graph.symbols)?,
+        edges: serialize_rows(&graph.edges)?,
+        limitations: serialize_rows(&graph.limitations)?,
+    })
+}
+
+pub(crate) fn graph_rows_root(rows: &CanonicalGraphRows) -> String {
+    let mut digest = Sha256::new();
+    hash_component(&mut digest, b"repository-graph-application-root/v1");
+    hash_component(&mut digest, rows.identity.as_bytes());
+    hash_component(&mut digest, rows.completeness.as_bytes());
+    for group in [
+        &rows.files,
+        &rows.modules,
+        &rows.symbols,
+        &rows.edges,
+        &rows.limitations,
+    ] {
+        hash_component(&mut digest, &(group.len() as u64).to_be_bytes());
+        for row in group {
+            hash_component(&mut digest, row.as_bytes());
+        }
+    }
+    format!("{:x}", digest.finalize())
+}
+
+fn serialize_rows<T: serde::Serialize>(rows: &[T]) -> Result<Vec<String>, String> {
+    rows.iter()
+        .map(|row| serde_json::to_string(row).map_err(|error| error.to_string()))
+        .collect()
 }
 
 pub(crate) fn canonical_file_facts(facts: &RustFileFacts) -> RustFileFacts {
