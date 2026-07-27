@@ -26,7 +26,7 @@ use std::cell::{Cell, RefCell};
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
-use std::time::{Duration, UNIX_EPOCH};
+use std::time::{Duration, Instant, UNIX_EPOCH};
 
 fn digest(bytes: &[u8]) -> String {
     format!("{:x}", Sha256::digest(bytes))
@@ -416,6 +416,50 @@ fn fast_mode_reads_compatible_generation_without_writes() {
         .unwrap();
 
     assert!(output.provider.cache_hits > 0);
+    assert_eq!(snapshot(cache.path()), before);
+}
+
+#[test]
+fn warm_one_and_two_hop_repository_queries_meet_release_p95_gate() {
+    if cfg!(debug_assertions) {
+        return;
+    }
+
+    let cache = tempfile::tempdir().unwrap();
+    let layout = cache_layout(cache.path());
+    let candidate = MemoryCandidate::changed_auth();
+    let source = MemoryManifestSource::stable();
+    let adapter = RepositoryIndexAdapter::new(layout);
+    adapter.analyze(deep_request(&candidate, &source)).unwrap();
+    let before = snapshot(cache.path());
+    let changed = vec![changed_symbol()];
+
+    for depth in [1, 2] {
+        for _ in 0..5 {
+            let mut request = fast_request(&candidate, &source, &changed);
+            request.index_budget.max_graph_depth = depth;
+            request.index_budget.deadline = Duration::from_secs(2);
+            std::hint::black_box(adapter.analyze(request).unwrap());
+        }
+        let mut samples = Vec::with_capacity(50);
+        for _ in 0..50 {
+            let mut request = fast_request(&candidate, &source, &changed);
+            request.index_budget.max_graph_depth = depth;
+            request.index_budget.deadline = Duration::from_secs(2);
+            let started = Instant::now();
+            std::hint::black_box(adapter.analyze(request).unwrap());
+            samples.push(started.elapsed());
+        }
+        samples.sort_unstable();
+        let rank = samples.len().saturating_mul(95).div_ceil(100);
+        let p95 = samples[rank.saturating_sub(1).min(samples.len() - 1)];
+        eprintln!("warm repository traversal depth={depth} p95={p95:?}");
+        assert!(
+            p95 <= Duration::from_secs(2),
+            "warm {depth}-hop repository query P95 {p95:?} exceeds 2s"
+        );
+    }
+
     assert_eq!(snapshot(cache.path()), before);
 }
 

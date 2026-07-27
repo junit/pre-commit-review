@@ -20,6 +20,12 @@ jobs:
         with:
           severity: warning
           additional_paths: scripts install.sh tests evals
+      - name: Set up Go for actionlint
+        uses: actions/setup-go@v5
+        with:
+          go-version: '1.25.x'
+      - name: Validate GitHub Actions workflows
+        run: go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.7 -oneline
 
   rust-checks:
     runs-on: ubuntu-latest
@@ -44,8 +50,11 @@ jobs:
       - name: Check fuzz target formatting
         run: cargo fmt --all --manifest-path fuzz/Cargo.toml -- --check
         working-directory: collect-diff-context-cli
-      - name: Run clippy
+      - name: Run default-feature clippy
         run: cargo clippy --all-targets -- -D warnings
+        working-directory: collect-diff-context-cli
+      - name: Run all-feature clippy
+        run: cargo clippy --all-targets --all-features -- -D warnings
         working-directory: collect-diff-context-cli
       - name: Run unit tests
         run: cargo test
@@ -56,66 +65,14 @@ jobs:
       - name: Compile release binary
         run: cargo build --release
         working-directory: collect-diff-context-cli
-      - name: Build SQLite storage spike
-        run: cargo build --release --features sqlite-storage-spike --bin sqlite-storage-spike
-        working-directory: collect-diff-context-cli
-      - name: Smoke-test SQLite storage spike
-        run: ./target/release/sqlite-storage-spike --help
-        working-directory: collect-diff-context-cli
-      - name: SQLite storage spike 100k gate
-        shell: bash
-        run: |
-          set -euo pipefail
-          cache="$RUNNER_TEMP/pcr-sqlite-spike-100k"
-          report="$(./target/release/sqlite-storage-spike benchmark \
-            --cache-dir "$cache" --symbols 100000 --edges 100000 --queries 1000)"
-          REPORT="$report" python3 - <<'PY'
-          import json
-          import os
-
-          report = json.loads(os.environ['REPORT'])
-          required = {
-              'database_bytes', 'build_ms', 'cold_open_ms', 'query_p50_us',
-              'query_p95_us', 'query_p99_us', 'sidecar_files', 'sqlite_version',
-          }
-          missing = required - report.keys()
-          if missing:
-              raise SystemExit(f'missing benchmark fields: {sorted(missing)}')
-          if report['status'] != 'completed':
-              raise SystemExit(f"unexpected status: {report['status']}")
-          if report['sidecar_files'] != 0:
-              raise SystemExit(f"unexpected sidecars: {report['sidecar_files']}")
-          if report['query_p95_us'] > 2_000_000:
-              raise SystemExit(f"query P95 exceeded 2s: {report['query_p95_us']}us")
-          PY
-      - name: SQLite storage spike 1M gate
-        shell: bash
-        run: |
-          set -euo pipefail
-          cache="$RUNNER_TEMP/pcr-sqlite-spike-1m"
-          report="$(./target/release/sqlite-storage-spike benchmark \
-            --cache-dir "$cache" --symbols 1000000 --edges 1000000 --queries 1000)"
-          REPORT="$report" python3 - <<'PY'
-          import json
-          import os
-
-          report = json.loads(os.environ['REPORT'])
-          required = {
-              'database_bytes', 'build_ms', 'cold_open_ms', 'query_p50_us',
-              'query_p95_us', 'query_p99_us', 'sidecar_files', 'sqlite_version',
-          }
-          missing = required - report.keys()
-          if missing:
-              raise SystemExit(f'missing benchmark fields: {sorted(missing)}')
-          if report['status'] != 'completed':
-              raise SystemExit(f"unexpected status: {report['status']}")
-          if report['sidecar_files'] != 0:
-              raise SystemExit(f"unexpected sidecars: {report['sidecar_files']}")
-          if report['query_p95_us'] > 2_000_000:
-              raise SystemExit(f"query P95 exceeded 2s: {report['query_p95_us']}us")
-          PY
       - name: Run fast impact-context release gates
         run: cargo test --release --test impact_context_performance -- --nocapture
+        working-directory: collect-diff-context-cli
+      - name: Run repository-index release gates
+        run: cargo test --release --test repository_index_integration -- --nocapture
+        working-directory: collect-diff-context-cli
+      - name: Smoke-test repository-index benchmark stages
+        run: cargo bench --bench repository_index -- --test
         working-directory: collect-diff-context-cli
       - name: Set up nightly fuzz toolchain
         run: rustup toolchain install nightly --profile minimal
@@ -127,6 +84,10 @@ jobs:
         run: |
           cargo +nightly fuzz run tree_sitter_rust --fuzz-dir collect-diff-context-cli/fuzz -- -max_total_time=10 -timeout=5
           cargo +nightly fuzz run impact_contract --fuzz-dir collect-diff-context-cli/fuzz -- -max_total_time=10 -timeout=5
+          cargo +nightly fuzz run file_facts_decode --fuzz-dir collect-diff-context-cli/fuzz -- -runs=256 -timeout=5
+          cargo +nightly fuzz run repository_graph_row --fuzz-dir collect-diff-context-cli/fuzz -- -runs=256 -timeout=5
+          cargo +nightly fuzz run repository_overlay --fuzz-dir collect-diff-context-cli/fuzz -- -runs=256 -timeout=5
+          cargo +nightly fuzz run repository_traversal --fuzz-dir collect-diff-context-cli/fuzz -- -runs=256 -timeout=5
 
   static-analysis-platforms:
     name: Static analysis (${{ matrix.target }})
@@ -174,8 +135,9 @@ jobs:
           "$static_binary" run --help
           "$static_binary" orchestrate --help
           "$repository_binary" collect --help
+          "$repository_binary" index --help
       - name: Run focused Rust contracts
-        run: cargo test --target ${{ matrix.target }} --features test-fixture --test candidate_content --test impact_context_contracts --test static_evidence --test static_execution --test static_execution_modes --test static_execution_platform --test static_orchestration
+        run: cargo test --target ${{ matrix.target }} --features test-fixture --test candidate_content --test impact_context_contracts --test repository_index_contracts --test static_evidence --test static_execution --test static_execution_modes --test static_execution_platform --test static_orchestration
         working-directory: collect-diff-context-cli
 
   integration-tests:
@@ -222,6 +184,10 @@ jobs:
         run: ./tests/static_analysis_execution_modes_test.sh
       - name: Run static-analysis orchestration integration
         run: ./tests/static_analysis_orchestration_test.sh
+      - name: Run repository-context integration
+        run: |
+          ./tests/repository_index_test.sh
+          ./tests/repository_context_test.sh
       - name: Run output quality comparison self-test
         run: |
           ./evals/output_eval_runner_test.sh

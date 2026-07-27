@@ -7,7 +7,6 @@ autobins = false
 
 [features]
 test-fixture = []
-sqlite-storage-spike = []
 
 [[bin]]
 name = "collect-diff-context-cli"
@@ -25,11 +24,6 @@ path = "src/bin/repository_context.rs"
 name = "static-analysis-fixture"
 path = "src/bin/static_analysis_fixture.rs"
 required-features = ["test-fixture"]
-
-[[bin]]
-name = "sqlite-storage-spike"
-path = "src/bin/sqlite_storage_spike.rs"
-required-features = ["sqlite-storage-spike"]
 
 [dependencies]
 serde = { version = "1.0", features = ["derive"] }
@@ -61,6 +55,10 @@ criterion = { version = "=0.5.1", default-features = false, features = ["cargo_b
 
 [[bench]]
 name = "impact_context"
+harness = false
+
+[[bench]]
+name = "repository_index"
 harness = false
 
 [profile.release]

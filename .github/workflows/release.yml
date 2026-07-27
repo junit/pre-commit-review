@@ -6,8 +6,8 @@ on:
       - 'v*'
   workflow_dispatch:
     inputs:
-      spike_only:
-        description: Run build and smoke gates without creating a release
+      build_only:
+        description: Run build and production smoke gates without creating a release
         required: false
         default: false
         type: boolean
@@ -69,10 +69,6 @@ jobs:
         run: cargo build --release --target ${{ matrix.target }} --bins
         working-directory: collect-diff-context-cli
 
-      - name: Build SQLite storage spike
-        run: cargo build --release --target ${{ matrix.target }} --features sqlite-storage-spike --bin sqlite-storage-spike
-        working-directory: collect-diff-context-cli
-
       - name: Prepare binary artifact
         shell: bash
         run: |
@@ -98,32 +94,47 @@ jobs:
       - name: Smoke-test repository-context binary
         shell: bash
         run: |
-          repository_binary="dist/${{ matrix.repository_artifact_name }}"
+          set -euo pipefail
+          control_binary="$PWD/dist/${{ matrix.artifact_name }}"
+          repository_binary="$PWD/dist/${{ matrix.repository_artifact_name }}"
           "$repository_binary" collect --help
           "$repository_binary" index --help
+          repository="$RUNNER_TEMP/pcr-index-smoke-repository"
+          cache="$RUNNER_TEMP/pcr-index-smoke-cache"
+          rm -rf "$repository" "$cache"
+          mkdir -p "$repository/src" "$cache"
+          git -C "$repository" init -q
+          git -C "$repository" config user.email release@example.test
+          git -C "$repository" config user.name Release
+          printf '[package]\nname="release_smoke"\nversion="0.1.0"\nedition="2021"\n' >"$repository/Cargo.toml"
+          printf 'pub fn base() {}\n' >"$repository/src/lib.rs"
+          git -C "$repository" add Cargo.toml src/lib.rs
+          git -C "$repository" commit -qm base
+          printf 'pub fn changed() {}\n' >"$repository/src/lib.rs"
+          git -C "$repository" add src/lib.rs
+          control_report="$(cd "$repository" && "$control_binary" --source staged --control-plane)"
+          scope="$(REPORT="$control_report" python3 - <<'PY'
+          import json
+          import os
 
-      - name: Smoke-test SQLite storage spike
-        shell: bash
-        run: |
-          set -euo pipefail
-          if [ "${{ matrix.os }}" = "windows-latest" ]; then
-            spike_binary="collect-diff-context-cli/target/${{ matrix.target }}/release/sqlite-storage-spike.exe"
-            "$spike_binary" --help
-          else
-            spike_binary="collect-diff-context-cli/target/${{ matrix.target }}/release/sqlite-storage-spike"
-            collect-diff-context-cli/target/${{ matrix.target }}/release/sqlite-storage-spike --help
-          fi
-          cache="$RUNNER_TEMP/pcr-sqlite-smoke"
-          build_report="$("$spike_binary" build --cache-dir "$cache" --symbols 100 --edges 200)"
-          generation_key="$(REPORT="$build_report" python3 -c \
+          lines = os.environ['REPORT'].splitlines()
+          marker = lines.index('## Review Control Plane JSON')
+          print(json.loads(lines[marker + 1])['scope_fingerprint'])
+          PY
+          )"
+          build_report="$(cd "$repository" && PRE_COMMIT_REVIEW_CACHE_DIR="$cache" \
+            "$repository_binary" index build --source staged --expect-scope "$scope")"
+          generation="$(REPORT="$build_report" python3 -c \
             'import json, os; report=json.loads(os.environ["REPORT"]); assert report["status"] == "completed"; print(report["generation_key"])')"
-          doctor_report="$("$spike_binary" doctor \
-            --generation "$cache/graphs/$generation_key.sqlite")"
+          doctor_report="$(cd "$repository" && "$repository_binary" index doctor --cache-dir "$cache" --generation "$generation")"
           REPORT="$doctor_report" python3 -c \
             'import json, os; report=json.loads(os.environ["REPORT"]); assert report["status"] == "completed"'
-          if find "$cache/graphs" -type f \( -name '*-wal' -o -name '*-shm' -o -name '*-journal' \) \
+          inspect_report="$(cd "$repository" && "$repository_binary" index inspect --generation "$generation" --path src/lib.rs --max-rows 10 --cache-dir "$cache")"
+          REPORT="$inspect_report" python3 -c \
+            'import json, os; report=json.loads(os.environ["REPORT"]); assert report["status"] in {"completed", "partial"}; assert report["metrics"]["query_rows"] > 0'
+          if find "$cache" -type f \( -name '*-wal' -o -name '*-shm' -o -name '*-journal' \) \
             -print -quit | grep -q .; then
-            echo 'SQLite spike left a published sidecar' >&2
+            echo 'Repository index smoke left a published SQLite sidecar' >&2
             exit 1
           fi
 
@@ -141,7 +152,7 @@ jobs:
     name: Create GitHub Release
     needs: build-binaries
     runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/') || (github.event_name == 'workflow_dispatch' && inputs.spike_only != true)
+    if: startsWith(github.ref, 'refs/tags/') || (github.event_name == 'workflow_dispatch' && inputs.build_only != true)
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -171,7 +182,17 @@ jobs:
 
           sbom = json.loads(Path('dist/pre-commit-review.cdx.json').read_text(encoding='utf-8'))
           components = {f"{item['name']}@{item['version']}" for item in sbom['components']}
-          required = {'tree-sitter@0.26.11', 'tree-sitter-rust@0.24.2'}
+          required = {
+              'tree-sitter@0.26.11',
+              'tree-sitter-rust@0.24.2',
+              'rusqlite@0.40.1',
+              'libsqlite3-sys@0.38.1',
+              'toml@1.1.3+spec-1.1.0',
+              'toml_datetime@1.1.1+spec-1.1.0',
+              'toml_parser@1.1.2+spec-1.1.0',
+              'toml_writer@1.1.2+spec-1.1.0',
+              'winnow@1.0.4',
+          }
           missing = required - components
           if missing:
               raise SystemExit(f"SBOM missing pinned components: {sorted(missing)}")
@@ -181,6 +202,8 @@ jobs:
         shell: bash
         run: |
           mkdir -p dist/pre-commit-review
+          test -f THIRD_PARTY_LICENSES/rusqlite-LICENSE
+          test -f THIRD_PARTY_LICENSES/sqlite-PUBLIC-DOMAIN.md
           cp SKILL.md LICENSE dist/pre-commit-review/
           cp dist/pre-commit-review.cdx.json dist/pre-commit-review/
           cp -R agents references scripts THIRD_PARTY_LICENSES dist/pre-commit-review/

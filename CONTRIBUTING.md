@@ -19,6 +19,10 @@ Shell scripts (`scripts/*.sh`, `install.sh`, `tests/*.sh`, `evals/*.sh`) are lin
 
 To build the Rust CLI binary locally for the current host, run `cargo build --release --manifest-path collect-diff-context-cli/Cargo.toml`. To refresh bundled release binaries, run `scripts/build_with_docker.sh`, which delegates to `scripts/build_all_binaries.sh` and uses native macOS targets plus Docker/cross compilation for Linux and Windows targets when needed.
 
+Repository-index changes must preserve the immutable SQLite generation contract. Run `cargo test --release --manifest-path collect-diff-context-cli/Cargo.toml --test repository_index_integration -- --nocapture` for the warm 1-hop and 2-hop P95 gate, and run `cargo bench --manifest-path collect-diff-context-cli/Cargo.toml --bench repository_index` to measure manifest, FileFacts, project-model, resolver, SQLite build/open, forward/reverse query, overlay, traversal, serialization, sanitization, and 10k/100k/1M row-stream stages. Benchmark output is evidence, not a workstation-independent cold-build threshold; the hard warm-query gate remains two seconds.
+
+The repository-index fuzz targets are `file_facts_decode`, `repository_graph_row`, `repository_overlay`, and `repository_traversal`. Build all fuzz targets with `cargo +nightly fuzz build --fuzz-dir collect-diff-context-cli/fuzz`; sustained runs and permanent corpus handling are documented in `collect-diff-context-cli/fuzz/README.md`.
+
 ## Tests
 
 The deterministic unit test suite is `bash tests/*_test.sh`. The eval harness also ships deterministic self-tests that do not call a model: `bash evals/eval_contract_test.sh`, `bash evals/output_eval_runner_test.sh`, and `bash evals/output_eval_host_wrappers_test.sh` (or run all eval self-tests via `for f in evals/*_test.sh; do bash "$f"; done`). The model-backed runners (`evals/output_eval_codex_runner.sh`, `evals/output_eval_claude_runner.sh`) require a real Codex or Claude CLI and are not part of CI.

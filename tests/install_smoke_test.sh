@@ -117,6 +117,12 @@ rm -f "$isolated_source"/scripts/bin/static_analysis-* \
 
 grep -Fq "\"\$static_binary\" orchestrate --help" "$repo_root/.github/workflows/lint.yml"
 grep -Fq "\"\$repository_binary\" collect --help" "$repo_root/.github/workflows/lint.yml"
+grep -Fq "\"\$repository_binary\" index --help" "$repo_root/.github/workflows/lint.yml"
+grep -Fq 'cargo clippy --all-targets --all-features -- -D warnings' "$repo_root/.github/workflows/lint.yml"
+grep -Fq 'cargo test --release --test repository_index_integration -- --nocapture' "$repo_root/.github/workflows/lint.yml"
+for fuzz_target in file_facts_decode repository_graph_row repository_overlay repository_traversal; do
+  grep -Fq "cargo +nightly fuzz run $fuzz_target" "$repo_root/.github/workflows/lint.yml"
+done
 grep -Fq './tests/static_analysis_orchestration_test.sh' "$repo_root/.github/workflows/lint.yml"
 grep -Fq '"${repository_binary}" collect --help' "$repo_root/scripts/build_all_binaries.sh"
 grep -Fq '"${repository_binary}" index --help' "$repo_root/scripts/build_all_binaries.sh"
@@ -130,6 +136,18 @@ grep -Fq "find artifacts -type f -name 'repository_context-*'" "$repo_root/.gith
 grep -Fq 'dist/pre-commit-review.cdx.json' "$repo_root/.github/workflows/release.yml"
 grep -Fq 'tree-sitter@0.26.11' "$repo_root/.github/workflows/release.yml"
 grep -Fq 'tree-sitter-rust@0.24.2' "$repo_root/.github/workflows/release.yml"
+grep -Fq 'rusqlite@0.40.1' "$repo_root/.github/workflows/release.yml"
+grep -Fq 'libsqlite3-sys@0.38.1' "$repo_root/.github/workflows/release.yml"
+grep -Fq 'toml@1.1.3' "$repo_root/.github/workflows/release.yml"
+grep -Fq 'toml_parser@1.1.2+spec-1.1.0' "$repo_root/.github/workflows/release.yml"
+grep -Fq 'index build --source staged' "$repo_root/.github/workflows/release.yml"
+grep -Fq 'index doctor --cache-dir' "$repo_root/.github/workflows/release.yml"
+grep -Fq 'index inspect --generation' "$repo_root/.github/workflows/release.yml"
+if grep -Fq 'sqlite-storage-spike' "$repo_root/.github/workflows/lint.yml" \
+  "$repo_root/.github/workflows/release.yml" "$repo_root/collect-diff-context-cli/Cargo.toml"; then
+  printf 'install smoke test failed: temporary SQLite spike remains in production gates\n' >&2
+  exit 1
+fi
 
 run_offline_install codex --copy --dir "$tmp_dir/codex-skills"
 [ -d "$tmp_dir/codex-skills/pre-commit-review" ]

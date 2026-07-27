@@ -10,6 +10,8 @@ cargo-fuzz = true
 [dependencies]
 libfuzzer-sys = "0.4"
 serde_json = "1.0"
+rusqlite = { version = "=0.40.1", default-features = false, features = ["bundled"] }
+tempfile = "3"
 collect-diff-context-cli = { path = ".." }
 
 [[bin]]
@@ -22,6 +24,34 @@ bench = false
 [[bin]]
 name = "impact_contract"
 path = "fuzz_targets/impact_contract.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "file_facts_decode"
+path = "fuzz_targets/file_facts_decode.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "repository_graph_row"
+path = "fuzz_targets/repository_graph_row.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "repository_overlay"
+path = "fuzz_targets/repository_overlay.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "repository_traversal"
+path = "fuzz_targets/repository_traversal.rs"
 test = false
 doc = false
 bench = false
