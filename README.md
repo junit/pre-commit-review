@@ -289,7 +289,10 @@ This repository is not an application or framework. It is a small, portable skil
 │   ├── build_with_docker.sh
 │   ├── collect_diff_context.sh
 │   ├── collect_diff_context.legacy.sh
+│   ├── collect_impact_context.sh
 │   ├── collect_static_evidence.sh
+│   ├── index_repository_context.sh
+│   ├── lib/repository_context_cli.sh
 │   ├── lib/static_analysis_cli.sh
 │   ├── orchestrate_static_analysis.sh
 │   ├── run_static_analysis.sh
@@ -303,6 +306,9 @@ This repository is not an application or framework. It is a small, portable skil
 │   ├── install_smoke_test.sh
 │   ├── parity_assets_test.sh
 │   ├── parity_golden_test.sh
+│   ├── repository_context_test.sh
+│   ├── repository_index_test.sh
+│   ├── repository_index_workflow_test.sh
 │   ├── skill_contract_test.sh
 │   ├── static_analysis_evidence_test.sh
 │   ├── static_analysis_execution_test.sh
@@ -403,6 +409,45 @@ Use `scripts/collect_diff_context.sh --plan-only` or `--include-diff never` to r
 Use `scripts/collect_diff_context.sh --source <staged|unstaged|branch> --group <group_id> --expect-scope <fingerprint>` to retrieve one in-budget review group's diff after opening the control plane. Use `--path <path>` with the same fingerprint for file-level follow-up when a group needs narrower context or has been split. Rerun `--control-plane` before the verdict; snapshot drift invalidates the old ledger instead of being merged into a false complete review. `split-required` groups must be reviewed through bounded replacements instead of as one group.
 
 Use `scripts/collect_impact_context.sh --source <staged|unstaged|branch> --expect-scope <fingerprint> --mode fast` when structural or cross-file context can materially affect the review. Fast mode parses complete changed Rust files with Tree-sitter and applies bounded text/configuration rules to changed candidate files only. The returned `impact_context/v1` must match the authoritative scope fingerprint; partial or unavailable context stays visible and never satisfies manifest coverage.
+
+### Persistent Repository Index
+
+Fast Mode performs zero persistent writes. It may read a compatible immutable SQLite generation and compose an exact in-memory staged or working-tree overlay; a missing, stale, incompatible, or corrupt generation becomes an explicit cache miss and ordinary changed-file review continues without waiting for a writer.
+
+Deep/index operations write cache only when explicitly invoked. They persist content-addressed, path-independent FileFacts and an immutable heuristic repository graph for the exact candidate. The graph is not compiler-complete: Tree-sitter and the passive Cargo model can resolve supported Rust modules, imports, references, and unique direct calls, but macro expansion, cfg selection, trait/method dispatch, generated targets, external dependencies, and runtime dispatch remain partial or unresolved.
+
+The platform cache defaults are `$HOME/Library/Caches/pre-commit-review` on macOS, `$XDG_CACHE_HOME/pre-commit-review` or `$HOME/.cache/pre-commit-review` on other Unix systems, and `%LOCALAPPDATA%\pre-commit-review` on Windows. `PRE_COMMIT_REVIEW_CACHE_DIR` must be an absolute path outside the reviewed worktree and Git common directory. The cache stores derived facts and immutable graph rows, not raw source files; it is repository-sensitive but disposable. `index clean` is dry-run by default, and `--execute` is required for deletion.
+
+These POSIX-shell examples use the same explicit limits in both READMEs:
+
+```bash
+PRE_COMMIT_REVIEW_CACHE_DIR=/absolute/cache \
+  repository-context-cli index build \
+  --source staged \
+  --expect-scope <fingerprint> \
+  --deadline-ms 30000 \
+  --max-file-bytes 2097152 \
+  --max-query-rows 50000 \
+  --max-graph-depth 2
+
+repository-context-cli index doctor \
+  --cache-dir /absolute/cache \
+  --generation <generation-digest>
+
+PRE_COMMIT_REVIEW_CACHE_DIR=/absolute/cache \
+  repository-context-cli index inspect \
+  --generation <generation-digest> \
+  --path src/lib.rs \
+  --max-rows 100
+
+PRE_COMMIT_REVIEW_CACHE_DIR=/absolute/cache \
+  repository-context-cli index clean \
+  --dry-run \
+  --max-bytes 2147483648 \
+  --retain-generations 2
+```
+
+`index build` and `collect --mode deep` are explicit operator actions. They never run Cargo, build scripts, package managers, dependency installation, repository executables, or network discovery. `index doctor` and `index inspect` are read-only; `index clean --execute` mutates only the validated repository cache namespace.
 
 Project-specific risk hints can live in `.pre-commit-review/risk-paths` and `.pre-commit-review/risk-content`. Each non-empty, non-comment line is an extended regular expression; matches promote files into high-risk ordering but do not change coverage requirements.
 

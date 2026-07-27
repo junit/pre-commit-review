@@ -289,7 +289,10 @@
 │   ├── build_with_docker.sh
 │   ├── collect_diff_context.sh
 │   ├── collect_diff_context.legacy.sh
+│   ├── collect_impact_context.sh
 │   ├── collect_static_evidence.sh
+│   ├── index_repository_context.sh
+│   ├── lib/repository_context_cli.sh
 │   ├── lib/static_analysis_cli.sh
 │   ├── orchestrate_static_analysis.sh
 │   ├── run_static_analysis.sh
@@ -303,6 +306,9 @@
 │   ├── install_smoke_test.sh
 │   ├── parity_assets_test.sh
 │   ├── parity_golden_test.sh
+│   ├── repository_context_test.sh
+│   ├── repository_index_test.sh
+│   ├── repository_index_workflow_test.sh
 │   ├── skill_contract_test.sh
 │   ├── static_analysis_evidence_test.sh
 │   ├── static_analysis_execution_test.sh
@@ -403,6 +409,45 @@ Review group 预算默认目标值为 120KB，硬上限为 160KB。可通过 `PR
 打开控制面后，可用 `scripts/collect_diff_context.sh --source <staged|unstaged|branch> --group <group_id> --expect-scope <fingerprint>` 只输出一个未超硬预算 review group 的 diff。需要更窄上下文或 group 已拆分时，用带同一 fingerprint 的 `--path <path>` 补取。最终 verdict 前必须重跑 `--control-plane`；快照漂移会使旧 ledger 失效，不能把两个版本拼成一次“完整审查”。`split-required` group 必须通过有界 replacement 审查，不能作为一个整体 group 审查。
 
 当结构或跨文件上下文可能实质影响审查时，使用 `scripts/collect_impact_context.sh --source <staged|unstaged|branch> --expect-scope <fingerprint> --mode fast`。Fast 模式用 Tree-sitter 解析完整的变更 Rust 文件，并只对变更候选文件应用有界文本/配置规则。返回的 `impact_context/v1` 必须匹配 authoritative scope fingerprint；partial 或 unavailable 状态必须保留，且永远不能满足 manifest coverage。
+
+### 持久化全仓索引
+
+Fast Mode 零持久化写入。它可以读取兼容的不可变 SQLite generation，并在内存中组合精确的 staged 或 working-tree overlay；generation 缺失、过期、不兼容或损坏时会明确降级为 cache miss，普通变更文件审查继续执行，且不会等待 writer。
+
+Deep/index 仅在显式调用时写入缓存。它们会为精确 candidate 持久化内容寻址、路径无关的 FileFacts，以及不可变的启发式全仓图谱。该图谱并非编译器完备：Tree-sitter 与被动 Cargo model 可以解析受支持的 Rust module、import、reference 和唯一直接调用，但 macro expansion、cfg selection、trait/method dispatch、generated target、外部依赖与 runtime dispatch 必须保持 partial 或 unresolved。
+
+macOS 默认缓存目录是 `$HOME/Library/Caches/pre-commit-review`；其他 Unix 系统使用 `$XDG_CACHE_HOME/pre-commit-review` 或 `$HOME/.cache/pre-commit-review`；Windows 使用 `%LOCALAPPDATA%\pre-commit-review`。`PRE_COMMIT_REVIEW_CACHE_DIR` 必须是 reviewed worktree 与 Git common directory 之外的绝对路径。缓存只存 derived facts 与不可变 graph rows，不存 raw source files；它包含仓库敏感信息，但可安全丢弃。`index clean` 默认只做 dry-run，只有显式传入 `--execute` 才会删除。
+
+下面的 POSIX shell 示例与英文 README 使用完全相同的命令和限制：
+
+```bash
+PRE_COMMIT_REVIEW_CACHE_DIR=/absolute/cache \
+  repository-context-cli index build \
+  --source staged \
+  --expect-scope <fingerprint> \
+  --deadline-ms 30000 \
+  --max-file-bytes 2097152 \
+  --max-query-rows 50000 \
+  --max-graph-depth 2
+
+repository-context-cli index doctor \
+  --cache-dir /absolute/cache \
+  --generation <generation-digest>
+
+PRE_COMMIT_REVIEW_CACHE_DIR=/absolute/cache \
+  repository-context-cli index inspect \
+  --generation <generation-digest> \
+  --path src/lib.rs \
+  --max-rows 100
+
+PRE_COMMIT_REVIEW_CACHE_DIR=/absolute/cache \
+  repository-context-cli index clean \
+  --dry-run \
+  --max-bytes 2147483648 \
+  --retain-generations 2
+```
+
+`index build` 与 `collect --mode deep` 都是显式 operator action。它们不会自动运行 Cargo、build script、package manager、dependency installation、repository executable 或 network discovery。`index doctor` 与 `index inspect` 保持只读；`index clean --execute` 只会修改经过校验的 repository cache namespace。
 
 项目级风险提示可以放在 `.pre-commit-review/risk-paths` 和 `.pre-commit-review/risk-content`。每个非空、非注释行都是一个扩展正则表达式；匹配项只会提升到 high-risk 审查顺序，不会改变覆盖要求。
 

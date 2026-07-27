@@ -210,6 +210,10 @@ grep -Fq 'Treat `test-selection` domain summaries from `impact_context/v1` only 
   || fail 'SKILL.md must treat impact-context test hints as read-only verification guidance'
 grep -Fq 'invoke the control plane command template at `command_templates.impact_context` with the same `scope_fingerprint`' "$skill_file" \
   || fail 'SKILL.md must bind impact-context retrieval to the authoritative scope'
+grep -Fq 'When the control plane provides a fingerprint-bound Fast repository-index command, the skill may consume its compatible read-only context.' "$skill_file" \
+  || fail 'SKILL.md must permit only fingerprint-bound Fast repository-index context'
+grep -Fq 'Never automatically run `repository-context-cli index build`, `collect --mode deep`, `index doctor`, `index clean`, rust-analyzer, or any other cache-writing operation during ordinary review.' "$skill_file" \
+  || fail 'SKILL.md must prohibit automatic Deep, index, and semantic-provider execution'
 grep -Fq 'Impact context never marks a manifest unit reviewed and has no coverage credit.' "$skill_file" \
   || fail 'SKILL.md must deny impact-context coverage credit'
 grep -Fq 'Treat `no-known-env-heavy-marker` as "no known marker matched", not as proof that the test is a pure unit test.' "$skill_file" \

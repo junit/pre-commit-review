@@ -16,6 +16,10 @@ assert_readme_surface() {
   local file="$1"
   local structure_heading="$2"
   local evals_heading="$3"
+  local graph_description="$4"
+  local compiler_limit="$5"
+  local fast_write_policy="$6"
+  local deep_write_policy="$7"
 
   grep -Fq "$structure_heading" "$file" \
     || fail "missing repository structure heading in $file"
@@ -37,9 +41,39 @@ assert_readme_surface() {
     || fail "missing controlled static-analysis runner surface in $file"
   grep -Fq 'static-analysis-execution.md' "$file" \
     || fail "missing controlled static-analysis documentation surface in $file"
+  for command in \
+    'repository-context-cli index build' \
+    'repository-context-cli index doctor' \
+    'repository-context-cli index inspect' \
+    'repository-context-cli index clean'; do
+    grep -Fq "$command" "$file" \
+      || fail "missing repository index command '$command' in $file"
+  done
+  grep -Fq "$graph_description" "$file" \
+    || fail "missing heuristic repository graph description in $file"
+  grep -Fq "$compiler_limit" "$file" \
+    || fail "missing compiler-completeness limitation in $file"
+  grep -Fq "$fast_write_policy" "$file" \
+    || fail "missing Fast Mode zero-write policy in $file"
+  grep -Fq "$deep_write_policy" "$file" \
+    || fail "missing explicit Deep/index write policy in $file"
 }
 
-assert_readme_surface "$readme_en" '## Repository Structure' '### `evals/`'
-assert_readme_surface "$readme_zh" '## 仓库结构' '### `evals/`'
+assert_readme_surface \
+  "$readme_en" \
+  '## Repository Structure' \
+  '### `evals/`' \
+  'heuristic repository graph' \
+  'not compiler-complete' \
+  'Fast Mode performs zero persistent writes' \
+  'Deep/index operations write cache only when explicitly invoked'
+assert_readme_surface \
+  "$readme_zh" \
+  '## 仓库结构' \
+  '### `evals/`' \
+  '启发式全仓图谱' \
+  '并非编译器完备' \
+  'Fast Mode 零持久化写入' \
+  'Deep/index 仅在显式调用时写入缓存'
 
 printf 'readme surface tests passed\n'

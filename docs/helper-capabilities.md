@@ -42,6 +42,16 @@ For large or fragmented diffs, the helper emits structured sections so a reducer
 
 The default report no longer emits `Dependency Summary`, `Semantic Context Queries`, or `Test Selection Hints`. The separate fast impact-context collector parses complete changed Rust files with Tree-sitter, scans changed candidate files with the bounded text adapter, and returns normalized dependency, configured-query, framework, configuration, and test-selection summaries. It does not parse unrelated repository files, run builds, invoke the network, or grant review coverage.
 
+## Impact Context Evidence Layers
+
+The `impact_context/v1` contract keeps three evidence layers distinct:
+
+1. **Changed-file structural facts** come from complete changed candidate files and changed ranges. Tree-sitter definitions, bounded text/configuration matches, dependency summaries, framework markers, and test-selection hints belong here. This layer remains available on a repository-index cache miss and never grants manifest coverage.
+2. **Heuristic repository index facts** come from validated content-addressed FileFacts, the passive Cargo project model, an immutable exact-candidate SQLite graph generation, and an optional in-memory candidate overlay. Fast Mode may read a compatible generation with zero persistent writes; only explicit Deep/index operations may publish facts or generations. These edges are bounded syntactic or resolved-reference evidence, not compiler-complete semantic calls.
+3. **Future semantic provider facts** may come from rust-analyzer, SCIP, Joern, or another separately authorized provider in a later subproject. They must preserve their own provider identity, confidence, completeness, and limitations. They may add higher-confidence evidence but must not silently rewrite or upgrade heuristic Repository Index edges.
+
+The graph database is an internal implementation detail. Callers receive only bounded changed-symbol, incoming/outgoing relationship, reverse-dependent, connected-test, and limitation slices. Index, query, and output completeness remain independent so a complete bounded query over a heuristic graph is never presented as compiler completeness.
+
 ## Safety Semantics
 
 - omits the global raw diff from default output when it exceeds the inline budget, while keeping the structured plan visible
