@@ -1,4 +1,6 @@
-use crate::git_policy::{configure_read_only, output_bounded, GitOutputError};
+use crate::git_policy::{
+    configure_read_only, output_bounded, output_bounded_with_stdin, GitOutputError,
+};
 use crate::review_scope::{AuthoritativeScope, ReviewSource};
 use serde::{Deserialize, Deserializer, Serialize};
 use sha2::{Digest, Sha256};
@@ -10,6 +12,8 @@ use std::io::Read;
 use std::path::{Component, Path, PathBuf};
 use std::process::Command;
 use std::time::{Duration, Instant};
+
+const MAX_GIT_BATCH_BYTES: usize = 8 * 1024 * 1024;
 
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
 #[serde(transparent)]
@@ -192,7 +196,7 @@ pub struct CandidateError {
 }
 
 impl CandidateError {
-    fn new(reason: impl Into<String>) -> Self {
+    pub(crate) fn new(reason: impl Into<String>) -> Self {
         Self {
             reason: reason.into(),
             kind: CandidateErrorKind::Unavailable,
@@ -757,7 +761,7 @@ impl CandidateContent for GitCandidateContent {
     }
 }
 
-fn unstaged_path_size(path: &Path, mode: &str) -> std::io::Result<u64> {
+pub(crate) fn unstaged_path_size(path: &Path, mode: &str) -> std::io::Result<u64> {
     if mode == "120000" {
         let target = fs::read_link(path)?;
         #[cfg(unix)]
@@ -771,7 +775,7 @@ fn unstaged_path_size(path: &Path, mode: &str) -> std::io::Result<u64> {
     fs::metadata(path).map(|metadata| metadata.len())
 }
 
-fn hash_unstaged_path_bounded(
+pub(crate) fn hash_unstaged_path_bounded(
     path: &Path,
     mode: &str,
     repo_path: &RepoPath,
@@ -896,6 +900,204 @@ fn git_blob_size(
         .ok_or_else(|| CandidateError::new("cannot inspect candidate blob: invalid object size"))
 }
 
+pub(crate) fn read_git_blobs_batch_bounded(
+    repository: &Path,
+    requests: &[(RepoPath, String)],
+    started: Instant,
+    deadline: Duration,
+    max_file_bytes: usize,
+    max_total_bytes: usize,
+) -> Result<BTreeMap<RepoPath, Result<CandidateBytes, CandidateError>>, CandidateError> {
+    if requests.is_empty() {
+        return Ok(BTreeMap::new());
+    }
+
+    let request_bytes = batch_request_bytes(requests)?;
+    let mut check_command = Command::new("git");
+    check_command.current_dir(repository).args([
+        "cat-file",
+        "--batch-check=%(objectname) %(objecttype) %(objectsize)",
+    ]);
+    let output = output_bounded_with_stdin(
+        &mut check_command,
+        &request_bytes,
+        remaining_deadline(started, deadline)?,
+    )
+    .map_err(|error| map_git_output_error(error, deadline, "cannot inspect candidate blobs"))?;
+    if !output.status.success() {
+        return Err(git_error("cannot inspect candidate blobs", &output.stderr));
+    }
+
+    let lines = output
+        .stdout
+        .split(|byte| *byte == b'\n')
+        .filter(|line| !line.is_empty())
+        .collect::<Vec<_>>();
+    if lines.len() != requests.len() {
+        return Err(CandidateError::new(
+            "cannot inspect candidate blobs: response count mismatch",
+        ));
+    }
+
+    let mut results = BTreeMap::new();
+    let mut accepted = Vec::new();
+    let mut remaining_total = max_total_bytes;
+    for ((path, requested_id), line) in requests.iter().zip(lines) {
+        let line = std::str::from_utf8(line).map_err(|_| {
+            CandidateError::new("cannot inspect candidate blobs: non-UTF-8 metadata")
+        })?;
+        let fields = line.split_whitespace().collect::<Vec<_>>();
+        if fields.len() != 3 || fields[0] != requested_id {
+            return Err(CandidateError::new(
+                "cannot inspect candidate blobs: invalid batch metadata",
+            ));
+        }
+        if fields[1] != "blob" {
+            results.insert(
+                path.clone(),
+                Err(CandidateError::new(format!(
+                    "candidate object is not a blob: {}",
+                    path.as_str()
+                ))),
+            );
+            continue;
+        }
+        let size = fields[2].parse::<usize>().map_err(|_| {
+            CandidateError::new("cannot inspect candidate blobs: invalid object size")
+        })?;
+        if size > max_file_bytes {
+            results.insert(
+                path.clone(),
+                Err(CandidateError::byte_limit_exceeded(path, max_file_bytes)),
+            );
+            continue;
+        }
+        if size > remaining_total {
+            results.insert(
+                path.clone(),
+                Err(CandidateError::budget(
+                    path,
+                    CandidateErrorKind::TotalByteLimitExceeded,
+                    max_total_bytes,
+                )),
+            );
+            continue;
+        }
+        remaining_total -= size;
+        accepted.push((path.clone(), requested_id.clone(), size));
+    }
+
+    let mut batch = Vec::new();
+    let mut batch_bytes = 0_usize;
+    for request in accepted {
+        let estimated = request.2.saturating_add(160);
+        if !batch.is_empty() && batch_bytes.saturating_add(estimated) > MAX_GIT_BATCH_BYTES {
+            read_git_blob_batch_chunk(repository, &batch, started, deadline, &mut results)?;
+            batch.clear();
+            batch_bytes = 0;
+        }
+        batch_bytes = batch_bytes.saturating_add(estimated);
+        batch.push(request);
+    }
+    if !batch.is_empty() {
+        read_git_blob_batch_chunk(repository, &batch, started, deadline, &mut results)?;
+    }
+    Ok(results)
+}
+
+fn batch_request_bytes(requests: &[(RepoPath, String)]) -> Result<Vec<u8>, CandidateError> {
+    let capacity = requests.iter().try_fold(0_usize, |total, (_, object_id)| {
+        total.checked_add(object_id.len().saturating_add(1))
+    });
+    let capacity = capacity.ok_or_else(|| CandidateError::new("Git batch request overflow"))?;
+    if capacity > crate::git_policy::MAX_GIT_OUTPUT_BYTES {
+        return Err(CandidateError::new(
+            "Git batch request exceeds the bounded input limit",
+        ));
+    }
+    let mut bytes = Vec::with_capacity(capacity);
+    for (_, object_id) in requests {
+        bytes.extend_from_slice(object_id.as_bytes());
+        bytes.push(b'\n');
+    }
+    Ok(bytes)
+}
+
+fn read_git_blob_batch_chunk(
+    repository: &Path,
+    requests: &[(RepoPath, String, usize)],
+    started: Instant,
+    deadline: Duration,
+    results: &mut BTreeMap<RepoPath, Result<CandidateBytes, CandidateError>>,
+) -> Result<(), CandidateError> {
+    let request_pairs = requests
+        .iter()
+        .map(|(path, object_id, _)| (path.clone(), object_id.clone()))
+        .collect::<Vec<_>>();
+    let request_bytes = batch_request_bytes(&request_pairs)?;
+    let mut command = Command::new("git");
+    command
+        .current_dir(repository)
+        .args(["cat-file", "--batch"]);
+    let output = output_bounded_with_stdin(
+        &mut command,
+        &request_bytes,
+        remaining_deadline(started, deadline)?,
+    )
+    .map_err(|error| map_git_output_error(error, deadline, "cannot read candidate blobs"))?;
+    if !output.status.success() {
+        return Err(git_error("cannot read candidate blobs", &output.stderr));
+    }
+
+    let mut cursor = 0_usize;
+    for (path, expected_id, expected_size) in requests {
+        let header_end = output.stdout[cursor..]
+            .iter()
+            .position(|byte| *byte == b'\n')
+            .map(|offset| cursor + offset)
+            .ok_or_else(|| CandidateError::new("Git batch response is missing a header"))?;
+        let header = std::str::from_utf8(&output.stdout[cursor..header_end])
+            .map_err(|_| CandidateError::new("Git batch response has non-UTF-8 metadata"))?;
+        let fields = header.split_whitespace().collect::<Vec<_>>();
+        if fields.len() != 3 || fields[0] != expected_id || fields[1] != "blob" {
+            return Err(CandidateError::new("Git batch response metadata mismatch"));
+        }
+        let observed_size = fields[2]
+            .parse::<usize>()
+            .map_err(|_| CandidateError::new("Git batch response has invalid object size"))?;
+        if observed_size != *expected_size {
+            return Err(CandidateError::new(
+                "Git batch response object size changed",
+            ));
+        }
+        let content_start = header_end.saturating_add(1);
+        let content_end = content_start
+            .checked_add(observed_size)
+            .ok_or_else(|| CandidateError::new("Git batch response size overflow"))?;
+        if content_end >= output.stdout.len() || output.stdout[content_end] != b'\n' {
+            return Err(CandidateError::new("Git batch response is truncated"));
+        }
+        let bytes = output.stdout[content_start..content_end].to_vec();
+        let sha256 = format!("{:x}", Sha256::digest(&bytes));
+        let binary = bytes.iter().take(8192).any(|byte| *byte == 0);
+        results.insert(
+            path.clone(),
+            Ok(CandidateBytes {
+                bytes,
+                sha256,
+                binary,
+            }),
+        );
+        cursor = content_end.saturating_add(1);
+    }
+    if cursor != output.stdout.len() {
+        return Err(CandidateError::new(
+            "Git batch response contains trailing bytes",
+        ));
+    }
+    Ok(())
+}
+
 fn remaining_deadline(started: Instant, deadline: Duration) -> Result<Duration, CandidateError> {
     let remaining = deadline.saturating_sub(started.elapsed());
     if remaining.is_zero() {
@@ -920,7 +1122,7 @@ fn map_git_output_error(
     }
 }
 
-fn read_unstaged_path_bounded(
+pub(crate) fn read_unstaged_path_bounded(
     path: &Path,
     mode: &str,
     repo_path: &RepoPath,
@@ -1064,7 +1266,7 @@ fn read_git_blob_bounded(
     Ok(output.stdout)
 }
 
-fn unstaged_mode(path: &Path, index_mode: &str) -> std::io::Result<String> {
+pub(crate) fn unstaged_mode(path: &Path, index_mode: &str) -> std::io::Result<String> {
     if index_mode == "160000" {
         return Ok(index_mode.to_string());
     }
