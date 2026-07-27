@@ -1,10 +1,11 @@
-use rusqlite::{params, Connection};
+use percent_encoding::{utf8_percent_encode, NON_ALPHANUMERIC};
+use rusqlite::{params, Connection, OpenFlags};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 use std::env;
 use std::fmt::{Display, Formatter};
 use std::io::Write;
-use std::path::PathBuf;
+use std::path::{Path, PathBuf};
 use std::time::Instant;
 use tempfile::NamedTempFile;
 
@@ -81,14 +82,12 @@ struct GenerationStats {
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
-#[allow(dead_code)]
 enum PublishOutcome {
     Published,
     Reused,
 }
 
 #[derive(Debug)]
-#[allow(dead_code)]
 enum SpikeError {
     InvalidInput(String),
     Io(std::io::Error),
@@ -106,19 +105,26 @@ enum Command {
 }
 
 fn main() {
-    if let Err(error) = run() {
-        eprintln!("sqlite-storage-spike: {error}");
-        std::process::exit(2);
+    match run() {
+        Ok(0) => {}
+        Ok(code) => std::process::exit(code),
+        Err(error) => {
+            eprintln!("sqlite-storage-spike: {error}");
+            std::process::exit(2);
+        }
     }
 }
 
-fn run() -> Result<(), SpikeError> {
+fn run() -> Result<i32, SpikeError> {
     match parse_command(env::args().skip(1).collect())? {
         Command::Help => {
             print_help()?;
-            Ok(())
+            Ok(0)
         }
-        Command::Build(arguments) => run_build(arguments),
+        Command::Build(arguments) => {
+            run_build(arguments)?;
+            Ok(0)
+        }
         Command::Query(arguments) => {
             let _ = (
                 arguments.generation,
@@ -129,10 +135,7 @@ fn run() -> Result<(), SpikeError> {
             );
             Err(SpikeError::InvalidInput("query is not implemented".into()))
         }
-        Command::Doctor(arguments) => {
-            let _ = arguments.generation;
-            Err(SpikeError::InvalidInput("doctor is not implemented".into()))
-        }
+        Command::Doctor(arguments) => run_doctor(arguments),
         Command::Benchmark(arguments) => {
             let _ = (
                 arguments.cache_dir,
@@ -365,6 +368,45 @@ fn run_build(arguments: BuildArgs) -> Result<(), SpikeError> {
     })
 }
 
+fn run_doctor(arguments: DoctorArgs) -> Result<i32, SpikeError> {
+    let started = Instant::now();
+    let expected_key = expected_generation_key(&arguments.generation)?;
+    match open_immutable(&arguments.generation)
+        .and_then(|connection| validate_generation(&connection, &expected_key))
+    {
+        Ok(stats) => {
+            write_report(SpikeReport {
+                schema_version: SCHEMA_VERSION as u8,
+                kind: "sqlite-storage-spike-report",
+                action: "doctor",
+                status: "completed",
+                generation_key: Some(stats.generation_key),
+                symbols: stats.symbols,
+                edges: stats.edges,
+                elapsed_ms: duration_ms(started.elapsed()),
+                output_bytes: 0,
+                limitations: Vec::new(),
+            })?;
+            Ok(0)
+        }
+        Err(error) => {
+            write_report(SpikeReport {
+                schema_version: SCHEMA_VERSION as u8,
+                kind: "sqlite-storage-spike-report",
+                action: "doctor",
+                status: "corrupt",
+                generation_key: Some(expected_key),
+                symbols: 0,
+                edges: 0,
+                elapsed_ms: duration_ms(started.elapsed()),
+                output_bytes: 0,
+                limitations: vec![error.code().to_owned()],
+            })?;
+            Ok(2)
+        }
+    }
+}
+
 fn build_generation(
     arguments: &BuildArgs,
 ) -> Result<(GenerationStats, PublishOutcome, PathBuf), SpikeError> {
@@ -420,20 +462,13 @@ fn build_generation(
     connection.close().map_err(|(_, error)| error)?;
     staging.as_file().sync_all()?;
 
+    let staging_reader = open_immutable(staging.path())?;
+    let stats = validate_generation(&staging_reader, &generation_key)?;
+    drop(staging_reader);
+
     let final_path = graph_directory.join(format!("{generation_key}.sqlite"));
-    staging
-        .persist(&final_path)
-        .map_err(|error| SpikeError::Io(error.error))?;
-    Ok((
-        GenerationStats {
-            generation_key,
-            symbols: arguments.symbols,
-            edges: arguments.edges,
-            application_root,
-        },
-        PublishOutcome::Published,
-        final_path,
-    ))
+    let outcome = publish_noclobber(staging, &final_path)?;
+    Ok((stats, outcome, final_path))
 }
 
 fn configure_staging(connection: &Connection) -> Result<(), SpikeError> {
@@ -472,19 +507,215 @@ fn create_schema(connection: &Connection) -> Result<(), SpikeError> {
     Ok(())
 }
 
+fn validate_generation(
+    connection: &Connection,
+    expected_key: &str,
+) -> Result<GenerationStats, SpikeError> {
+    let application_id: i32 =
+        connection.pragma_query_value(None, "application_id", |row| row.get(0))?;
+    if application_id != APPLICATION_ID {
+        return Err(invalid_generation("application-id-mismatch"));
+    }
+    let user_version: i32 =
+        connection.pragma_query_value(None, "user_version", |row| row.get(0))?;
+    if user_version != SCHEMA_VERSION {
+        return Err(invalid_generation("schema-version-mismatch"));
+    }
+
+    let metadata_rows: i64 =
+        connection.query_row("SELECT COUNT(*) FROM generation_meta", [], |row| row.get(0))?;
+    if metadata_rows != 1 {
+        return Err(invalid_generation("metadata-row-count-mismatch"));
+    }
+    let (schema_version, generation_key, symbols, edges, stored_root): (
+        i32,
+        String,
+        i64,
+        i64,
+        String,
+    ) = connection.query_row(
+        "SELECT schema_version, generation_key, symbol_count, edge_count, application_root
+         FROM generation_meta",
+        [],
+        |row| {
+            Ok((
+                row.get(0)?,
+                row.get(1)?,
+                row.get(2)?,
+                row.get(3)?,
+                row.get(4)?,
+            ))
+        },
+    )?;
+    if schema_version != SCHEMA_VERSION {
+        return Err(invalid_generation("schema-version-mismatch"));
+    }
+    if generation_key != expected_key {
+        return Err(invalid_generation("generation-key-mismatch"));
+    }
+
+    let symbols = usize_from_sql(symbols, "symbol-count-invalid")?;
+    let edges = usize_from_sql(edges, "edge-count-invalid")?;
+    let queried_symbols: i64 =
+        connection.query_row("SELECT COUNT(*) FROM symbols", [], |row| row.get(0))?;
+    let queried_edges: i64 =
+        connection.query_row("SELECT COUNT(*) FROM edges", [], |row| row.get(0))?;
+    if usize_from_sql(queried_symbols, "symbol-count-invalid")? != symbols {
+        return Err(invalid_generation("symbol-count-mismatch"));
+    }
+    if usize_from_sql(queried_edges, "edge-count-invalid")? != edges {
+        return Err(invalid_generation("edge-count-mismatch"));
+    }
+
+    let mut foreign_keys = connection.prepare("PRAGMA foreign_key_check")?;
+    if foreign_keys.query([])?.next()?.is_some() {
+        return Err(invalid_generation("foreign-key-mismatch"));
+    }
+    integrity_check(connection)?;
+
+    let computed_root = application_root(connection)?;
+    if stored_root != computed_root {
+        return Err(invalid_generation("application-root-mismatch"));
+    }
+    Ok(GenerationStats {
+        generation_key,
+        symbols,
+        edges,
+        application_root: computed_root,
+    })
+}
+
+fn application_root(connection: &Connection) -> Result<String, SpikeError> {
+    let symbol_count: i64 =
+        connection.query_row("SELECT COUNT(*) FROM symbols", [], |row| row.get(0))?;
+    let edge_count: i64 =
+        connection.query_row("SELECT COUNT(*) FROM edges", [], |row| row.get(0))?;
+    let symbol_count = usize_from_sql(symbol_count, "symbol-count-invalid")?;
+    let edge_count = usize_from_sql(edge_count, "edge-count-invalid")?;
+
+    let mut digest = Sha256::new();
+    update_digest(&mut digest, b"sqlite-storage-spike/v1");
+    update_digest(&mut digest, b"application-root");
+    update_digest(&mut digest, &(symbol_count as u64).to_le_bytes());
+    update_digest(&mut digest, &(edge_count as u64).to_le_bytes());
+
+    let mut symbols = connection
+        .prepare("SELECT symbol_id, path, start_line, end_line FROM symbols ORDER BY symbol_id")?;
+    let mut symbol_rows = symbols.query([])?;
+    while let Some(row) = symbol_rows.next()? {
+        let symbol_id: String = row.get(0)?;
+        let path: String = row.get(1)?;
+        let start_line: i64 = row.get(2)?;
+        let end_line: i64 = row.get(3)?;
+        update_digest(&mut digest, symbol_id.as_bytes());
+        update_digest(&mut digest, path.as_bytes());
+        update_digest(
+            &mut digest,
+            &u64_from_sql(start_line, "symbol-range-invalid")?.to_le_bytes(),
+        );
+        update_digest(
+            &mut digest,
+            &u64_from_sql(end_line, "symbol-range-invalid")?.to_le_bytes(),
+        );
+    }
+
+    let mut edges =
+        connection.prepare("SELECT edge_id, from_symbol, to_symbol FROM edges ORDER BY edge_id")?;
+    let mut edge_rows = edges.query([])?;
+    while let Some(row) = edge_rows.next()? {
+        let edge_id: String = row.get(0)?;
+        let from_symbol: String = row.get(1)?;
+        let to_symbol: String = row.get(2)?;
+        update_digest(&mut digest, edge_id.as_bytes());
+        update_digest(&mut digest, from_symbol.as_bytes());
+        update_digest(&mut digest, to_symbol.as_bytes());
+    }
+    Ok(format!("{:x}", digest.finalize()))
+}
+
+fn integrity_check(connection: &Connection) -> Result<(), SpikeError> {
+    let mut statement = connection.prepare("PRAGMA integrity_check")?;
+    let checks = statement
+        .query_map([], |row| row.get::<_, String>(0))?
+        .collect::<Result<Vec<_>, _>>()?;
+    if checks.as_slice() != ["ok"] {
+        return Err(invalid_generation("sqlite-integrity-check-failed"));
+    }
+    Ok(())
+}
+
+fn publish_noclobber(
+    staging: NamedTempFile,
+    final_path: &Path,
+) -> Result<PublishOutcome, SpikeError> {
+    staging.as_file().sync_all()?;
+    match staging.persist_noclobber(final_path) {
+        Ok(_) => Ok(PublishOutcome::Published),
+        Err(error) if error.error.kind() == std::io::ErrorKind::AlreadyExists => {
+            let expected_key = expected_generation_key(final_path)?;
+            match open_immutable(final_path)
+                .and_then(|connection| validate_generation(&connection, &expected_key))
+            {
+                Ok(_) => Ok(PublishOutcome::Reused),
+                Err(validation_error) => Err(SpikeError::InvalidExistingGeneration(format!(
+                    "invalid-existing-generation:{}",
+                    validation_error.code()
+                ))),
+            }
+        }
+        Err(error) => Err(SpikeError::Io(error.error)),
+    }
+}
+
+fn open_immutable(path: &Path) -> Result<Connection, SpikeError> {
+    let path = path
+        .to_str()
+        .ok_or_else(|| invalid("generation path is not UTF-8"))?;
+    let encoded = utf8_percent_encode(path, NON_ALPHANUMERIC);
+    let uri = format!("file:{encoded}?mode=ro&immutable=1");
+    let connection = Connection::open_with_flags(
+        uri,
+        OpenFlags::SQLITE_OPEN_READ_ONLY
+            | OpenFlags::SQLITE_OPEN_URI
+            | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )?;
+    connection.pragma_update(None, "query_only", true)?;
+    connection.pragma_update(None, "trusted_schema", false)?;
+    Ok(connection)
+}
+
+fn expected_generation_key(path: &Path) -> Result<String, SpikeError> {
+    let name = path
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| invalid("generation path has no UTF-8 filename"))?;
+    let key = name
+        .strip_suffix(".sqlite")
+        .ok_or_else(|| invalid("generation filename must end in .sqlite"))?;
+    if key.len() != 64
+        || !key
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    {
+        return Err(invalid("generation filename must be 64 lowercase hex"));
+    }
+    Ok(key.to_owned())
+}
+
 fn fixture_digest(domain: &str, symbols: usize, edges: usize) -> String {
     let mut digest = Sha256::new();
     update_digest(&mut digest, b"sqlite-storage-spike/v1");
     update_digest(&mut digest, domain.as_bytes());
-    update_digest(&mut digest, &symbols.to_le_bytes());
-    update_digest(&mut digest, &edges.to_le_bytes());
+    update_digest(&mut digest, &(symbols as u64).to_le_bytes());
+    update_digest(&mut digest, &(edges as u64).to_le_bytes());
     for index in 0..symbols {
         update_digest(&mut digest, symbol_id(index).as_bytes());
         update_digest(
             &mut digest,
             format!("src/module-{:03}.rs", index % 128).as_bytes(),
         );
-        update_digest(&mut digest, &(index + 1).to_le_bytes());
+        update_digest(&mut digest, &((index + 1) as u64).to_le_bytes());
+        update_digest(&mut digest, &((index + 1) as u64).to_le_bytes());
     }
     for index in 0..edges {
         update_digest(&mut digest, edge_id(index).as_bytes());
@@ -531,8 +762,32 @@ fn invalid(message: impl Into<String>) -> SpikeError {
     SpikeError::InvalidInput(message.into())
 }
 
+fn invalid_generation(code: impl Into<String>) -> SpikeError {
+    SpikeError::InvalidGeneration(code.into())
+}
+
 fn sqlite_integer(value: usize, field: &str) -> Result<i64, SpikeError> {
     i64::try_from(value).map_err(|_| invalid(format!("{field} exceeds SQLite integer range")))
+}
+
+fn usize_from_sql(value: i64, code: &'static str) -> Result<usize, SpikeError> {
+    usize::try_from(value).map_err(|_| invalid_generation(code))
+}
+
+fn u64_from_sql(value: i64, code: &'static str) -> Result<u64, SpikeError> {
+    u64::try_from(value).map_err(|_| invalid_generation(code))
+}
+
+impl SpikeError {
+    fn code(&self) -> &str {
+        match self {
+            Self::InvalidInput(_) => "invalid-input",
+            Self::Io(_) => "io-error",
+            Self::Sqlite(_) => "sqlite-error",
+            Self::InvalidGeneration(code) => code,
+            Self::InvalidExistingGeneration(_) => "invalid-existing-generation",
+        }
+    }
 }
 
 impl Display for SpikeError {
