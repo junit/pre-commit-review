@@ -2,6 +2,7 @@ use percent_encoding::{utf8_percent_encode, NON_ALPHANUMERIC};
 use rusqlite::{params, Connection, OpenFlags};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
+use std::collections::BTreeSet;
 use std::env;
 use std::fmt::{Display, Formatter};
 use std::io::Write;
@@ -67,7 +68,7 @@ enum CrashPoint {
     BeforePublish,
 }
 
-#[derive(Debug, Clone, Copy)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]
 enum Direction {
     Incoming,
     Outgoing,
@@ -79,6 +80,12 @@ struct GenerationStats {
     symbols: usize,
     edges: usize,
     application_root: String,
+}
+
+struct QueryOutcome {
+    edges: usize,
+    visited_symbols: usize,
+    partial: bool,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -126,14 +133,8 @@ fn run() -> Result<i32, SpikeError> {
             Ok(0)
         }
         Command::Query(arguments) => {
-            let _ = (
-                arguments.generation,
-                arguments.symbol,
-                arguments.direction,
-                arguments.depth,
-                arguments.max_edges,
-            );
-            Err(SpikeError::InvalidInput("query is not implemented".into()))
+            run_query(arguments)?;
+            Ok(0)
         }
         Command::Doctor(arguments) => run_doctor(arguments),
         Command::Benchmark(arguments) => {
@@ -407,13 +408,117 @@ fn run_doctor(arguments: DoctorArgs) -> Result<i32, SpikeError> {
     }
 }
 
+fn run_query(arguments: QueryArgs) -> Result<(), SpikeError> {
+    let started = Instant::now();
+    let generation_key = expected_generation_key(&arguments.generation)?;
+    let connection = open_immutable(&arguments.generation)?;
+    validate_generation(&connection, &generation_key)?;
+    let outcome = query_graph(&connection, &arguments)?;
+    write_report(SpikeReport {
+        schema_version: SCHEMA_VERSION as u8,
+        kind: "sqlite-storage-spike-report",
+        action: "query",
+        status: if outcome.partial {
+            "partial"
+        } else {
+            "completed"
+        },
+        generation_key: Some(generation_key),
+        symbols: outcome.visited_symbols,
+        edges: outcome.edges,
+        elapsed_ms: duration_ms(started.elapsed()),
+        output_bytes: 0,
+        limitations: if outcome.partial {
+            vec!["edge-budget-exhausted".to_owned()]
+        } else {
+            Vec::new()
+        },
+    })
+}
+
+fn query_graph(connection: &Connection, arguments: &QueryArgs) -> Result<QueryOutcome, SpikeError> {
+    let mut frontier = vec![arguments.symbol.clone()];
+    let mut visited = BTreeSet::new();
+    let mut accepted_edges = BTreeSet::new();
+    let mut partial = false;
+
+    for _ in 0..arguments.depth {
+        frontier.sort();
+        frontier.dedup();
+        let mut next_frontier = Vec::new();
+        for symbol in std::mem::take(&mut frontier) {
+            if !visited.insert((arguments.direction, symbol.clone())) {
+                continue;
+            }
+            let remaining = arguments.max_edges.saturating_sub(accepted_edges.len());
+            if remaining == 0 {
+                partial = true;
+                break;
+            }
+            let rows = query_adjacent(
+                connection,
+                &symbol,
+                arguments.direction,
+                remaining.saturating_add(1),
+            )?;
+            if rows.len() > remaining {
+                partial = true;
+            }
+            for (edge_id, adjacent) in rows.into_iter().take(remaining) {
+                accepted_edges.insert(edge_id);
+                next_frontier.push(adjacent);
+            }
+            if partial {
+                break;
+            }
+        }
+        if partial || next_frontier.is_empty() {
+            break;
+        }
+        frontier = next_frontier;
+    }
+
+    Ok(QueryOutcome {
+        edges: accepted_edges.len(),
+        visited_symbols: visited.len(),
+        partial,
+    })
+}
+
+fn query_adjacent(
+    connection: &Connection,
+    symbol: &str,
+    direction: Direction,
+    maximum_rows: usize,
+) -> Result<Vec<(String, String)>, SpikeError> {
+    let sql = match direction {
+        Direction::Outgoing => {
+            "SELECT edge_id, to_symbol FROM edges
+             WHERE from_symbol = ?1 ORDER BY edge_id LIMIT ?2"
+        }
+        Direction::Incoming => {
+            "SELECT edge_id, from_symbol FROM edges
+             WHERE to_symbol = ?1 ORDER BY edge_id LIMIT ?2"
+        }
+    };
+    let mut statement = connection.prepare(sql)?;
+    let rows = statement
+        .query_map(
+            params![symbol, sqlite_integer(maximum_rows, "query row limit")?],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )?
+        .collect::<Result<Vec<_>, _>>()?;
+    Ok(rows)
+}
+
 fn build_generation(
     arguments: &BuildArgs,
 ) -> Result<(GenerationStats, PublishOutcome, PathBuf), SpikeError> {
-    let _ = arguments.crash_at;
     let graph_directory = arguments.cache_dir.join("graphs");
+    let staging_directory = arguments.cache_dir.join("staging");
     std::fs::create_dir_all(&graph_directory)?;
-    let staging = NamedTempFile::new_in(&graph_directory)?;
+    std::fs::create_dir_all(&staging_directory)?;
+    let staging = NamedTempFile::new_in(&staging_directory)?;
     let mut connection = Connection::open(staging.path())?;
     configure_staging(&connection)?;
     create_schema(&connection)?;
@@ -458,17 +563,27 @@ fn build_generation(
             application_root,
         ],
     )?;
+    crash_if(arguments.crash_at, CrashPoint::BeforeCommit);
     transaction.commit()?;
+    crash_if(arguments.crash_at, CrashPoint::AfterCommit);
     connection.close().map_err(|(_, error)| error)?;
     staging.as_file().sync_all()?;
+    crash_if(arguments.crash_at, CrashPoint::AfterSync);
 
     let staging_reader = open_immutable(staging.path())?;
     let stats = validate_generation(&staging_reader, &generation_key)?;
     drop(staging_reader);
+    crash_if(arguments.crash_at, CrashPoint::BeforePublish);
 
     let final_path = graph_directory.join(format!("{generation_key}.sqlite"));
     let outcome = publish_noclobber(staging, &final_path)?;
     Ok((stats, outcome, final_path))
+}
+
+fn crash_if(actual: Option<CrashPoint>, expected: CrashPoint) {
+    if actual == Some(expected) {
+        std::process::exit(99);
+    }
 }
 
 fn configure_staging(connection: &Connection) -> Result<(), SpikeError> {
