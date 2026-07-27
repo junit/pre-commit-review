@@ -1,5 +1,7 @@
 use crate::candidate::{CandidatePresence, RepoPath};
-use crate::impact_context::contracts::{Completeness, UnitStatus};
+use crate::impact_context::contracts::{
+    Completeness, Confidence, EdgeKind, Resolution, SourceRange, UnitStatus,
+};
 use crate::review_scope::ReviewSource;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -96,6 +98,76 @@ pub struct GraphGenerationIdentity {
     pub adapter_query_digest: String,
     pub file_facts_manifest_digest: String,
     pub normalization_rules_digest: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RepositoryGraph {
+    pub identity: GraphGenerationIdentity,
+    pub files: Vec<GraphFile>,
+    pub modules: Vec<GraphModule>,
+    pub symbols: Vec<GraphSymbol>,
+    pub edges: Vec<GraphEdge>,
+    pub completeness: Completeness,
+    pub limitations: Vec<IndexLimitation>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GraphFile {
+    pub path: RepoPath,
+    pub mode: String,
+    pub presence: CandidatePresence,
+    pub content_sha256: Option<String>,
+    pub file_fact_key: Option<FileFactKey>,
+    pub language: Option<String>,
+    pub module_id: Option<String>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GraphModule {
+    pub module_id: String,
+    pub parent_module_id: Option<String>,
+    pub crate_name: String,
+    pub path: RepoPath,
+    pub inline: bool,
+    pub root_module: bool,
+    pub resolution_status: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GraphSymbol {
+    pub symbol_id: String,
+    pub local_id: String,
+    pub module_id: String,
+    pub path: RepoPath,
+    pub language: String,
+    pub kind: String,
+    pub name: String,
+    pub owner_symbol_id: Option<String>,
+    pub signature: Option<String>,
+    pub visibility: Option<String>,
+    pub range: SourceRange,
+    pub confidence: Confidence,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct GraphEdge {
+    pub edge_id: String,
+    pub kind: EdgeKind,
+    pub from_symbol: String,
+    pub to_symbol: Option<String>,
+    pub unresolved_target: Option<String>,
+    pub path: RepoPath,
+    pub range: SourceRange,
+    pub provider_id: String,
+    pub provider_version: String,
+    pub resolution: Resolution,
+    pub confidence: Confidence,
+    pub limitation_code: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
