@@ -11,7 +11,7 @@ use crate::impact_context::contracts::{
 };
 use crate::impact_context::index::budget::{IndexBudgetTracker, IndexResource};
 use crate::impact_context::index::model::{
-    GraphEdge, GraphGenerationIdentity, IndexLimitation, RepositoryGraph,
+    GraphEdge, GraphGenerationIdentity, GraphSymbol, IndexLimitation, RepositoryGraph,
 };
 use percent_encoding::{utf8_percent_encode, NON_ALPHANUMERIC};
 use rusqlite::{params, Connection, OpenFlags, Transaction};
@@ -294,6 +294,10 @@ impl RepositoryGraphReader {
         self.query_only
     }
 
+    pub fn maximum_rows_per_query(&self) -> usize {
+        self.limits.maximum_rows_per_query
+    }
+
     pub fn outgoing(
         &self,
         symbol: &str,
@@ -310,18 +314,82 @@ impl RepositoryGraphReader {
         self.query_edges(symbol, maximum_rows, false)
     }
 
+    pub fn symbols_for_path(
+        &self,
+        path: &crate::candidate::RepoPath,
+        maximum_rows: usize,
+    ) -> Result<Vec<GraphSymbol>, RepositoryGraphError> {
+        self.validate_query_row_limit(maximum_rows)?;
+        let mut statement = self
+            .connection
+            .prepare(
+                "SELECT canonical_json FROM symbols
+                 WHERE path = ?1 ORDER BY symbol_id LIMIT ?2",
+            )
+            .map_err(sqlite_error)?;
+        let mut rows = statement
+            .query(params![
+                path.as_str(),
+                sqlite_integer(maximum_rows, "query row limit")?
+            ])
+            .map_err(sqlite_error)?;
+        let mut symbols = Vec::new();
+        while let Some(row) = rows.next().map_err(sqlite_error)? {
+            let canonical = row_text(row, 0, self.limits.maximum_string_bytes.saturating_mul(16))?;
+            let symbol: GraphSymbol =
+                serde_json::from_str(&canonical).map_err(|_| row_corrupt())?;
+            if symbol.path != *path
+                || validate_hex(&symbol.symbol_id).is_err()
+                || validate_hex(&symbol.module_id).is_err()
+                || validate_range(&symbol.range).is_err()
+            {
+                return Err(row_corrupt());
+            }
+            symbols.push(symbol);
+        }
+        Ok(symbols)
+    }
+
+    pub fn edges_for_path(
+        &self,
+        path: &crate::candidate::RepoPath,
+        maximum_rows: usize,
+    ) -> Result<Vec<GraphEdge>, RepositoryGraphError> {
+        self.validate_query_row_limit(maximum_rows)?;
+        let mut statement = self
+            .connection
+            .prepare(
+                "SELECT edge_id, kind, from_symbol, to_symbol, unresolved_target, path,
+                        start_line, start_column, end_line, end_column, start_byte, end_byte,
+                        provider_id, provider_version, resolution, confidence, limitation_code,
+                        canonical_json
+                 FROM edges WHERE path = ?1 ORDER BY edge_id LIMIT ?2",
+            )
+            .map_err(sqlite_error)?;
+        let mut rows = statement
+            .query(params![
+                path.as_str(),
+                sqlite_integer(maximum_rows, "query row limit")?
+            ])
+            .map_err(sqlite_error)?;
+        let mut edges = Vec::new();
+        while let Some(row) = rows.next().map_err(sqlite_error)? {
+            let edge = decode_edge_row(row, self.limits)?;
+            if edge.path != *path {
+                return Err(row_corrupt());
+            }
+            edges.push(edge);
+        }
+        Ok(edges)
+    }
+
     fn query_edges(
         &self,
         symbol: &str,
         maximum_rows: usize,
         outgoing: bool,
     ) -> Result<Vec<GraphEdge>, RepositoryGraphError> {
-        if maximum_rows == 0 || maximum_rows > self.limits.maximum_rows_per_query {
-            return Err(RepositoryGraphError::new(
-                "reader-row-limit-invalid",
-                "query row limit is zero or exceeds the reader limit",
-            ));
-        }
+        self.validate_query_row_limit(maximum_rows)?;
         validate_hex(symbol).map_err(|_| {
             RepositoryGraphError::new(
                 "reader-symbol-id-invalid",
@@ -353,6 +421,16 @@ impl RepositoryGraphReader {
             edges.push(decode_edge_row(row, self.limits)?);
         }
         Ok(edges)
+    }
+
+    fn validate_query_row_limit(&self, maximum_rows: usize) -> Result<(), RepositoryGraphError> {
+        if maximum_rows == 0 || maximum_rows > self.limits.maximum_rows_per_query {
+            return Err(RepositoryGraphError::new(
+                "reader-row-limit-invalid",
+                "query row limit is zero or exceeds the reader limit",
+            ));
+        }
+        Ok(())
     }
 }
 
