@@ -5,4 +5,3 @@ fn accepts_token() {
     assert!(login("token"));
     assert!(exported_validate("token"));
 }
-

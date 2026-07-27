@@ -16,4 +16,3 @@ pub fn generated() {
 pub fn conditional(value: &str) -> bool {
     parse(value)
 }
-

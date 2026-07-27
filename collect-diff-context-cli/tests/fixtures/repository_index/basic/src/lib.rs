@@ -16,4 +16,3 @@ pub mod nested {
         self::inner::nested_validate(token)
     }
 }
-
