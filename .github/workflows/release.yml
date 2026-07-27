@@ -100,6 +100,7 @@ jobs:
         run: |
           repository_binary="dist/${{ matrix.repository_artifact_name }}"
           "$repository_binary" collect --help
+          "$repository_binary" index --help
 
       - name: Smoke-test SQLite storage spike
         shell: bash
@@ -191,6 +192,7 @@ jobs:
           find artifacts -type f -name 'gitleaks-*' -exec cp {} dist/pre-commit-review/scripts/bin/ \;
           chmod +x dist/pre-commit-review/scripts/collect_diff_context.sh
           chmod +x dist/pre-commit-review/scripts/collect_impact_context.sh
+          chmod +x dist/pre-commit-review/scripts/index_repository_context.sh
           chmod +x dist/pre-commit-review/scripts/collect_static_evidence.sh
           chmod +x dist/pre-commit-review/scripts/run_static_analysis.sh
           chmod +x dist/pre-commit-review/scripts/orchestrate_static_analysis.sh

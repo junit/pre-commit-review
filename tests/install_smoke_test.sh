@@ -43,6 +43,7 @@ run_offline_install codex --copy --dir "$tmp_dir/codex-skills"
 [ -f "$tmp_dir/codex-skills/pre-commit-review/agents/openai.yaml" ]
 [ -f "$tmp_dir/codex-skills/pre-commit-review/scripts/collect_diff_context.sh" ]
 [ -x "$tmp_dir/codex-skills/pre-commit-review/scripts/collect_impact_context.sh" ]
+[ -x "$tmp_dir/codex-skills/pre-commit-review/scripts/index_repository_context.sh" ]
 [ -x "$tmp_dir/codex-skills/pre-commit-review/scripts/collect_static_evidence.sh" ]
 [ ! -e "$tmp_dir/codex-skills/pre-commit-review/scripts/collect_static_evidence.$python_suffix" ]
 [ -x "$tmp_dir/codex-skills/pre-commit-review/scripts/run_static_analysis.sh" ]
@@ -105,6 +106,7 @@ rm -f "$isolated_source"/scripts/bin/static_analysis-* \
   "$isolated_source"/scripts/bin/repository_context-*
 "$isolated_source/install.sh" codex --copy --dir "$tmp_dir/source-without-static" --no-download
 [ -x "$tmp_dir/source-without-static/pre-commit-review/scripts/collect_impact_context.sh" ]
+[ -x "$tmp_dir/source-without-static/pre-commit-review/scripts/index_repository_context.sh" ]
 [ -x "$tmp_dir/source-without-static/pre-commit-review/scripts/collect_static_evidence.sh" ]
 [ -x "$tmp_dir/source-without-static/pre-commit-review/scripts/run_static_analysis.sh" ]
 [ -x "$tmp_dir/source-without-static/pre-commit-review/scripts/orchestrate_static_analysis.sh" ]
@@ -116,10 +118,14 @@ rm -f "$isolated_source"/scripts/bin/static_analysis-* \
 grep -Fq "\"\$static_binary\" orchestrate --help" "$repo_root/.github/workflows/lint.yml"
 grep -Fq "\"\$repository_binary\" collect --help" "$repo_root/.github/workflows/lint.yml"
 grep -Fq './tests/static_analysis_orchestration_test.sh' "$repo_root/.github/workflows/lint.yml"
+grep -Fq '"${repository_binary}" collect --help' "$repo_root/scripts/build_all_binaries.sh"
+grep -Fq '"${repository_binary}" index --help' "$repo_root/scripts/build_all_binaries.sh"
 grep -Fq "\"\$static_binary\" orchestrate --help" "$repo_root/.github/workflows/release.yml"
 grep -Fq "\"\$repository_binary\" collect --help" "$repo_root/.github/workflows/release.yml"
+grep -Fq "\"\$repository_binary\" index --help" "$repo_root/.github/workflows/release.yml"
 grep -Fq 'chmod +x dist/pre-commit-review/scripts/orchestrate_static_analysis.sh' "$repo_root/.github/workflows/release.yml"
 grep -Fq 'chmod +x dist/pre-commit-review/scripts/collect_impact_context.sh' "$repo_root/.github/workflows/release.yml"
+grep -Fq 'chmod +x dist/pre-commit-review/scripts/index_repository_context.sh' "$repo_root/.github/workflows/release.yml"
 grep -Fq "find artifacts -type f -name 'repository_context-*'" "$repo_root/.github/workflows/release.yml"
 grep -Fq 'dist/pre-commit-review.cdx.json' "$repo_root/.github/workflows/release.yml"
 grep -Fq 'tree-sitter@0.26.11' "$repo_root/.github/workflows/release.yml"

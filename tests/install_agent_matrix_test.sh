@@ -117,4 +117,9 @@ for alias in claude gemini kiro; do
   run_install_clean "$alias" --dry-run >/dev/null
 done
 
+matrix_copy="$tmp_dir/matrix-copy"
+run_install_clean --agent universal --copy --dir "$matrix_copy" --no-download >/dev/null
+[ -x "$matrix_copy/pre-commit-review/scripts/index_repository_context.sh" ] \
+  || fail 'index repository context wrapper missing from copied agent payload'
+
 printf 'install agent matrix tests passed\n'

@@ -9,6 +9,37 @@ BIN_DIR="${REPO_ROOT}/scripts/bin"
 
 mkdir -p "${BIN_DIR}"
 
+smoke_host_repository_context() {
+  local os_name arch_name suffix='' repository_binary
+  case "$(uname -s | tr '[:upper:]' '[:lower:]')" in
+    darwin) os_name='darwin' ;;
+    linux) os_name='linux' ;;
+    msys*|mingw*|cygwin*) os_name='windows'; suffix='.exe' ;;
+    *)
+      echo "Skipping repository-context smoke test on unsupported host OS"
+      return 0
+      ;;
+  esac
+  case "$(uname -m)" in
+    arm64|aarch64) arch_name='arm64' ;;
+    x86_64|amd64) arch_name='amd64' ;;
+    *)
+      echo "Skipping repository-context smoke test on unsupported host architecture"
+      return 0
+      ;;
+  esac
+
+  repository_binary="${BIN_DIR}/repository_context-${os_name}-${arch_name}${suffix}"
+  if [ ! -x "${repository_binary}" ]; then
+    echo "Skipping repository-context smoke test; no host-compatible binary was built"
+    return 0
+  fi
+
+  echo "Smoke-testing host repository-context binary..."
+  "${repository_binary}" collect --help >/dev/null
+  "${repository_binary}" index --help >/dev/null
+}
+
 echo "======================================================"
 echo " Building Multi-Platform Industrial Release Binaries "
 echo "======================================================"
@@ -67,6 +98,8 @@ else
   cp "${CLI_DIR}/target/x86_64-pc-windows-gnu/release/static-analysis-cli.exe" "${BIN_DIR}/static_analysis-windows-amd64.exe"
   cp "${CLI_DIR}/target/x86_64-pc-windows-gnu/release/repository-context-cli.exe" "${BIN_DIR}/repository_context-windows-amd64.exe"
 fi
+
+smoke_host_repository_context
 
 echo "Fetching pinned Gitleaks release binaries..."
 "${SCRIPT_DIR}/fetch_gitleaks.sh" --all --dest "${BIN_DIR}"

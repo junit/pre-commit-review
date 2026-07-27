@@ -103,6 +103,12 @@ PRE_COMMIT_REVIEW_SECRET_SCAN=off \
 grep -Fq '"status":"unavailable"' "$tmp_dir/unavailable.out" \
   || fail 'missing binary did not produce unavailable context'
 [ ! -e "$legacy_sentinel" ] || fail 'missing binary invoked legacy helper'
+PRE_COMMIT_REVIEW_SECRET_SCAN=off \
+  "$isolated_scripts/collect_impact_context.sh" --source staged \
+    --expect-scope aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa --mode deep \
+    >"$tmp_dir/unavailable-deep.out"
+grep -Fq '"mode":"deep"' "$tmp_dir/unavailable-deep.out" \
+  || fail 'missing binary unavailable context did not preserve deep mode'
 
 security_repo="$tmp_dir/security-repo"
 mkdir -p "$security_repo/.pre-commit-review" "$security_repo/grammars" "$security_repo/scripts"
