@@ -27,6 +27,11 @@ grep -Fq -- 'Build SQLite storage spike' "$repo_root/.github/workflows/release.y
   || fail 'release workflow does not build the spike on every target'
 grep -Fq -- 'Smoke-test SQLite storage spike' "$repo_root/.github/workflows/release.yml" \
   || fail 'release workflow does not smoke-test the spike on every target'
+grep -Fq -- 'spike_only:' "$repo_root/.github/workflows/release.yml" \
+  || fail 'release workflow does not expose a spike-only manual mode'
+grep -Fq -- "github.event_name == 'workflow_dispatch' && inputs.spike_only != true" \
+  "$repo_root/.github/workflows/release.yml" \
+  || fail 'spike-only manual runs are allowed to enter the release job'
 
 if grep -Eq 'cp .*sqlite-storage-spike|find artifacts .*sqlite-storage-spike|sqlite-storage-spike.*dist/' \
   "$repo_root/.github/workflows/release.yml"; then
