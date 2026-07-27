@@ -1,0 +1,1 @@
+//! Persistent repository index storage.

@@ -614,6 +614,12 @@ def main():
         default=[],
         help='validate one impact_context/v1 output and semantic invariants',
     )
+    parser.add_argument(
+        '--repository-index-report',
+        action='append',
+        default=[],
+        help='validate one repository_index_report/v1 JSON file',
+    )
     args = parser.parse_args()
     skill_root = pathlib.Path(__file__).resolve().parent.parent
     schema_dir = skill_root / 'collect-diff-context-cli/schemas'
@@ -738,6 +744,19 @@ def main():
                 print(f'  ✅ {output_path}: valid impact-context instance')
             except Exception as exc:
                 print(f'  ❌ {output_path}: {exc}', file=sys.stderr)
+                errors += 1
+        if errors:
+            sys.exit(1)
+    if args.repository_index_report:
+        report_schema = schemas['repository-index-report.schema.json']
+        report_validator = jsonschema.Draft202012Validator(report_schema)
+        for report_path in args.repository_index_report:
+            try:
+                payload = json.loads(pathlib.Path(report_path).read_text(encoding='utf-8'))
+                report_validator.validate(payload)
+                print(f'  ✅ {report_path}: valid repository-index report')
+            except Exception as exc:
+                print(f'  ❌ {report_path}: {exc}', file=sys.stderr)
                 errors += 1
         if errors:
             sys.exit(1)

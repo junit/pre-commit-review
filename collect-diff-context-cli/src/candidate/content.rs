@@ -1,6 +1,6 @@
 use crate::git_policy::{configure_read_only, output_bounded, GitOutputError};
 use crate::review_scope::{AuthoritativeScope, ReviewSource};
-use serde::Serialize;
+use serde::{Deserialize, Deserializer, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 #[cfg(unix)]
@@ -14,6 +14,16 @@ use std::time::{Duration, Instant};
 #[derive(Debug, Clone, PartialEq, Eq, PartialOrd, Ord, Hash, Serialize)]
 #[serde(transparent)]
 pub struct RepoPath(String);
+
+impl<'de> Deserialize<'de> for RepoPath {
+    fn deserialize<D>(deserializer: D) -> Result<Self, D::Error>
+    where
+        D: Deserializer<'de>,
+    {
+        let path = String::deserialize(deserializer)?;
+        Self::new(path).map_err(serde::de::Error::custom)
+    }
+}
 
 impl RepoPath {
     pub fn new(path: impl Into<String>) -> Result<Self, CandidateError> {
@@ -30,7 +40,7 @@ impl RepoPath {
         let windows_prefix =
             path.as_bytes().get(1).is_some_and(|byte| *byte == b':') || path.starts_with("\\\\");
         if Path::new(&path).is_absolute()
-            || path.starts_with('\\')
+            || path.contains('\\')
             || windows_prefix
             || Path::new(&path).components().any(|component| {
                 matches!(
@@ -98,7 +108,7 @@ pub fn decode_git_quoted_path(path: &str) -> String {
     String::from_utf8_lossy(&decoded).into_owned()
 }
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize)]
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "kebab-case")]
 pub enum CandidatePresence {
     Present,
