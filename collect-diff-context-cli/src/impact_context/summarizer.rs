@@ -1,4 +1,6 @@
-use crate::impact_context::contracts::{Confidence, DomainSummary, SummaryKind};
+use crate::impact_context::contracts::{
+    ChangedSymbol, Confidence, DomainSummary, EdgeKind, ImpactEdge, SummaryKind,
+};
 use crate::impact_context::normalizer::{stable_id, NormalizedFact, NormalizedUnitFacts};
 use std::collections::BTreeMap;
 
@@ -130,6 +132,112 @@ pub fn summarize_unit(unit: &NormalizedUnitFacts, source: Option<&str>) -> Vec<D
         }
     }
 
+    summaries.into_values().collect()
+}
+
+pub fn summarize_repository_graph(
+    changed_symbol_ids: &std::collections::BTreeSet<String>,
+    symbols: &[ChangedSymbol],
+    edges: &[ImpactEdge],
+) -> Vec<DomainSummary> {
+    let symbols_by_id = symbols
+        .iter()
+        .map(|symbol| (symbol.symbol_id.as_str(), symbol))
+        .collect::<BTreeMap<_, _>>();
+    let mut summaries = BTreeMap::new();
+    for symbol_id in changed_symbol_ids {
+        let Some(symbol) = symbols_by_id.get(symbol_id.as_str()) else {
+            continue;
+        };
+        if symbol
+            .visibility
+            .as_deref()
+            .is_some_and(|visibility| visibility.starts_with("pub"))
+        {
+            insert_summary(
+                &mut summaries,
+                make_summary(
+                    SummaryKind::InterfaceChange,
+                    &symbol.path,
+                    Some(&symbol.symbol_id),
+                    symbol.confidence,
+                    format!(
+                        "Repository index confirms changed public {} {}.",
+                        symbol.kind, symbol.name
+                    ),
+                    vec![symbol.symbol_id.clone()],
+                    "repository-public-interface",
+                ),
+            );
+        }
+        for edge in edges {
+            let (kind, message, neighbor_id) =
+                if edge.to_symbol.as_deref() == Some(symbol_id) && edge.kind == EdgeKind::Calls {
+                    (
+                        SummaryKind::DependencyChange,
+                        format!(
+                            "Direct incoming caller may be impacted by changed {}.",
+                            symbol.name
+                        ),
+                        Some(edge.from_symbol.as_str()),
+                    )
+                } else if edge.from_symbol == *symbol_id && edge.kind == EdgeKind::Calls {
+                    (
+                        SummaryKind::DependencyChange,
+                        format!(
+                            "Changed {} directly calls a repository symbol.",
+                            symbol.name
+                        ),
+                        edge.to_symbol.as_deref(),
+                    )
+                } else if edge.to_symbol.as_deref() == Some(symbol_id)
+                    && matches!(edge.kind, EdgeKind::Imports | EdgeKind::References)
+                {
+                    (
+                        SummaryKind::DependencyChange,
+                        format!(
+                            "Known reverse import dependent may be impacted by changed {}.",
+                            symbol.name
+                        ),
+                        Some(edge.from_symbol.as_str()),
+                    )
+                } else {
+                    continue;
+                };
+            insert_summary(
+                &mut summaries,
+                make_summary(
+                    kind,
+                    &symbol.path,
+                    Some(&symbol.symbol_id),
+                    edge.confidence,
+                    message,
+                    vec![edge.edge_id.clone()],
+                    "repository-relationship",
+                ),
+            );
+            if neighbor_id
+                .and_then(|neighbor| symbols_by_id.get(neighbor))
+                .is_some_and(|neighbor| is_test_like_path(&neighbor.path))
+            {
+                insert_summary(
+                    &mut summaries,
+                    make_summary(
+                        SummaryKind::TestSelection,
+                        &symbol.path,
+                        Some(&symbol.symbol_id),
+                        edge.confidence,
+                        format!(
+                            "Connected test symbol is associated with changed {}.",
+                            symbol.name
+                        ),
+                        vec![edge.edge_id.clone()],
+                        "repository-connected-test",
+                    ),
+                );
+            }
+        }
+    }
     summaries.into_values().collect()
 }
 

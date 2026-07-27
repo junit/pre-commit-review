@@ -533,10 +533,14 @@ impl ImpactContext {
             if !providers.contains_key(symbol.provider_id.as_str()) {
                 return invalid("symbol references an unknown provider");
             }
-            let unit = units
-                .get(symbol.path.as_str())
-                .ok_or_else(|| ImpactContractError::new("symbol path has no impact unit"))?;
-            symbol.range.validate(unit.content_bytes)?;
+            let provider = providers[symbol.provider_id.as_str()];
+            let unit = units.get(symbol.path.as_str());
+            if unit.is_none() && provider.provider_kind != "repository-index" {
+                return invalid("symbol path has no impact unit");
+            }
+            symbol
+                .range
+                .validate(unit.and_then(|unit| unit.content_bytes))?;
         }
 
         for edge in &self.impact_edges {
@@ -546,10 +550,12 @@ impl ImpactContext {
             let provider = providers
                 .get(edge.provider_id.as_str())
                 .ok_or_else(|| ImpactContractError::new("edge references an unknown provider"))?;
-            let unit = units
-                .get(edge.path.as_str())
-                .ok_or_else(|| ImpactContractError::new("edge path has no impact unit"))?;
-            edge.range.validate(unit.content_bytes)?;
+            let unit = units.get(edge.path.as_str());
+            if unit.is_none() && provider.provider_kind != "repository-index" {
+                return invalid("edge path has no impact unit");
+            }
+            edge.range
+                .validate(unit.and_then(|unit| unit.content_bytes))?;
             match (&edge.to_symbol, &edge.unresolved_target) {
                 (None, None) => return invalid("edge must carry a symbol or unresolved target"),
                 (Some(_), Some(_)) => {
@@ -751,7 +757,7 @@ fn validate_sorted_unique<'a>(
 }
 
 fn validate_id(value: &str, label: &str) -> Result<(), ImpactContractError> {
-    validate_hex(value, &[16], label)
+    validate_hex(value, &[16, 64], label)
 }
 
 fn validate_hex(value: &str, lengths: &[usize], label: &str) -> Result<(), ImpactContractError> {

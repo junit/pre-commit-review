@@ -5,6 +5,7 @@ use crate::impact_context::adapters::tree_sitter_rust::{
 use crate::impact_context::contracts::{
     ChangedSymbol, Confidence, EdgeKind, ImpactEdge, ParseQuality, Resolution, SourceRange,
 };
+use crate::impact_context::index::model::{GraphEdge, GraphSymbol};
 use serde::Serialize;
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
@@ -30,6 +31,50 @@ pub struct NormalizedUnitFacts {
     pub changed_symbols: Vec<ChangedSymbol>,
     pub impact_edges: Vec<ImpactEdge>,
     pub facts: Vec<NormalizedFact>,
+}
+
+pub fn normalize_repository_graph(
+    provider_id: &str,
+    symbols: &[GraphSymbol],
+    edges: &[GraphEdge],
+) -> (Vec<ChangedSymbol>, Vec<ImpactEdge>) {
+    let mut normalized_symbols = symbols
+        .iter()
+        .map(|symbol| ChangedSymbol {
+            symbol_id: symbol.symbol_id.clone(),
+            provider_id: provider_id.to_string(),
+            path: symbol.path.as_str().to_string(),
+            language: symbol.language.clone(),
+            kind: symbol.kind.clone(),
+            name: symbol.name.clone(),
+            owner: symbol.owner_symbol_id.clone(),
+            signature: symbol.signature.clone(),
+            visibility: symbol.visibility.clone(),
+            range: symbol.range.clone(),
+            confidence: symbol.confidence,
+        })
+        .collect::<Vec<_>>();
+    normalized_symbols.sort_by(|left, right| left.symbol_id.cmp(&right.symbol_id));
+    normalized_symbols.dedup_by(|left, right| left.symbol_id == right.symbol_id);
+
+    let mut normalized_edges = edges
+        .iter()
+        .map(|edge| ImpactEdge {
+            edge_id: edge.edge_id.clone(),
+            kind: edge.kind,
+            from_symbol: edge.from_symbol.clone(),
+            to_symbol: edge.to_symbol.clone(),
+            unresolved_target: edge.unresolved_target.clone(),
+            path: edge.path.as_str().to_string(),
+            range: edge.range.clone(),
+            provider_id: provider_id.to_string(),
+            resolution: edge.resolution,
+            confidence: edge.confidence,
+        })
+        .collect::<Vec<_>>();
+    normalized_edges.sort_by(|left, right| left.edge_id.cmp(&right.edge_id));
+    normalized_edges.dedup_by(|left, right| left.edge_id == right.edge_id);
+    (normalized_symbols, normalized_edges)
 }
 
 pub fn normalize_unit(

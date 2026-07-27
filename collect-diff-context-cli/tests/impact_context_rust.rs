@@ -1563,14 +1563,14 @@ fn engine_reads_only_changed_units_and_candidate_configuration() {
 }
 
 #[test]
-fn adversarial_engine_rejects_phase_a_forbidden_requests() {
+fn engine_allows_deep_but_rejects_fast_writes_and_unknown_semantic_providers() {
     let candidate = MemoryCandidate::new(&[]);
 
     let mut deep = ImpactRequest::fast_defaults();
     deep.mode = ImpactMode::Deep;
     assert_eq!(
-        build_impact_context(&candidate, deep).unwrap_err().code(),
-        "deep-mode-unavailable"
+        build_impact_context(&candidate, deep).unwrap().mode,
+        ImpactMode::Deep
     );
 
     let mut cache_write = ImpactRequest::fast_defaults();

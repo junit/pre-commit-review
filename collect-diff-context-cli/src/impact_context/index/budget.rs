@@ -21,6 +21,21 @@ pub struct IndexBudget {
 }
 
 impl IndexBudget {
+    pub fn fast_defaults() -> Self {
+        let mut budget = Self::deep_defaults();
+        budget.deadline = Duration::from_millis(750);
+        budget.max_parse_bytes = 8 * 1024 * 1024;
+        budget.max_nodes = 250_000;
+        budget.max_facts = 50_000;
+        budget.max_symbols = 50_000;
+        budget.max_edges = 500;
+        budget.max_generation_bytes = 64 * 1024 * 1024;
+        budget.max_overlay_paths = 30;
+        budget.max_query_rows = 500;
+        budget.max_graph_depth = 1;
+        budget
+    }
+
     pub fn deep_defaults() -> Self {
         Self {
             deadline: Duration::from_secs(30),

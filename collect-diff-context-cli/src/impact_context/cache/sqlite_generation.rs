@@ -14,7 +14,7 @@ use crate::impact_context::index::model::{
     GraphEdge, GraphGenerationIdentity, GraphSymbol, IndexLimitation, RepositoryGraph,
 };
 use percent_encoding::{utf8_percent_encode, NON_ALPHANUMERIC};
-use rusqlite::{params, Connection, OpenFlags, Transaction};
+use rusqlite::{params, Connection, OpenFlags, OptionalExtension, Transaction};
 use serde::Serialize;
 use std::collections::BTreeSet;
 use std::fs;
@@ -348,6 +348,40 @@ impl RepositoryGraphReader {
             symbols.push(symbol);
         }
         Ok(symbols)
+    }
+
+    pub fn symbol(&self, symbol_id: &str) -> Result<Option<GraphSymbol>, RepositoryGraphError> {
+        validate_hex(symbol_id).map_err(|_| {
+            RepositoryGraphError::new(
+                "reader-symbol-id-invalid",
+                "query symbol id must be 64 lowercase hex",
+            )
+        })?;
+        let canonical = self
+            .connection
+            .query_row(
+                "SELECT canonical_json FROM symbols WHERE symbol_id = ?1",
+                [symbol_id],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()
+            .map_err(sqlite_error)?;
+        let Some(canonical) = canonical else {
+            return Ok(None);
+        };
+        bounded_reader_text(
+            &canonical,
+            self.limits.maximum_string_bytes.saturating_mul(16),
+        )
+        .map_err(|_| row_corrupt())?;
+        let symbol: GraphSymbol = serde_json::from_str(&canonical).map_err(|_| row_corrupt())?;
+        if symbol.symbol_id != symbol_id
+            || validate_hex(&symbol.module_id).is_err()
+            || validate_range(&symbol.range).is_err()
+        {
+            return Err(row_corrupt());
+        }
+        Ok(Some(symbol))
     }
 
     pub fn edges_for_path(

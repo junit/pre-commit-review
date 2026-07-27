@@ -124,8 +124,8 @@ struct ParsedManifest {
     manifest: CargoManifest,
 }
 
-pub fn build_rust_project_model(
-    source: &dyn ProjectModelSource,
+pub fn build_rust_project_model<T: ProjectModelSource + ?Sized>(
+    source: &T,
     repository_manifest: &RepositoryManifest,
     budget: &mut IndexBudgetTracker,
 ) -> Result<RustProjectModel, ProjectModelError> {

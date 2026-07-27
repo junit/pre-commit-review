@@ -65,7 +65,7 @@
   "$defs": {
     "id": {
       "type": "string",
-      "pattern": "^[0-9a-f]{16}$"
+      "pattern": "^(?:[0-9a-f]{16}|[0-9a-f]{64})$"
     },
     "sha256": {
       "type": "string",

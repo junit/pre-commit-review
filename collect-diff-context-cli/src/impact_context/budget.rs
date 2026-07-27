@@ -32,6 +32,22 @@ impl ImpactBudget {
             max_matches_per_pattern: 20,
         }
     }
+
+    pub fn deep_defaults() -> Self {
+        Self {
+            deadline: Duration::from_secs(30),
+            max_changed_files: 30,
+            max_file_bytes: 2 * 1024 * 1024,
+            max_total_bytes: 512 * 1024 * 1024,
+            max_nodes: 10_000_000,
+            max_nesting_depth: 512,
+            max_facts: 5_000,
+            max_edges: 500,
+            max_output_bytes: 1_048_576,
+            max_query_patterns: 32,
+            max_matches_per_pattern: 20,
+        }
+    }
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord)]

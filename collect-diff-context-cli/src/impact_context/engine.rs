@@ -1,12 +1,18 @@
 use crate::candidate::{CandidateContent, CandidatePresence, ChangedRange};
+use crate::impact_context::adapters::repository_index::{
+    repository_index_provider_id, RepositoryIndexAdapter, RepositoryIndexRequest,
+};
 use crate::impact_context::adapters::text::TextAdapter;
 use crate::impact_context::adapters::tree_sitter_rust::TreeSitterRustAdapter;
 use crate::impact_context::budget::{BudgetResource, BudgetTracker, ImpactBudget};
+use crate::impact_context::cache::file_facts::CacheLayout;
 use crate::impact_context::contracts::{
     Completeness, ImpactContext, ImpactContractError, ImpactCoverage, ImpactMetrics, ImpactMode,
     ImpactPresence, ImpactScope, ImpactStatus, ImpactUnit, Limitation, ParseQuality,
     ProviderRecord, ProviderStatus, SourceRange, UnitStatus,
 };
+use crate::impact_context::index::budget::IndexBudget;
+use crate::impact_context::index::manifest::RepositoryManifestSource;
 use crate::impact_context::normalizer::{normalize_unit, stable_id};
 use crate::impact_context::summarizer::summarize_unit;
 use sha2::{Digest, Sha256};
@@ -25,6 +31,7 @@ pub struct ImpactRequest {
     pub enabled_languages: BTreeSet<String>,
     pub cache_read: bool,
     pub cache_write: bool,
+    pub index_budget: IndexBudget,
     pub semantic_providers: Vec<String>,
     pub max_snippet_chars: usize,
 }
@@ -35,12 +42,31 @@ impl ImpactRequest {
             mode: ImpactMode::Fast,
             budget: ImpactBudget::fast_defaults(),
             enabled_languages: BTreeSet::from(["rust".to_string()]),
-            cache_read: false,
+            cache_read: true,
             cache_write: false,
+            index_budget: IndexBudget::fast_defaults(),
             semantic_providers: Vec::new(),
             max_snippet_chars: 1_000,
         }
     }
+
+    pub fn deep_defaults() -> Self {
+        Self {
+            mode: ImpactMode::Deep,
+            budget: ImpactBudget::deep_defaults(),
+            enabled_languages: BTreeSet::from(["rust".to_string()]),
+            cache_read: true,
+            cache_write: true,
+            index_budget: IndexBudget::deep_defaults(),
+            semantic_providers: Vec::new(),
+            max_snippet_chars: 1_000,
+        }
+    }
+}
+
+pub struct RepositoryIndexRuntime<'a> {
+    pub manifest_source: &'a dyn RepositoryManifestSource,
+    pub cache_layout: CacheLayout,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -86,6 +112,22 @@ struct ProviderStats {
 pub fn build_impact_context(
     candidate: &dyn CandidateContent,
     request: ImpactRequest,
+) -> Result<ImpactContext, ImpactContextError> {
+    build_impact_context_internal(candidate, request, None)
+}
+
+pub fn build_impact_context_with_repository_index(
+    candidate: &dyn CandidateContent,
+    request: ImpactRequest,
+    repository_index: Option<RepositoryIndexRuntime<'_>>,
+) -> Result<ImpactContext, ImpactContextError> {
+    build_impact_context_internal(candidate, request, repository_index)
+}
+
+fn build_impact_context_internal(
+    candidate: &dyn CandidateContent,
+    request: ImpactRequest,
+    repository_index: Option<RepositoryIndexRuntime<'_>>,
 ) -> Result<ImpactContext, ImpactContextError> {
     validate_request(&request)?;
     let started = Instant::now();
@@ -531,31 +573,88 @@ pub fn build_impact_context(
 
     all_symbols.sort_by(|left, right| left.symbol_id.cmp(&right.symbol_id));
     all_symbols.dedup_by(|left, right| left.symbol_id == right.symbol_id);
+    let mut repository_provider = None;
+    let mut repository_index_completeness = Completeness::Unavailable;
+    let mut repository_query_completeness = Completeness::Unavailable;
+    let mut repository_reached_depth = 0;
+    let mut repository_output_truncated = false;
+    let mut repository_scope_drift = false;
+    if let Some(runtime) = repository_index {
+        let mut index_budget = request.index_budget.clone();
+        index_budget.deadline = index_budget
+            .deadline
+            .min(request.budget.deadline.saturating_sub(started.elapsed()));
+        let adapter = RepositoryIndexAdapter::new(runtime.cache_layout);
+        match adapter.analyze(RepositoryIndexRequest {
+            candidate,
+            manifest_source: runtime.manifest_source,
+            changed_symbols: &all_symbols,
+            mode: request.mode,
+            cache_read: request.cache_read,
+            cache_write: request.cache_write,
+            index_budget,
+        }) {
+            Ok(output) => {
+                repository_index_completeness = output.index_completeness;
+                repository_query_completeness = output.query_completeness;
+                repository_reached_depth = output.reached_depth;
+                repository_output_truncated = output.output_truncated;
+                all_symbols.extend(output.symbols);
+                all_edges.extend(output.edges);
+                all_summaries.extend(output.domain_summaries);
+                for limitation in output.limitations {
+                    limitations.insert(limitation.limitation_id.clone(), limitation);
+                }
+                repository_provider = Some(output.provider);
+            }
+            Err(error) => {
+                repository_scope_drift = error.code == "repository-index-scope-drift";
+                insert_limitation(
+                    &mut limitations,
+                    error.code,
+                    None,
+                    None,
+                    None,
+                    &error.message,
+                    "Repository graph evidence was discarded; changed-file context remains available.",
+                    request.mode == ImpactMode::Fast,
+                );
+            }
+        }
+    }
+    all_symbols.sort_by(|left, right| left.symbol_id.cmp(&right.symbol_id));
+    all_symbols.dedup_by(|left, right| left.symbol_id == right.symbol_id);
     all_edges.sort_by(|left, right| left.edge_id.cmp(&right.edge_id));
     all_edges.dedup_by(|left, right| left.edge_id == right.edge_id);
     let mut retained_edges = Vec::with_capacity(all_edges.len().min(request.budget.max_edges));
-    let mut edge_limited_paths = BTreeSet::new();
+    let mut edge_limited_sources = BTreeSet::new();
     for edge in all_edges {
         if tracker.consume(BudgetResource::Edges, 1).is_ok() {
             retained_edges.push(edge);
         } else {
-            edge_limited_paths.insert(edge.path);
+            edge_limited_sources.insert((edge.path, edge.provider_id));
         }
     }
     all_edges = retained_edges;
-    for path in edge_limited_paths {
+    for (path, provider_id) in edge_limited_sources {
+        let unit_path = units
+            .iter()
+            .any(|unit| unit.path == path)
+            .then_some(path.as_str());
         let id = insert_limitation(
             &mut limitations,
             "edge-budget-exhausted",
-            Some(&syntax_provider_id),
-            Some(&path),
+            Some(&provider_id),
+            unit_path,
             None,
-            "The fast-path structural edge budget was exhausted.",
-            "Earlier edges remain valid; additional structural relationships were omitted.",
+            "The impact edge output budget was exhausted.",
+            "Earlier edges remain valid; additional relationships were omitted.",
             true,
         );
-        syntax_stats.budget_exhausted += 1;
-        syntax_stats.limitation_ids.push(id.clone());
+        if provider_id == syntax_provider_id {
+            syntax_stats.budget_exhausted += 1;
+            syntax_stats.limitation_ids.push(id.clone());
+        }
         if let Some(unit) = units.iter_mut().find(|unit| unit.path == path) {
             unit.syntax_status = UnitStatus::BudgetExhausted;
             unit.limitation_ids.push(id);
@@ -588,9 +687,38 @@ pub fn build_impact_context(
             provider_elapsed_ms,
         ),
     ];
+    if let Some(provider) = repository_provider {
+        providers.push(provider);
+    }
     providers.sort_by(|left, right| left.provider_id.cmp(&right.provider_id));
 
-    let coverage = build_coverage(&units);
+    let mut coverage = build_coverage(&units);
+    if let Some(provider) = providers
+        .iter()
+        .find(|provider| provider.provider_kind == "repository-index")
+    {
+        coverage.cache_hits = provider.cache_hits;
+        coverage.cache_misses = provider.cache_misses;
+        coverage.cache_stale = provider.cache_stale;
+        coverage.cache_corrupt = provider.cache_corrupt;
+        coverage.requested_graph_depth = request.index_budget.max_graph_depth;
+        coverage.reached_graph_depth = repository_reached_depth;
+        coverage.graph_index_completeness = repository_index_completeness;
+        coverage.graph_query_completeness = repository_query_completeness;
+    }
+    if repository_output_truncated {
+        coverage.output_truncated = true;
+        insert_limitation(
+            &mut limitations,
+            "output-truncated",
+            Some(&repository_index_provider_id()),
+            None,
+            None,
+            "Repository graph output exceeded its edge or byte budget.",
+            "Lower-ranked graph relationships were omitted without changing query completeness.",
+            false,
+        );
+    }
     let usable = !all_symbols.is_empty()
         || !all_edges.is_empty()
         || !all_summaries.is_empty()
@@ -598,10 +726,20 @@ pub fn build_impact_context(
     let all_complete = units.iter().all(|unit| {
         unit.syntax_status == UnitStatus::Completed && unit.text_status == UnitStatus::Completed
     });
-    let providers_complete = providers
-        .iter()
-        .all(|provider| provider.status == ProviderStatus::Completed);
-    let status = if usable && all_complete && providers_complete {
+    let providers_complete = providers.iter().all(|provider| {
+        provider.status == ProviderStatus::Completed
+            || (request.mode == ImpactMode::Fast
+                && provider.provider_kind == "repository-index"
+                && matches!(
+                    provider.status,
+                    ProviderStatus::Unavailable
+                        | ProviderStatus::Stale
+                        | ProviderStatus::InvalidOutput
+                ))
+    });
+    let status = if repository_scope_drift {
+        ImpactStatus::Invalidated
+    } else if usable && all_complete && providers_complete {
         ImpactStatus::Completed
     } else if usable {
         ImpactStatus::Partial
@@ -651,13 +789,7 @@ pub fn build_impact_context(
 }
 
 fn validate_request(request: &ImpactRequest) -> Result<(), ImpactContextError> {
-    if request.mode != ImpactMode::Fast {
-        return Err(ImpactContextError::new(
-            "deep-mode-unavailable",
-            "Subproject A supports only fast mode",
-        ));
-    }
-    if request.cache_write {
+    if request.mode == ImpactMode::Fast && request.cache_write {
         return Err(ImpactContextError::new(
             "cache-write-forbidden",
             "fast mode cannot write persistent cache state",
