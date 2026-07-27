@@ -301,7 +301,7 @@ pub(crate) fn execute_with_clock(
             let updated = updated_executions.next().ok_or_else(|| {
                 OrchestrationError::new("executed run count does not match evidence run count")
             })?;
-            *execution = Box::new(updated.execution.clone());
+            **execution = updated.execution.clone();
         }
     }
     if updated_executions.next().is_some() {

@@ -278,7 +278,7 @@ impl TreeSitterRustAdapter {
         sort_dedup_text_facts(&mut imports);
         sort_dedup_text_facts(&mut macros);
         sort_dedup_text_facts(&mut attributes);
-        calls.sort_by(|left, right| range_key(&left.range).cmp(&range_key(&right.range)));
+        calls.sort_by_key(|call| range_key(&call.range));
         calls.dedup_by(|left, right| {
             left.target == right.target
                 && left.caller_range == right.caller_range
