@@ -1,7 +1,7 @@
 use collect_diff_context_cli::candidate::{CandidatePresence, RepoPath};
-use collect_diff_context_cli::impact_context::cache::file_facts::CacheLayout;
+use collect_diff_context_cli::impact_context::cache::file_facts::{CacheLayout, CacheLookup};
 use collect_diff_context_cli::impact_context::cache::sqlite_generation::{
-    GraphPublishOutcome, RepositoryGraphWriter,
+    GraphPublishOutcome, ReaderLimits, RepositoryGraphReader, RepositoryGraphWriter,
 };
 use collect_diff_context_cli::impact_context::contracts::{
     Completeness, Confidence, EdgeKind, Resolution, SourceRange,
@@ -204,6 +204,40 @@ fn outcome_path(outcome: &GraphPublishOutcome) -> &Path {
 
 fn open_database(path: &Path) -> Connection {
     Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY).unwrap()
+}
+
+fn reader(path: &Path, identity: &GraphGenerationIdentity) -> RepositoryGraphReader {
+    match RepositoryGraphReader::open_immutable(
+        path,
+        identity,
+        ReaderLimits {
+            maximum_database_bytes: 16 * 1024 * 1024,
+            maximum_rows_per_query: 100,
+            maximum_string_bytes: 4_096,
+        },
+    )
+    .unwrap()
+    {
+        CacheLookup::Hit(reader) => reader,
+        CacheLookup::Miss => panic!("generation unexpectedly missed"),
+        CacheLookup::Stale { code } => panic!("generation unexpectedly stale: {code}"),
+        CacheLookup::Corrupt { code } => panic!("generation unexpectedly corrupt: {code}"),
+    }
+}
+
+fn directory_snapshot(path: &Path) -> Vec<(String, u64)> {
+    let mut entries = std::fs::read_dir(path)
+        .unwrap()
+        .map(|entry| {
+            let entry = entry.unwrap();
+            (
+                entry.file_name().to_string_lossy().into_owned(),
+                entry.metadata().unwrap().len(),
+            )
+        })
+        .collect::<Vec<_>>();
+    entries.sort();
+    entries
 }
 
 #[test]
@@ -444,4 +478,202 @@ fn invalid_existing_generation_is_not_overwritten() {
     let error = writer.publish(&graph, &mut budget).unwrap_err();
     assert_eq!(error.code, "invalid-existing-generation");
     assert_eq!(std::fs::read(path).unwrap(), b"not sqlite");
+}
+
+#[test]
+fn immutable_reader_opens_with_query_only_and_creates_no_sidecars() {
+    let cache = tempfile::tempdir().unwrap();
+    let writer = RepositoryGraphWriter::new(layout(cache.path()));
+    let graph = graph();
+    let path = outcome_path(&publish(&writer, &graph)).to_path_buf();
+    let before = directory_snapshot(&writer.layout().graphs_dir);
+
+    for _ in 0..100 {
+        let reader = reader(&path, &graph.identity);
+        assert!(reader.query_only());
+        assert_eq!(reader.outgoing(&repeated('b'), 10).unwrap().len(), 1);
+    }
+
+    assert_eq!(directory_snapshot(&writer.layout().graphs_dir), before);
+}
+
+#[test]
+fn reader_validates_identity_schema_counts_and_consumed_rows() {
+    let cache = tempfile::tempdir().unwrap();
+    let writer = RepositoryGraphWriter::new(layout(cache.path()));
+    let graph = graph();
+    let path = outcome_path(&publish(&writer, &graph)).to_path_buf();
+    let reader = reader(&path, &graph.identity);
+
+    assert_eq!(reader.identity(), &graph.identity);
+    assert_eq!(reader.completeness(), Completeness::Complete);
+    assert_eq!(
+        reader.outgoing(&repeated('b'), 10).unwrap()[0],
+        graph.edges[0]
+    );
+
+    let mut stale = graph.identity.clone();
+    stale.project_model_digest = repeated('f');
+    assert!(matches!(
+        RepositoryGraphReader::open_immutable(
+            &path,
+            &stale,
+            ReaderLimits {
+                maximum_database_bytes: 16 * 1024 * 1024,
+                maximum_rows_per_query: 100,
+                maximum_string_bytes: 4_096,
+            },
+        )
+        .unwrap(),
+        CacheLookup::Stale { .. }
+    ));
+}
+
+#[test]
+fn reader_returns_sorted_bounded_outgoing_and_incoming_edges() {
+    let cache = tempfile::tempdir().unwrap();
+    let writer = RepositoryGraphWriter::new(layout(cache.path()));
+    let graph = graph();
+    let path = outcome_path(&publish(&writer, &graph)).to_path_buf();
+    let reader = reader(&path, &graph.identity);
+
+    assert_eq!(
+        reader.outgoing(&repeated('b'), 10).unwrap(),
+        vec![graph.edges[0].clone()]
+    );
+    assert_eq!(
+        reader.incoming(&repeated('b'), 10).unwrap(),
+        vec![graph.edges[2].clone()]
+    );
+    assert_eq!(reader.outgoing(&repeated('b'), 1).unwrap().len(), 1);
+    assert_eq!(
+        reader.outgoing(&repeated('b'), 0).unwrap_err().code,
+        "reader-row-limit-invalid"
+    );
+    assert_eq!(
+        reader.outgoing(&repeated('b'), 101).unwrap_err().code,
+        "reader-row-limit-invalid"
+    );
+}
+
+#[test]
+fn missing_generation_is_miss() {
+    let cache = tempfile::tempdir().unwrap();
+    let identity = graph().identity;
+    let missing = cache
+        .path()
+        .join(format!("{}.sqlite", identity.generation_key().unwrap()));
+    assert!(matches!(
+        RepositoryGraphReader::open_immutable(
+            &missing,
+            &identity,
+            ReaderLimits {
+                maximum_database_bytes: 1024,
+                maximum_rows_per_query: 10,
+                maximum_string_bytes: 100,
+            },
+        )
+        .unwrap(),
+        CacheLookup::Miss
+    ));
+}
+
+#[test]
+fn header_truncation_index_damage_bad_enum_bad_digest_and_bad_range_are_corrupt() {
+    let corrupt_open = |mutation: &dyn Fn(&Path)| {
+        let cache = tempfile::tempdir().unwrap();
+        let writer = RepositoryGraphWriter::new(layout(cache.path()));
+        let graph = graph();
+        let path = outcome_path(&publish(&writer, &graph)).to_path_buf();
+        mutation(&path);
+        RepositoryGraphReader::open_immutable(
+            &path,
+            &graph.identity,
+            ReaderLimits {
+                maximum_database_bytes: 16 * 1024 * 1024,
+                maximum_rows_per_query: 100,
+                maximum_string_bytes: 4_096,
+            },
+        )
+        .unwrap()
+    };
+
+    assert!(matches!(
+        corrupt_open(&|path| {
+            std::fs::OpenOptions::new()
+                .write(true)
+                .open(path)
+                .unwrap()
+                .set_len(32)
+                .unwrap();
+        }),
+        CacheLookup::Corrupt { .. }
+    ));
+    assert!(matches!(
+        corrupt_open(&|path| {
+            let connection = Connection::open(path).unwrap();
+            connection
+                .execute("DROP INDEX edges_from_kind_id", [])
+                .unwrap();
+        }),
+        CacheLookup::Corrupt { .. }
+    ));
+
+    for sql in [
+        "UPDATE edges SET kind = 'invalid-kind' WHERE edge_id = '0000000000000000000000000000000000000000000000000000000000000000'",
+        "UPDATE edges SET edge_id = 'bad' WHERE edge_id = '0000000000000000000000000000000000000000000000000000000000000000'",
+        "UPDATE edges SET start_line = 0 WHERE edge_id = '0000000000000000000000000000000000000000000000000000000000000000'",
+    ] {
+        let cache = tempfile::tempdir().unwrap();
+        let writer = RepositoryGraphWriter::new(layout(cache.path()));
+        let graph = graph();
+        let path = outcome_path(&publish(&writer, &graph)).to_path_buf();
+        let connection = Connection::open(&path).unwrap();
+        connection.execute(sql, []).unwrap();
+        drop(connection);
+        let reader = reader(&path, &graph.identity);
+        assert_eq!(
+            reader.outgoing(&repeated('b'), 10).unwrap_err().code,
+            "generation-row-corrupt"
+        );
+    }
+}
+
+#[test]
+fn reader_never_runs_migration_repair_checkpoint_or_full_integrity_scan() {
+    let cache = tempfile::tempdir().unwrap();
+    let writer = RepositoryGraphWriter::new(layout(cache.path()));
+    let graph = graph();
+    let path = outcome_path(&publish(&writer, &graph)).to_path_buf();
+    let connection = Connection::open(&path).unwrap();
+    connection
+        .execute(
+            "UPDATE generation_meta SET application_root = 'ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff'",
+            [],
+        )
+        .unwrap();
+    drop(connection);
+    let before = std::fs::metadata(&path).unwrap().modified().unwrap();
+
+    let reader = reader(&path, &graph.identity);
+    assert_eq!(reader.outgoing(&repeated('b'), 10).unwrap().len(), 1);
+    assert_eq!(std::fs::metadata(path).unwrap().modified().unwrap(), before);
+}
+
+#[test]
+fn reader_returns_immediately_while_another_generation_is_built() {
+    let cache = tempfile::tempdir().unwrap();
+    let writer = RepositoryGraphWriter::new(layout(cache.path()));
+    let first = graph();
+    let path = outcome_path(&publish(&writer, &first)).to_path_buf();
+    let reader = reader(&path, &first.identity);
+    let mut second = graph();
+    second.identity.candidate_manifest_digest = repeated('e');
+    let other_writer = writer.clone();
+    let handle = std::thread::spawn(move || publish(&other_writer, &second));
+
+    let started = Instant::now();
+    assert_eq!(reader.incoming(&repeated('b'), 10).unwrap().len(), 1);
+    assert!(started.elapsed() < Duration::from_secs(1));
+    handle.join().unwrap();
 }

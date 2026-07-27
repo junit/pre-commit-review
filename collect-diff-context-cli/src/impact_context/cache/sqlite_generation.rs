@@ -1,16 +1,19 @@
 use crate::candidate::CandidatePresence;
 use crate::impact_context::cache::file_facts::{
-    set_private_file_permissions, sync_directory, CacheLayout,
+    set_private_file_permissions, sync_directory, CacheLayout, CacheLookup,
 };
 use crate::impact_context::cache::integrity::{
     canonical_graph_rows, graph_rows_root, CanonicalGraphRows,
 };
 use crate::impact_context::cache::locking::acquire_writer_lock;
-use crate::impact_context::contracts::{Completeness, SourceRange};
+use crate::impact_context::contracts::{
+    Completeness, Confidence, EdgeKind, Resolution, SourceRange,
+};
 use crate::impact_context::index::budget::{IndexBudgetTracker, IndexResource};
 use crate::impact_context::index::model::{
-    GraphGenerationIdentity, IndexLimitation, RepositoryGraph,
+    GraphEdge, GraphGenerationIdentity, IndexLimitation, RepositoryGraph,
 };
+use percent_encoding::{utf8_percent_encode, NON_ALPHANUMERIC};
 use rusqlite::{params, Connection, OpenFlags, Transaction};
 use serde::Serialize;
 use std::collections::BTreeSet;
@@ -27,6 +30,22 @@ pub struct RepositoryGraphWriter {
     layout: CacheLayout,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ReaderLimits {
+    pub maximum_database_bytes: u64,
+    pub maximum_rows_per_query: usize,
+    pub maximum_string_bytes: usize,
+}
+
+#[derive(Debug)]
+pub struct RepositoryGraphReader {
+    connection: Connection,
+    identity: GraphGenerationIdentity,
+    completeness: Completeness,
+    limits: ReaderLimits,
+    query_only: bool,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum GraphPublishOutcome {
     Published { path: PathBuf },
@@ -37,6 +56,11 @@ pub enum GraphPublishOutcome {
 pub struct RepositoryGraphError {
     pub code: &'static str,
     pub message: String,
+}
+
+enum ReaderValidationError {
+    Stale(&'static str),
+    Corrupt(&'static str),
 }
 
 impl RepositoryGraphError {
@@ -193,6 +217,142 @@ impl RepositoryGraphWriter {
         Ok(GraphPublishOutcome::Reused {
             path: path.to_path_buf(),
         })
+    }
+}
+
+impl RepositoryGraphReader {
+    pub fn open_immutable(
+        path: &Path,
+        expected: &GraphGenerationIdentity,
+        limits: ReaderLimits,
+    ) -> Result<CacheLookup<Self>, RepositoryGraphError> {
+        validate_reader_limits(limits)?;
+        expected.validate().map_err(|error| {
+            RepositoryGraphError::new(
+                "reader-identity-invalid",
+                format!("invalid expected graph identity: {error}"),
+            )
+        })?;
+        let metadata = match fs::symlink_metadata(path) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                return Ok(CacheLookup::Miss)
+            }
+            Err(error) => {
+                return Err(RepositoryGraphError::new(
+                    "reader-metadata-failed",
+                    format!("cannot inspect graph generation: {error}"),
+                ))
+            }
+        };
+        if !metadata.file_type().is_file() {
+            return Ok(reader_corrupt("generation-not-regular"));
+        }
+        if metadata.len() > limits.maximum_database_bytes {
+            return Ok(reader_corrupt("generation-database-too-large"));
+        }
+        let expected_key = expected.generation_key().map_err(|error| {
+            RepositoryGraphError::new("reader-identity-invalid", error.to_string())
+        })?;
+        if generation_key_from_path(path).as_deref() != Some(expected_key.as_str()) {
+            return Ok(CacheLookup::Stale {
+                code: "generation-filename-stale".to_string(),
+            });
+        }
+        let connection = match open_immutable_connection(path) {
+            Ok(connection) => connection,
+            Err(_) => return Ok(reader_corrupt("generation-open-failed")),
+        };
+        let (identity, completeness, query_only) =
+            match validate_reader_metadata(&connection, expected, limits) {
+                Ok(metadata) => metadata,
+                Err(ReaderValidationError::Stale(code)) => {
+                    return Ok(CacheLookup::Stale {
+                        code: code.to_string(),
+                    })
+                }
+                Err(ReaderValidationError::Corrupt(code)) => return Ok(reader_corrupt(code)),
+            };
+        Ok(CacheLookup::Hit(Self {
+            connection,
+            identity,
+            completeness,
+            limits,
+            query_only,
+        }))
+    }
+
+    pub fn identity(&self) -> &GraphGenerationIdentity {
+        &self.identity
+    }
+
+    pub fn completeness(&self) -> Completeness {
+        self.completeness
+    }
+
+    pub fn query_only(&self) -> bool {
+        self.query_only
+    }
+
+    pub fn outgoing(
+        &self,
+        symbol: &str,
+        maximum_rows: usize,
+    ) -> Result<Vec<GraphEdge>, RepositoryGraphError> {
+        self.query_edges(symbol, maximum_rows, true)
+    }
+
+    pub fn incoming(
+        &self,
+        symbol: &str,
+        maximum_rows: usize,
+    ) -> Result<Vec<GraphEdge>, RepositoryGraphError> {
+        self.query_edges(symbol, maximum_rows, false)
+    }
+
+    fn query_edges(
+        &self,
+        symbol: &str,
+        maximum_rows: usize,
+        outgoing: bool,
+    ) -> Result<Vec<GraphEdge>, RepositoryGraphError> {
+        if maximum_rows == 0 || maximum_rows > self.limits.maximum_rows_per_query {
+            return Err(RepositoryGraphError::new(
+                "reader-row-limit-invalid",
+                "query row limit is zero or exceeds the reader limit",
+            ));
+        }
+        validate_hex(symbol).map_err(|_| {
+            RepositoryGraphError::new(
+                "reader-symbol-id-invalid",
+                "query symbol id must be 64 lowercase hex",
+            )
+        })?;
+        let sql = if outgoing {
+            "SELECT edge_id, kind, from_symbol, to_symbol, unresolved_target, path,
+                    start_line, start_column, end_line, end_column, start_byte, end_byte,
+                    provider_id, provider_version, resolution, confidence, limitation_code,
+                    canonical_json
+             FROM edges WHERE from_symbol = ?1 ORDER BY kind, edge_id LIMIT ?2"
+        } else {
+            "SELECT edge_id, kind, from_symbol, to_symbol, unresolved_target, path,
+                    start_line, start_column, end_line, end_column, start_byte, end_byte,
+                    provider_id, provider_version, resolution, confidence, limitation_code,
+                    canonical_json
+             FROM edges WHERE to_symbol = ?1 ORDER BY kind, edge_id LIMIT ?2"
+        };
+        let mut statement = self.connection.prepare(sql).map_err(sqlite_error)?;
+        let mut rows = statement
+            .query(params![
+                symbol,
+                sqlite_integer(maximum_rows, "query row limit")?
+            ])
+            .map_err(sqlite_error)?;
+        let mut edges = Vec::new();
+        while let Some(row) = rows.next().map_err(sqlite_error)? {
+            edges.push(decode_edge_row(row, self.limits)?);
+        }
+        Ok(edges)
     }
 }
 
@@ -553,6 +713,372 @@ fn insert_limitations(
             .map_err(sqlite_error)?;
     }
     Ok(())
+}
+
+fn validate_reader_limits(limits: ReaderLimits) -> Result<(), RepositoryGraphError> {
+    if limits.maximum_database_bytes == 0
+        || limits.maximum_rows_per_query == 0
+        || limits.maximum_string_bytes == 0
+    {
+        return Err(RepositoryGraphError::new(
+            "reader-limits-invalid",
+            "reader limits must be positive",
+        ));
+    }
+    Ok(())
+}
+
+fn generation_key_from_path(path: &Path) -> Option<String> {
+    let name = path.file_name()?.to_str()?;
+    let key = name.strip_suffix(".sqlite")?;
+    validate_hex(key).ok()?;
+    Some(key.to_string())
+}
+
+fn open_immutable_connection(path: &Path) -> Result<Connection, RepositoryGraphError> {
+    let text = path.to_str().ok_or_else(|| {
+        RepositoryGraphError::new(
+            "generation-path-not-utf8",
+            "graph generation path is not UTF-8",
+        )
+    })?;
+    let encoded = utf8_percent_encode(text, NON_ALPHANUMERIC);
+    let uri = format!("file:{encoded}?mode=ro&immutable=1");
+    let connection = Connection::open_with_flags(
+        uri,
+        OpenFlags::SQLITE_OPEN_READ_ONLY
+            | OpenFlags::SQLITE_OPEN_URI
+            | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )
+    .map_err(sqlite_error)?;
+    connection
+        .pragma_update(None, "query_only", true)
+        .map_err(sqlite_error)?;
+    connection
+        .pragma_update(None, "trusted_schema", false)
+        .map_err(sqlite_error)?;
+    Ok(connection)
+}
+
+fn validate_reader_metadata(
+    connection: &Connection,
+    expected: &GraphGenerationIdentity,
+    limits: ReaderLimits,
+) -> Result<(GraphGenerationIdentity, Completeness, bool), ReaderValidationError> {
+    let application_id: i32 = connection
+        .pragma_query_value(None, "application_id", |row| row.get(0))
+        .map_err(|_| ReaderValidationError::Corrupt("generation-header-invalid"))?;
+    if application_id != APPLICATION_ID {
+        return Err(ReaderValidationError::Corrupt(
+            "generation-application-id-mismatch",
+        ));
+    }
+    let user_version: i32 = connection
+        .pragma_query_value(None, "user_version", |row| row.get(0))
+        .map_err(|_| ReaderValidationError::Corrupt("generation-header-invalid"))?;
+    if user_version != DATABASE_SCHEMA_VERSION {
+        return Err(ReaderValidationError::Corrupt(
+            "generation-schema-version-mismatch",
+        ));
+    }
+    validate_reader_schema(connection)?;
+    let metadata_rows: i64 = connection
+        .query_row("SELECT COUNT(*) FROM generation_meta", [], |row| row.get(0))
+        .map_err(|_| ReaderValidationError::Corrupt("generation-metadata-invalid"))?;
+    if metadata_rows != 1 {
+        return Err(ReaderValidationError::Corrupt(
+            "generation-metadata-row-count-mismatch",
+        ));
+    }
+    let meta: (i32, String, String, String, i64, i64, i64, i64, i64, String) = connection
+        .query_row(
+            "SELECT schema_version, generation_key, identity_json, completeness,
+                    file_count, module_count, symbol_count, edge_count, limitation_count,
+                    application_root
+             FROM generation_meta",
+            [],
+            |row| {
+                Ok((
+                    row.get(0)?,
+                    row.get(1)?,
+                    row.get(2)?,
+                    row.get(3)?,
+                    row.get(4)?,
+                    row.get(5)?,
+                    row.get(6)?,
+                    row.get(7)?,
+                    row.get(8)?,
+                    row.get(9)?,
+                ))
+            },
+        )
+        .map_err(|_| ReaderValidationError::Corrupt("generation-metadata-invalid"))?;
+    if meta.0 != DATABASE_SCHEMA_VERSION {
+        return Err(ReaderValidationError::Corrupt(
+            "generation-schema-version-mismatch",
+        ));
+    }
+    bounded_reader_text(&meta.1, limits.maximum_string_bytes)?;
+    bounded_reader_text(&meta.2, limits.maximum_string_bytes.saturating_mul(16))?;
+    bounded_reader_text(&meta.3, limits.maximum_string_bytes)?;
+    bounded_reader_text(&meta.9, limits.maximum_string_bytes)?;
+    validate_hex(&meta.1).map_err(|_| ReaderValidationError::Corrupt("generation-key-invalid"))?;
+    validate_hex(&meta.9).map_err(|_| ReaderValidationError::Corrupt("generation-root-invalid"))?;
+    let identity: GraphGenerationIdentity = serde_json::from_str(&meta.2)
+        .map_err(|_| ReaderValidationError::Corrupt("generation-identity-invalid"))?;
+    identity
+        .validate()
+        .map_err(|_| ReaderValidationError::Corrupt("generation-identity-invalid"))?;
+    if &identity != expected {
+        return Err(ReaderValidationError::Stale("generation-identity-stale"));
+    }
+    let expected_key = expected
+        .generation_key()
+        .map_err(|_| ReaderValidationError::Corrupt("generation-identity-invalid"))?;
+    if meta.1 != expected_key {
+        return Err(ReaderValidationError::Stale("generation-key-stale"));
+    }
+    let completeness: Completeness = serde_json::from_str(&meta.3)
+        .map_err(|_| ReaderValidationError::Corrupt("generation-completeness-invalid"))?;
+    for (table, stored) in [
+        ("files", meta.4),
+        ("modules", meta.5),
+        ("symbols", meta.6),
+        ("edges", meta.7),
+        ("limitations", meta.8),
+    ] {
+        let stored = usize::try_from(stored)
+            .map_err(|_| ReaderValidationError::Corrupt("generation-count-invalid"))?;
+        let actual = reader_table_count(connection, table)?;
+        if stored != actual {
+            return Err(ReaderValidationError::Corrupt("generation-count-mismatch"));
+        }
+    }
+    let query_only: i32 = connection
+        .pragma_query_value(None, "query_only", |row| row.get(0))
+        .map_err(|_| ReaderValidationError::Corrupt("generation-query-only-invalid"))?;
+    if query_only != 1 {
+        return Err(ReaderValidationError::Corrupt(
+            "generation-query-only-invalid",
+        ));
+    }
+    Ok((identity, completeness, true))
+}
+
+fn validate_reader_schema(connection: &Connection) -> Result<(), ReaderValidationError> {
+    let tables = connection
+        .prepare(
+            "SELECT name FROM sqlite_schema
+             WHERE type = 'table' AND name NOT LIKE 'sqlite_%' ORDER BY name",
+        )
+        .and_then(|mut statement| {
+            statement
+                .query_map([], |row| row.get::<_, String>(0))?
+                .collect::<Result<BTreeSet<_>, _>>()
+        })
+        .map_err(|_| ReaderValidationError::Corrupt("generation-schema-invalid"))?;
+    let expected_tables = [
+        "edges",
+        "files",
+        "generation_meta",
+        "limitations",
+        "modules",
+        "symbols",
+    ]
+    .into_iter()
+    .map(str::to_string)
+    .collect::<BTreeSet<_>>();
+    if tables != expected_tables {
+        return Err(ReaderValidationError::Corrupt("generation-schema-invalid"));
+    }
+    let indexes = connection
+        .prepare(
+            "SELECT name FROM sqlite_schema
+             WHERE type = 'index' AND name NOT LIKE 'sqlite_%' ORDER BY name",
+        )
+        .and_then(|mut statement| {
+            statement
+                .query_map([], |row| row.get::<_, String>(0))?
+                .collect::<Result<BTreeSet<_>, _>>()
+        })
+        .map_err(|_| ReaderValidationError::Corrupt("generation-index-invalid"))?;
+    let expected_indexes = [
+        "edges_from_kind_id",
+        "edges_path_id",
+        "edges_to_kind_id",
+        "symbols_module_name",
+        "symbols_path_id",
+    ]
+    .into_iter()
+    .map(str::to_string)
+    .collect::<BTreeSet<_>>();
+    if indexes != expected_indexes {
+        return Err(ReaderValidationError::Corrupt("generation-index-invalid"));
+    }
+    Ok(())
+}
+
+fn reader_table_count(
+    connection: &Connection,
+    table: &str,
+) -> Result<usize, ReaderValidationError> {
+    let sql = match table {
+        "files" => "SELECT COUNT(*) FROM files",
+        "modules" => "SELECT COUNT(*) FROM modules",
+        "symbols" => "SELECT COUNT(*) FROM symbols",
+        "edges" => "SELECT COUNT(*) FROM edges",
+        "limitations" => "SELECT COUNT(*) FROM limitations",
+        _ => return Err(ReaderValidationError::Corrupt("generation-table-invalid")),
+    };
+    let count: i64 = connection
+        .query_row(sql, [], |row| row.get(0))
+        .map_err(|_| ReaderValidationError::Corrupt("generation-count-invalid"))?;
+    usize::try_from(count).map_err(|_| ReaderValidationError::Corrupt("generation-count-invalid"))
+}
+
+fn bounded_reader_text(value: &str, maximum: usize) -> Result<(), ReaderValidationError> {
+    if value.is_empty() || value.len() > maximum || value.chars().any(char::is_control) {
+        return Err(ReaderValidationError::Corrupt("generation-string-invalid"));
+    }
+    Ok(())
+}
+
+fn decode_edge_row(
+    row: &rusqlite::Row<'_>,
+    limits: ReaderLimits,
+) -> Result<GraphEdge, RepositoryGraphError> {
+    let edge_id = row_text(row, 0, limits.maximum_string_bytes)?;
+    let kind_text = row_text(row, 1, limits.maximum_string_bytes)?;
+    let from_symbol = row_text(row, 2, limits.maximum_string_bytes)?;
+    let to_symbol = optional_row_text(row, 3, limits.maximum_string_bytes)?;
+    let unresolved_target = optional_row_text(row, 4, limits.maximum_string_bytes)?;
+    let path_text = row_text(row, 5, limits.maximum_string_bytes)?;
+    let range = SourceRange {
+        start_line: row_u32(row, 6)?,
+        start_column: row_u32(row, 7)?,
+        end_line: row_u32(row, 8)?,
+        end_column: row_u32(row, 9)?,
+        start_byte: row_usize(row, 10)?,
+        end_byte: row_usize(row, 11)?,
+    };
+    let provider_id = row_text(row, 12, limits.maximum_string_bytes)?;
+    let provider_version = row_text(row, 13, limits.maximum_string_bytes)?;
+    let resolution_text = row_text(row, 14, limits.maximum_string_bytes)?;
+    let confidence_text = row_text(row, 15, limits.maximum_string_bytes)?;
+    let limitation_code = optional_row_text(row, 16, limits.maximum_string_bytes)?;
+    let canonical = row_text(row, 17, limits.maximum_string_bytes.saturating_mul(16))?;
+    validate_hex(&edge_id).map_err(|_| row_corrupt())?;
+    validate_hex(&from_symbol).map_err(|_| row_corrupt())?;
+    if let Some(target) = &to_symbol {
+        validate_hex(target).map_err(|_| row_corrupt())?;
+    }
+    if to_symbol.is_some() == unresolved_target.is_some() {
+        return Err(row_corrupt());
+    }
+    validate_range(&range).map_err(|_| row_corrupt())?;
+    let path = crate::candidate::RepoPath::new(path_text).map_err(|_| row_corrupt())?;
+    let edge = GraphEdge {
+        edge_id,
+        kind: parse_edge_kind(&kind_text)?,
+        from_symbol,
+        to_symbol,
+        unresolved_target,
+        path,
+        range,
+        provider_id,
+        provider_version,
+        resolution: parse_resolution(&resolution_text)?,
+        confidence: parse_confidence(&confidence_text)?,
+        limitation_code,
+    };
+    let canonical_edge: GraphEdge = serde_json::from_str(&canonical).map_err(|_| row_corrupt())?;
+    if canonical_edge != edge {
+        return Err(row_corrupt());
+    }
+    Ok(edge)
+}
+
+fn row_text(
+    row: &rusqlite::Row<'_>,
+    index: usize,
+    maximum: usize,
+) -> Result<String, RepositoryGraphError> {
+    let value: String = row.get(index).map_err(|_| row_corrupt())?;
+    if value.is_empty() || value.len() > maximum || value.chars().any(char::is_control) {
+        return Err(row_corrupt());
+    }
+    Ok(value)
+}
+
+fn optional_row_text(
+    row: &rusqlite::Row<'_>,
+    index: usize,
+    maximum: usize,
+) -> Result<Option<String>, RepositoryGraphError> {
+    let value: Option<String> = row.get(index).map_err(|_| row_corrupt())?;
+    if value.as_deref().is_some_and(|value| {
+        value.is_empty() || value.len() > maximum || value.chars().any(char::is_control)
+    }) {
+        return Err(row_corrupt());
+    }
+    Ok(value)
+}
+
+fn row_u32(row: &rusqlite::Row<'_>, index: usize) -> Result<u32, RepositoryGraphError> {
+    let value: i64 = row.get(index).map_err(|_| row_corrupt())?;
+    u32::try_from(value).map_err(|_| row_corrupt())
+}
+
+fn row_usize(row: &rusqlite::Row<'_>, index: usize) -> Result<usize, RepositoryGraphError> {
+    let value: i64 = row.get(index).map_err(|_| row_corrupt())?;
+    usize::try_from(value).map_err(|_| row_corrupt())
+}
+
+fn parse_edge_kind(value: &str) -> Result<EdgeKind, RepositoryGraphError> {
+    match value {
+        "defines" => Ok(EdgeKind::Defines),
+        "references" => Ok(EdgeKind::References),
+        "imports" => Ok(EdgeKind::Imports),
+        "exports" => Ok(EdgeKind::Exports),
+        "calls" => Ok(EdgeKind::Calls),
+        "implements" => Ok(EdgeKind::Implements),
+        "overrides" => Ok(EdgeKind::Overrides),
+        _ => Err(row_corrupt()),
+    }
+}
+
+fn parse_resolution(value: &str) -> Result<Resolution, RepositoryGraphError> {
+    match value {
+        "syntactic" => Ok(Resolution::Syntactic),
+        "lexical" => Ok(Resolution::Lexical),
+        "resolved-reference" => Ok(Resolution::ResolvedReference),
+        "semantic" => Ok(Resolution::Semantic),
+        "polymorphic-candidate" => Ok(Resolution::PolymorphicCandidate),
+        "unresolved" => Ok(Resolution::Unresolved),
+        _ => Err(row_corrupt()),
+    }
+}
+
+fn parse_confidence(value: &str) -> Result<Confidence, RepositoryGraphError> {
+    match value {
+        "high" => Ok(Confidence::High),
+        "medium" => Ok(Confidence::Medium),
+        "low" => Ok(Confidence::Low),
+        _ => Err(row_corrupt()),
+    }
+}
+
+fn row_corrupt() -> RepositoryGraphError {
+    RepositoryGraphError::new(
+        "generation-row-corrupt",
+        "repository graph row violates the strict schema",
+    )
+}
+
+fn reader_corrupt<T>(code: &str) -> CacheLookup<T> {
+    CacheLookup::Corrupt {
+        code: code.to_string(),
+    }
 }
 
 fn validate_generation(
