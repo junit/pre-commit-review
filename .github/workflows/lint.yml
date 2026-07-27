@@ -56,6 +56,64 @@ jobs:
       - name: Compile release binary
         run: cargo build --release
         working-directory: collect-diff-context-cli
+      - name: Build SQLite storage spike
+        run: cargo build --release --features sqlite-storage-spike --bin sqlite-storage-spike
+        working-directory: collect-diff-context-cli
+      - name: Smoke-test SQLite storage spike
+        run: ./target/release/sqlite-storage-spike --help
+        working-directory: collect-diff-context-cli
+      - name: SQLite storage spike 100k gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          cache="$RUNNER_TEMP/pcr-sqlite-spike-100k"
+          report="$(./target/release/sqlite-storage-spike benchmark \
+            --cache-dir "$cache" --symbols 100000 --edges 100000 --queries 1000)"
+          REPORT="$report" python3 - <<'PY'
+          import json
+          import os
+
+          report = json.loads(os.environ['REPORT'])
+          required = {
+              'database_bytes', 'build_ms', 'cold_open_ms', 'query_p50_us',
+              'query_p95_us', 'query_p99_us', 'sidecar_files', 'sqlite_version',
+          }
+          missing = required - report.keys()
+          if missing:
+              raise SystemExit(f'missing benchmark fields: {sorted(missing)}')
+          if report['status'] != 'completed':
+              raise SystemExit(f"unexpected status: {report['status']}")
+          if report['sidecar_files'] != 0:
+              raise SystemExit(f"unexpected sidecars: {report['sidecar_files']}")
+          if report['query_p95_us'] > 2_000_000:
+              raise SystemExit(f"query P95 exceeded 2s: {report['query_p95_us']}us")
+          PY
+      - name: SQLite storage spike 1M gate
+        shell: bash
+        run: |
+          set -euo pipefail
+          cache="$RUNNER_TEMP/pcr-sqlite-spike-1m"
+          report="$(./target/release/sqlite-storage-spike benchmark \
+            --cache-dir "$cache" --symbols 1000000 --edges 1000000 --queries 1000)"
+          REPORT="$report" python3 - <<'PY'
+          import json
+          import os
+
+          report = json.loads(os.environ['REPORT'])
+          required = {
+              'database_bytes', 'build_ms', 'cold_open_ms', 'query_p50_us',
+              'query_p95_us', 'query_p99_us', 'sidecar_files', 'sqlite_version',
+          }
+          missing = required - report.keys()
+          if missing:
+              raise SystemExit(f'missing benchmark fields: {sorted(missing)}')
+          if report['status'] != 'completed':
+              raise SystemExit(f"unexpected status: {report['status']}")
+          if report['sidecar_files'] != 0:
+              raise SystemExit(f"unexpected sidecars: {report['sidecar_files']}")
+          if report['query_p95_us'] > 2_000_000:
+              raise SystemExit(f"query P95 exceeded 2s: {report['query_p95_us']}us")
+          PY
       - name: Run fast impact-context release gates
         run: cargo test --release --test impact_context_performance -- --nocapture
         working-directory: collect-diff-context-cli

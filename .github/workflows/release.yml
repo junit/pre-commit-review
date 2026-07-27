@@ -32,7 +32,7 @@ jobs:
             repository_artifact_name: repository_context-darwin-arm64
             gitleaks_platform: darwin-arm64
 
-          - os: macos-13
+          - os: macos-15-intel
             target: x86_64-apple-darwin
             artifact_name: collect_diff_context-darwin-amd64
             static_artifact_name: static_analysis-darwin-amd64
@@ -63,6 +63,10 @@ jobs:
         run: cargo build --release --target ${{ matrix.target }} --bins
         working-directory: collect-diff-context-cli
 
+      - name: Build SQLite storage spike
+        run: cargo build --release --target ${{ matrix.target }} --features sqlite-storage-spike --bin sqlite-storage-spike
+        working-directory: collect-diff-context-cli
+
       - name: Prepare binary artifact
         shell: bash
         run: |
@@ -90,6 +94,31 @@ jobs:
         run: |
           repository_binary="dist/${{ matrix.repository_artifact_name }}"
           "$repository_binary" collect --help
+
+      - name: Smoke-test SQLite storage spike
+        shell: bash
+        run: |
+          set -euo pipefail
+          if [ "${{ matrix.os }}" = "windows-latest" ]; then
+            spike_binary="collect-diff-context-cli/target/${{ matrix.target }}/release/sqlite-storage-spike.exe"
+            "$spike_binary" --help
+          else
+            spike_binary="collect-diff-context-cli/target/${{ matrix.target }}/release/sqlite-storage-spike"
+            collect-diff-context-cli/target/${{ matrix.target }}/release/sqlite-storage-spike --help
+          fi
+          cache="$RUNNER_TEMP/pcr-sqlite-smoke"
+          build_report="$("$spike_binary" build --cache-dir "$cache" --symbols 100 --edges 200)"
+          generation_key="$(REPORT="$build_report" python3 -c \
+            'import json, os; report=json.loads(os.environ["REPORT"]); assert report["status"] == "completed"; print(report["generation_key"])')"
+          doctor_report="$("$spike_binary" doctor \
+            --generation "$cache/graphs/$generation_key.sqlite")"
+          REPORT="$doctor_report" python3 -c \
+            'import json, os; report=json.loads(os.environ["REPORT"]); assert report["status"] == "completed"'
+          if find "$cache/graphs" -type f \( -name '*-wal' -o -name '*-shm' -o -name '*-journal' \) \
+            -print -quit | grep -q .; then
+            echo 'SQLite spike left a published sidecar' >&2
+            exit 1
+          fi
 
       - name: Fetch pinned Gitleaks binary
         shell: bash
