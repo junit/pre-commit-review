@@ -29,6 +29,7 @@ fn main() {
         "initialize-error" => handshake_initialize_error(log_path.as_deref()),
         "unknown-encoding" => handshake(log_path.as_deref(), "ok", Some("utf-32")),
         "graph" => graph(log_path.as_deref()),
+        "--stdio" => fixture_stdio(log_path.as_deref()),
         "stderr-flood" => stderr_flood(),
         "hang" => hang(),
         "malformed-frame" => malformed_frame(),
@@ -227,6 +228,10 @@ fn handshake_hang(log_path: Option<&str>) -> io::Result<()> {
 }
 
 fn graph(log_path: Option<&str>) -> io::Result<()> {
+    graph_with_health(log_path, "ok")
+}
+
+fn graph_with_health(log_path: Option<&str>, health: &str) -> io::Result<()> {
     let mut input = io::stdin().lock();
     let mut output = io::stdout().lock();
     let initialize = read_json_frame(&mut input)?;
@@ -249,7 +254,7 @@ fn graph(log_path: Option<&str>) -> io::Result<()> {
     log_method(log_path, initialized.get("method").and_then(Value::as_str))?;
     write_frame(
         &mut output,
-        &json!({"jsonrpc":"2.0","method":"experimental/serverStatus","params":{"health":"ok","quiescent":true}}),
+        &json!({"jsonrpc":"2.0","method":"experimental/serverStatus","params":{"health":health,"quiescent":true}}),
     )?;
     let uri = format!("{root_uri}src/lib.rs");
     loop {
@@ -294,6 +299,22 @@ fn graph(log_path: Option<&str>) -> io::Result<()> {
         }
     }
     Ok(())
+}
+
+fn fixture_stdio(log_path: Option<&str>) -> io::Result<()> {
+    let scenario = env::var("PRE_COMMIT_REVIEW_SCOPE_FINGERPRINT")
+        .ok()
+        .and_then(|value| value.chars().next())
+        .unwrap_or('g');
+    match scenario {
+        'a' => hang(),
+        'b' => malformed_frame(),
+        'c' => unknown_id(),
+        'd' => std::process::exit(9),
+        'e' => graph_with_health(log_path, "warning"),
+        'f' => handshake_missing_capability(log_path),
+        _ => graph(log_path),
+    }
 }
 
 fn graph_item(uri: &str, name: &str) -> Value {

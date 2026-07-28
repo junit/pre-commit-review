@@ -2,9 +2,10 @@
 
 use collect_diff_context_cli::candidate::snapshot::{CandidateSnapshot, SnapshotLimits};
 use collect_diff_context_cli::repository_context_provider::contract::{
-    CallDirection, CandidateBinding, PositionEncoding, ProviderBinding, ProviderLimits,
-    ProviderRange, ProviderRangeFormat, RustAnalyzerCrate, RustAnalyzerProjectModel, SeedKind,
-    SeedSymbol,
+    AuthorizedProviderProfile, CallDirection, CandidateBinding, PositionEncoding, ProviderBinding,
+    ProviderHardening, ProviderLimits, ProviderRange, ProviderRangeFormat,
+    RepositoryContextProviderRequest, RepositoryContextProviderStatus, RustAnalyzerCrate,
+    RustAnalyzerProjectModel, SeedKind, SeedSymbol,
 };
 use collect_diff_context_cli::repository_context_provider::rust_analyzer::{
     initialize_and_gate, traverse_call_hierarchy, CallHierarchyTraversal, Readiness,
@@ -14,6 +15,9 @@ use collect_diff_context_cli::repository_context_provider::session::{
     ManagedLspSession, SessionLaunch,
 };
 use collect_diff_context_cli::repository_context_provider::snapshot::BoundCandidateSnapshot;
+use collect_diff_context_cli::repository_context_provider::{
+    run_repository_context_provider, ProviderInvocation,
+};
 use collect_diff_context_cli::review_scope::ReviewSource;
 use serde_json::json;
 use sha2::{Digest, Sha256};
@@ -252,6 +256,83 @@ impl Fixture {
         session.terminate();
         result
     }
+
+    fn runner_input(&self) -> (RepositoryContextProviderRequest, AuthorizedProviderProfile) {
+        let mut profile = AuthorizedProviderProfile {
+            schema_version: 1,
+            kind: "repository_context_provider_profile".to_string(),
+            provider_kind: "rust-analyzer".to_string(),
+            provider_version: "fixture".to_string(),
+            executable_sha256: self.executable_sha256.clone(),
+            configuration_sha256: digest('0'),
+            target_triple: self.model.target_triple.clone(),
+            toolchain_mode: "none".to_string(),
+            arguments: vec!["--stdio".to_string()],
+            hardening: ProviderHardening {
+                cargo_build_scripts: false,
+                cargo_no_deps: true,
+                cargo_sysroot: None,
+                cargo_sysroot_src: None,
+                proc_macro: false,
+                check_on_save: false,
+                workspace_discovery: false,
+                empty_path: true,
+                server_status_notification: true,
+            },
+            maximum_limits: ProviderLimits::maximum(),
+        };
+        profile.configuration_sha256 = profile.canonical_configuration_sha256();
+        let profile_path = self.tools.path().join("runner-profile.json");
+        fs::write(&profile_path, serde_json::to_vec(&profile).unwrap()).unwrap();
+        let request = RepositoryContextProviderRequest {
+            schema_version: 1,
+            kind: "repository_context_provider_request".to_string(),
+            candidate: self.binding.clone(),
+            provider: ProviderBinding {
+                kind: profile.provider_kind.clone(),
+                version: profile.provider_version.clone(),
+                profile_path,
+                profile_sha256: profile.sha256(),
+                executable_path: self.executable.clone(),
+                executable_sha256: profile.executable_sha256.clone(),
+                configuration_sha256: profile.configuration_sha256.clone(),
+                target_triple: profile.target_triple.clone(),
+                toolchain_mode: profile.toolchain_mode.clone(),
+            },
+            seeds: vec![graph_seed()],
+            directions: vec![CallDirection::Incoming, CallDirection::Outgoing],
+            limits: graph_limits(),
+        };
+        (request, profile)
+    }
+}
+
+fn graph_seed() -> SeedSymbol {
+    SeedSymbol {
+        changed_symbol_id: digest('5'),
+        path: "src/lib.rs".to_string(),
+        kind: SeedKind::Function,
+        name: "seed".to_string(),
+        symbol_range: ProviderRange {
+            format: ProviderRangeFormat::Utf8ByteColumnsEndExclusiveV1,
+            start_line: 1,
+            start_column: 1,
+            end_line: 1,
+            end_column: 27,
+            start_byte: 0,
+            end_byte: 26,
+        },
+        selection_range: ProviderRange {
+            format: ProviderRangeFormat::Utf8ByteColumnsEndExclusiveV1,
+            start_line: 1,
+            start_column: 8,
+            end_line: 1,
+            end_column: 12,
+            start_byte: 7,
+            end_byte: 11,
+        },
+        query_byte: 8,
+    }
 }
 
 fn graph_limits() -> ProviderLimits {
@@ -366,6 +447,80 @@ fn call_hierarchy_bfs_deduplicates_edges_and_is_deterministic() {
         .edges
         .windows(2)
         .all(|edges| edges[0].edge_id < edges[1].edge_id));
+}
+
+#[test]
+fn public_runner_returns_bound_completed_report() {
+    let fixture = Fixture::new();
+    let (request, profile) = fixture.runner_input();
+    request.validate().unwrap();
+    let report = run_repository_context_provider(ProviderInvocation {
+        snapshot: &fixture.snapshot,
+        model: &fixture.model,
+        request: &request,
+        profile: &profile,
+        cancellation: Arc::new(AtomicBool::new(false)),
+    })
+    .unwrap();
+    assert_eq!(report.status, RepositoryContextProviderStatus::Completed);
+    assert!(!report.seed_symbols.is_empty());
+    assert!(!report.edges.is_empty());
+    report.validate().unwrap();
+    assert!(!serde_json::to_string(&report)
+        .unwrap()
+        .contains(fixture.snapshot.path().to_str().unwrap()));
+}
+
+#[test]
+fn public_runner_status_matrix_retains_no_facts_on_terminal_failures() {
+    for (scenario, expected) in [
+        ('a', RepositoryContextProviderStatus::Timeout),
+        ('b', RepositoryContextProviderStatus::InvalidOutput),
+        ('c', RepositoryContextProviderStatus::InvalidOutput),
+        ('d', RepositoryContextProviderStatus::Failed),
+        ('e', RepositoryContextProviderStatus::Partial),
+        ('f', RepositoryContextProviderStatus::Unavailable),
+    ] {
+        let fixture = Fixture::new();
+        let (mut request, profile) = fixture.runner_input();
+        request.candidate.scope_fingerprint = digest(scenario);
+        request.limits.deadline_ms = 1_000;
+        let report = run_repository_context_provider(ProviderInvocation {
+            snapshot: &fixture.snapshot,
+            model: &fixture.model,
+            request: &request,
+            profile: &profile,
+            cancellation: Arc::new(AtomicBool::new(false)),
+        })
+        .unwrap();
+        assert_eq!(report.status, expected, "scenario {scenario}");
+        if expected != RepositoryContextProviderStatus::Partial {
+            assert!(report.seed_symbols.is_empty());
+            assert!(report.related_symbols.is_empty());
+            assert!(report.edges.is_empty());
+        } else {
+            assert!(!report.seed_symbols.is_empty());
+        }
+    }
+}
+
+#[test]
+fn public_runner_rejects_pre_cancelled_invocation() {
+    let fixture = Fixture::new();
+    let (request, profile) = fixture.runner_input();
+    let cancellation = Arc::new(AtomicBool::new(true));
+    let error = run_repository_context_provider(ProviderInvocation {
+        snapshot: &fixture.snapshot,
+        model: &fixture.model,
+        request: &request,
+        profile: &profile,
+        cancellation,
+    })
+    .unwrap_err();
+    assert_eq!(
+        error,
+        collect_diff_context_cli::repository_context_provider::ProviderError::Cancelled
+    );
 }
 
 fn _unused_json_value() -> serde_json::Value {
