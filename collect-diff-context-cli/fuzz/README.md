@@ -22,4 +22,10 @@ rtk cargo +nightly fuzz run repository_context_frame --fuzz-dir collect-diff-con
 rtk cargo +nightly fuzz run repository_context_messages --fuzz-dir collect-diff-context-cli/fuzz -- -runs=256 -timeout=5
 ```
 
+The provider frame/message commands above are the bounded CI smoke gate for
+the current delivery. A separate sustained one-hour run is deferred release
+work and must be run explicitly with `-max_total_time=3600`; it is not part of
+the default review, Fast Mode, repository index, SQLite, or static-analysis
+paths.
+
 Minimize reproducible crashes and commit them under `fuzz/corpus/<target>/` as permanent regression seeds. Do not commit transient files from `fuzz/artifacts/`.

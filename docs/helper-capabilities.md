@@ -48,7 +48,16 @@ The `impact_context/v1` contract keeps three evidence layers distinct:
 
 1. **Changed-file structural facts** come from complete changed candidate files and changed ranges. Tree-sitter definitions, bounded text/configuration matches, dependency summaries, framework markers, and test-selection hints belong here. This layer remains available on a repository-index cache miss and never grants manifest coverage.
 2. **Heuristic repository index facts** come from validated content-addressed FileFacts, the passive Cargo project model, an immutable exact-candidate SQLite graph generation, and an optional in-memory candidate overlay. Fast Mode may read a compatible generation with zero persistent writes; only explicit Deep/index operations may publish facts or generations. These edges are bounded syntactic or resolved-reference evidence, not compiler-complete semantic calls.
-3. **Future semantic provider facts** may come from rust-analyzer, SCIP, Joern, or another separately authorized provider in a later subproject. They must preserve their own provider identity, confidence, completeness, and limitations. They may add higher-confidence evidence but must not silently rewrite or upgrade heuristic Repository Index edges.
+3. **Opt-in semantic provider facts** may come from rust-analyzer now, or SCIP, Joern, or another separately authorized provider in a later subproject. They must preserve their own provider identity, confidence, completeness, and limitations. They may add higher-confidence evidence but must not silently rewrite or upgrade heuristic Repository Index edges.
+
+The rust-analyzer provider now has a bounded library implementation for an
+explicitly authorized, already materialized candidate snapshot. It remains
+opt-in and unreachable from the default review, Fast Mode, repository index,
+SQLite persistence, and static-analysis orchestration paths. See
+[`rust-analyzer-context-provider.md`](rust-analyzer-context-provider.md) for
+the profile, linked-project, LSP, lifecycle, and report boundaries. A fake
+server proves the local protocol contract; real rust-analyzer artifacts and
+release claims are deferred.
 
 The graph database is an internal implementation detail. Callers receive only bounded changed-symbol, incoming/outgoing relationship, reverse-dependent, connected-test, and limitation slices. Index, query, and output completeness remain independent so a complete bounded query over a heuristic graph is never presented as compiler completeness.
 

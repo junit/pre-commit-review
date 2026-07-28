@@ -90,6 +90,30 @@ jobs:
           cargo +nightly fuzz run repository_graph_row --fuzz-dir collect-diff-context-cli/fuzz -- -runs=256 -timeout=5
           cargo +nightly fuzz run repository_overlay --fuzz-dir collect-diff-context-cli/fuzz -- -runs=256 -timeout=5
           cargo +nightly fuzz run repository_traversal --fuzz-dir collect-diff-context-cli/fuzz -- -runs=256 -timeout=5
+          cargo +nightly fuzz run repository_context_frame --fuzz-dir collect-diff-context-cli/fuzz -- -runs=256 -timeout=5
+          cargo +nightly fuzz run repository_context_messages --fuzz-dir collect-diff-context-cli/fuzz -- -runs=256 -timeout=5
+
+  rust-1-95:
+    name: Rust 1.95 locked provider gates
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - name: Set up Rust 1.95
+        uses: dtolnay/rust-toolchain@1.95.0
+        with:
+          components: rustfmt, clippy
+      - name: Check all targets and features
+        run: cargo +1.95.0 check --all-targets --all-features --locked
+        working-directory: collect-diff-context-cli
+      - name: Check provider formatting
+        run: cargo +1.95.0 fmt --all -- --check
+        working-directory: collect-diff-context-cli
+      - name: Run provider contract and protocol tests
+        run: cargo +1.95.0 test --locked --features test-fixture --test repository_context_provider_contracts --test repository_context_provider_snapshot --test repository_context_json_rpc --test repository_context_session --test repository_context_rust_analyzer --test repository_context_provider_platform
+        working-directory: collect-diff-context-cli
+      - name: Run provider Clippy
+        run: cargo +1.95.0 clippy --locked --all-targets --all-features -- -D warnings
+        working-directory: collect-diff-context-cli
 
   static-analysis-platforms:
     name: Static analysis (${{ matrix.target }})
@@ -139,7 +163,7 @@ jobs:
           "$repository_binary" collect --help
           "$repository_binary" index --help
       - name: Run focused Rust contracts
-        run: cargo test --target ${{ matrix.target }} --features test-fixture --test candidate_content --test impact_context_contracts --test repository_index_contracts --test static_evidence --test static_execution --test static_execution_modes --test static_execution_platform --test static_orchestration
+        run: cargo test --target ${{ matrix.target }} --features test-fixture --test candidate_content --test impact_context_contracts --test repository_index_contracts --test static_evidence --test static_execution --test static_execution_modes --test static_execution_platform --test static_orchestration --test repository_context_provider_contracts --test repository_context_provider_snapshot --test repository_context_json_rpc --test repository_context_session --test repository_context_rust_analyzer --test repository_context_provider_platform
         working-directory: collect-diff-context-cli
 
   integration-tests:
