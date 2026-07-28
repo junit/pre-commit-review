@@ -25,6 +25,11 @@ name = "static-analysis-fixture"
 path = "src/bin/static_analysis_fixture.rs"
 required-features = ["test-fixture"]
 
+[[bin]]
+name = "repository-context-provider-fixture"
+path = "src/bin/repository_context_provider_fixture.rs"
+required-features = ["test-fixture"]
+
 [dependencies]
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
