@@ -6,6 +6,9 @@ repo_root="$(CDPATH='' cd -- "$script_dir/.." && pwd -P)"
 lint="$repo_root/.github/workflows/lint.yml"
 release="$repo_root/.github/workflows/release.yml"
 cargo_manifest="$repo_root/collect-diff-context-cli/Cargo.toml"
+fuzz_overlay="$repo_root/collect-diff-context-cli/fuzz/fuzz_targets/repository_overlay.rs"
+fuzz_traversal="$repo_root/collect-diff-context-cli/fuzz/fuzz_targets/repository_traversal.rs"
+repository_bench="$repo_root/collect-diff-context-cli/benches/repository_index.rs"
 
 fail() {
   printf 'repository index workflow test failed: %s\n' "$*" >&2
@@ -22,6 +25,20 @@ for target in file_facts_decode repository_graph_row repository_overlay reposito
   grep -Fq "cargo +nightly fuzz run $target" "$lint" \
     || fail "lint workflow does not fuzz $target"
 done
+for target in "$fuzz_overlay" "$fuzz_traversal"; do
+  grep -Fq 'arbitrary_graph' "$target" \
+    || fail "$(basename "$target") does not derive repository graphs from fuzz input"
+  if grep -Eq 'synthetic_graph|OnceLock' "$target"; then
+    fail "$(basename "$target") still relies on a fixed repository graph fixture"
+  fi
+done
+if grep -Fq 'scale_row_stream' "$repository_bench"; then
+  fail 'repository scale benchmark still hashes fake row pairs'
+fi
+grep -Fq 'scale/sqlite_generation' "$repository_bench" \
+  || fail 'repository scale benchmark does not exercise real SQLite generations'
+grep -Fq '.integrity_check()' "$repository_bench" \
+  || fail 'repository scale benchmark does not validate generation integrity'
 
 grep -Fq 'cargo build --release --target ${{ matrix.target }} --bins' "$release" \
   || fail 'release workflow does not build the bundled product binaries'

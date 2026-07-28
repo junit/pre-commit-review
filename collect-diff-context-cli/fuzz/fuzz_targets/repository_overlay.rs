@@ -2,115 +2,61 @@
 
 mod support;
 
-use collect_diff_context_cli::candidate::CandidatePresence;
-use collect_diff_context_cli::impact_context::contracts::Completeness;
 use collect_diff_context_cli::impact_context::index::budget::{IndexBudget, IndexBudgetTracker};
 use collect_diff_context_cli::impact_context::index::overlay::build_repository_overlay;
 use libfuzzer_sys::fuzz_target;
-use std::collections::BTreeSet;
-use std::sync::{Mutex, OnceLock};
+use std::time::Duration;
 use support::{
-    identity, open_graph, publish_graph, repo_path, synthetic_graph, MAX_FUZZ_INPUT_BYTES,
+    arbitrary_graph, input_fingerprint, mutate_candidate_graph, open_graph, publish_graph,
+    select_changed_paths, split_graph_inputs, MAX_FUZZ_INPUT_BYTES,
 };
-
-struct Fixture {
-    _cache: tempfile::TempDir,
-    base: collect_diff_context_cli::impact_context::index::model::RepositoryGraph,
-    reader:
-        collect_diff_context_cli::impact_context::cache::sqlite_generation::RepositoryGraphReader,
-}
-
-fn fixture() -> &'static Mutex<Fixture> {
-    static FIXTURE: OnceLock<Mutex<Fixture>> = OnceLock::new();
-    FIXTURE.get_or_init(|| {
-        let cache = tempfile::tempdir().expect("create bounded fuzz cache");
-        let base = synthetic_graph(8, 24);
-        let path = publish_graph(cache.path(), &base);
-        let reader = open_graph(&path, &base);
-        Mutex::new(Fixture {
-            _cache: cache,
-            base,
-            reader,
-        })
-    })
-}
 
 fuzz_target!(|data: &[u8]| {
     if data.len() > MAX_FUZZ_INPUT_BYTES {
         return;
     }
-    let fixture = fixture().lock().expect("lock overlay fuzz fixture");
-    let changed_path = repo_path("src/file_00.rs");
-    let mut changed = BTreeSet::from([changed_path.clone()]);
-    let mut candidate = fixture.base.clone();
-    candidate.identity = identity(999);
-    match data.first().copied().unwrap_or_default() % 4 {
-        0 => {
-            candidate.files.retain(|file| file.path != changed_path);
-            candidate
-                .modules
-                .retain(|module| module.path != changed_path);
-            let removed = candidate
-                .symbols
-                .iter()
-                .filter(|symbol| symbol.path == changed_path)
-                .map(|symbol| symbol.symbol_id.clone())
-                .collect::<BTreeSet<_>>();
-            candidate
-                .symbols
-                .retain(|symbol| !removed.contains(&symbol.symbol_id));
-            candidate.edges.retain(|edge| {
-                !removed.contains(&edge.from_symbol)
-                    && edge
-                        .to_symbol
-                        .as_ref()
-                        .is_none_or(|target| !removed.contains(target))
-            });
-        }
-        1 => {
-            let renamed = repo_path("src/renamed.rs");
-            changed.insert(renamed.clone());
-            for file in &mut candidate.files {
-                if file.path == changed_path {
-                    file.path = renamed.clone();
-                    file.presence = CandidatePresence::Present;
-                }
-            }
-            for module in &mut candidate.modules {
-                if module.path == changed_path {
-                    module.path = renamed.clone();
-                }
-            }
-            for symbol in &mut candidate.symbols {
-                if symbol.path == changed_path {
-                    symbol.path = renamed.clone();
-                }
-            }
-        }
-        2 => candidate.completeness = Completeness::Partial,
-        _ => {}
-    }
-    candidate
-        .files
-        .sort_by(|left, right| left.path.cmp(&right.path));
-    candidate
-        .modules
-        .sort_by(|left, right| left.module_id.cmp(&right.module_id));
-    candidate
-        .symbols
-        .sort_by(|left, right| left.symbol_id.cmp(&right.symbol_id));
-    candidate
-        .edges
-        .sort_by(|left, right| left.edge_id.cmp(&right.edge_id));
+    let (base_input, candidate_input) = split_graph_inputs(data);
+    let base = arbitrary_graph(&base_input);
+    let mut candidate = arbitrary_graph(&candidate_input);
+    candidate.identity = support::identity(
+        input_fingerprint(&candidate_input)
+            .wrapping_add(data.len())
+            .wrapping_add(1),
+    );
+    let mut changed = mutate_candidate_graph(&mut candidate, data.get(5..).unwrap_or_default());
+    select_changed_paths(&base, &candidate, data, &mut changed);
+
+    let cache = tempfile::tempdir().expect("create bounded fuzz cache");
+    let path = publish_graph(cache.path(), &base);
+    let reader = open_graph(&path, &base);
 
     let mut budget = IndexBudget::deep_defaults();
-    budget.max_overlay_paths = usize::from(data.get(1).copied().unwrap_or(8) % 8).saturating_add(1);
-    budget.max_nodes = 128;
-    budget.max_edges = 128;
+    budget.deadline = Duration::from_secs(2);
+    budget.max_overlay_paths = usize::from(data.get(6).copied().unwrap_or(0) % 16) + 1;
+    budget.max_nodes = usize::from(data.get(7).copied().unwrap_or(0) % 64) + 1;
+    budget.max_symbols = usize::from(data.get(8).copied().unwrap_or(0) % 32) + 1;
+    budget.max_edges = usize::from(data.get(9).copied().unwrap_or(0) % 64) + 1;
+    budget.max_generation_bytes = usize::from(data.get(10).copied().unwrap_or(0) % 64 + 1) * 1024;
+    budget.max_query_rows = usize::from(data.get(11).copied().unwrap_or(0) % 64) + 1;
+    let limits = budget.clone();
     let mut first_budget = IndexBudgetTracker::new(budget.clone());
     let mut second_budget = IndexBudgetTracker::new(budget);
-    let first = build_repository_overlay(&fixture.reader, &candidate, &changed, &mut first_budget);
-    let second =
-        build_repository_overlay(&fixture.reader, &candidate, &changed, &mut second_budget);
+    let first = build_repository_overlay(&reader, &candidate, &changed, &mut first_budget)
+        .expect("bounded arbitrary overlay must build");
+    let second = build_repository_overlay(&reader, &candidate, &changed, &mut second_budget)
+        .expect("bounded arbitrary overlay must be repeatable");
     assert_eq!(first, second);
+    assert!(first.path_tombstones.len() <= limits.max_overlay_paths);
+    assert!(first.files.len() + first.modules.len() + first.symbols.len() <= limits.max_nodes);
+    assert!(first.symbols.len() <= limits.max_symbols);
+    assert!(first.outgoing_edges.values().map(Vec::len).sum::<usize>() <= limits.max_edges);
+    for edges in first
+        .outgoing_edges
+        .values()
+        .chain(first.incoming_edges.values())
+    {
+        assert!(edges
+            .windows(2)
+            .all(|pair| pair[0].edge_id < pair[1].edge_id));
+    }
 });

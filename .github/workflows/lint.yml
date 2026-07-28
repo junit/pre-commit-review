@@ -73,6 +73,8 @@ jobs:
         working-directory: collect-diff-context-cli
       - name: Smoke-test repository-index benchmark stages
         run: cargo bench --bench repository_index -- --test
+        env:
+          PRE_COMMIT_REVIEW_SQLITE_SCALE_GATE: '1'
         working-directory: collect-diff-context-cli
       - name: Set up nightly fuzz toolchain
         run: rustup toolchain install nightly --profile minimal

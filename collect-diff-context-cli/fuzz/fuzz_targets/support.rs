@@ -12,9 +12,11 @@ use collect_diff_context_cli::impact_context::index::budget::{IndexBudget, Index
 use collect_diff_context_cli::impact_context::index::model::{
     GraphEdge, GraphFile, GraphGenerationIdentity, GraphModule, GraphSymbol, RepositoryGraph,
 };
+use std::collections::BTreeSet;
 use std::path::{Path, PathBuf};
 
 pub const MAX_FUZZ_INPUT_BYTES: usize = 1024 * 1024;
+pub const MAX_GRAPH_INPUT_BYTES: usize = 1 + 4 * 64;
 
 pub fn hex_id(value: usize) -> String {
     format!("{value:064x}")
@@ -41,7 +43,7 @@ pub fn cache_layout(root: &Path) -> CacheLayout {
 pub fn identity(candidate: usize) -> GraphGenerationIdentity {
     GraphGenerationIdentity {
         graph_schema_version: 1,
-        candidate_manifest_digest: hex_id(10_000 + candidate),
+        candidate_manifest_digest: hex_id(10_000usize.wrapping_add(candidate)),
         project_model_digest: hex_id(20_001),
         resolver_digest: hex_id(20_002),
         adapter_query_digest: hex_id(20_003),
@@ -129,6 +131,204 @@ pub fn synthetic_graph(node_count: usize, edge_count: usize) -> RepositoryGraph 
         completeness: Completeness::Complete,
         limitations: Vec::new(),
     }
+}
+
+pub fn arbitrary_graph(data: &[u8]) -> RepositoryGraph {
+    let data = &data[..data.len().min(MAX_GRAPH_INPUT_BYTES)];
+    let node_count = usize::from(data.first().copied().unwrap_or(0) % 15).saturating_add(2);
+    let edge_bytes = data.get(1..).unwrap_or_default();
+    let edge_count = edge_bytes.len().div_ceil(4).min(64);
+    let mut graph = synthetic_graph(node_count, 0);
+    graph.identity = identity(data.iter().fold(node_count, |value, byte| {
+        value.wrapping_mul(257) ^ usize::from(*byte)
+    }));
+    graph.edges = edge_bytes
+        .chunks(4)
+        .take(edge_count)
+        .enumerate()
+        .map(|(index, chunk)| {
+            let from = usize::from(chunk.first().copied().unwrap_or(0)) % node_count;
+            let to = usize::from(chunk.get(1).copied().unwrap_or(0)) % node_count;
+            let kind = match chunk.get(2).copied().unwrap_or(0) % 7 {
+                0 => EdgeKind::Calls,
+                1 => EdgeKind::References,
+                2 => EdgeKind::Imports,
+                3 => EdgeKind::Exports,
+                4 => EdgeKind::Defines,
+                5 => EdgeKind::Implements,
+                _ => EdgeKind::Overrides,
+            };
+            let resolved = chunk.get(3).copied().unwrap_or(0) % 3 != 0;
+            GraphEdge {
+                edge_id: hex_id(10_000 + index),
+                kind,
+                from_symbol: hex_id(1_000 + from),
+                to_symbol: resolved.then(|| hex_id(1_000 + to)),
+                unresolved_target: (!resolved).then(|| format!("target_{to}")),
+                path: repo_path(&format!("src/file_{from:02}.rs")),
+                range: source_range(index),
+                provider_id: "rust-tree-sitter-resolver".to_string(),
+                provider_version: "rust-resolver/v1".to_string(),
+                resolution: if resolved {
+                    Resolution::ResolvedReference
+                } else {
+                    Resolution::Unresolved
+                },
+                confidence: if resolved {
+                    Confidence::Medium
+                } else {
+                    Confidence::Low
+                },
+                limitation_code: (!resolved)
+                    .then(|| "rust-resolver-reference-unresolved".to_string()),
+            }
+        })
+        .collect();
+    graph
+        .edges
+        .sort_by(|left, right| left.edge_id.cmp(&right.edge_id));
+    graph
+}
+
+pub fn split_graph_inputs(data: &[u8]) -> (Vec<u8>, Vec<u8>) {
+    let mut base = Vec::with_capacity(MAX_GRAPH_INPUT_BYTES);
+    let mut candidate = Vec::with_capacity(MAX_GRAPH_INPUT_BYTES);
+    for (index, byte) in data
+        .iter()
+        .copied()
+        .take(MAX_GRAPH_INPUT_BYTES * 2)
+        .enumerate()
+    {
+        if index % 2 == 0 {
+            base.push(byte);
+        } else {
+            candidate.push(byte);
+        }
+    }
+    (base, candidate)
+}
+
+pub fn input_fingerprint(data: &[u8]) -> usize {
+    data.iter()
+        .take(MAX_GRAPH_INPUT_BYTES)
+        .fold(0usize, |value, byte| {
+            value.wrapping_mul(257) ^ usize::from(*byte)
+        })
+}
+
+pub fn mutate_candidate_graph(graph: &mut RepositoryGraph, data: &[u8]) -> BTreeSet<RepoPath> {
+    let selected = usize::from(data.first().copied().unwrap_or(0)) % graph.files.len();
+    let path = graph.files[selected].path.clone();
+    let mut changed = BTreeSet::from([path.clone()]);
+    match data.get(1).copied().unwrap_or(0) % 3 {
+        0 => delete_path(graph, &path),
+        1 => {
+            let renamed = repo_path(&format!(
+                "src/renamed_{:02}.rs",
+                data.get(2).copied().unwrap_or(0)
+            ));
+            rename_path(graph, &path, &renamed);
+            changed.insert(renamed);
+        }
+        _ => {
+            graph.files[selected].content_sha256 =
+                Some(hex_id(50_000usize.wrapping_add(input_fingerprint(data))));
+        }
+    }
+    canonicalize_graph(graph);
+    changed
+}
+
+pub fn select_changed_paths(
+    base: &RepositoryGraph,
+    candidate: &RepositoryGraph,
+    data: &[u8],
+    changed: &mut BTreeSet<RepoPath>,
+) {
+    let universe = base
+        .files
+        .iter()
+        .chain(&candidate.files)
+        .map(|file| file.path.clone())
+        .collect::<BTreeSet<_>>()
+        .into_iter()
+        .collect::<Vec<_>>();
+    let count = usize::from(data.get(3).copied().unwrap_or(0) % 4).saturating_add(1);
+    let start = usize::from(data.get(4).copied().unwrap_or(0)) % universe.len();
+    for offset in 0..count.min(universe.len()) {
+        changed.insert(universe[(start + offset) % universe.len()].clone());
+    }
+}
+
+fn delete_path(graph: &mut RepositoryGraph, path: &RepoPath) {
+    let removed_symbols = graph
+        .symbols
+        .iter()
+        .filter(|symbol| symbol.path == *path)
+        .map(|symbol| symbol.symbol_id.clone())
+        .collect::<BTreeSet<_>>();
+    if let Some(file) = graph.files.iter_mut().find(|file| file.path == *path) {
+        file.presence = CandidatePresence::Deleted;
+        file.content_sha256 = None;
+        file.file_fact_key = None;
+        file.module_id = None;
+    }
+    graph.modules.retain(|module| module.path != *path);
+    graph.symbols.retain(|symbol| symbol.path != *path);
+    graph
+        .edges
+        .retain(|edge| !removed_symbols.contains(&edge.from_symbol));
+    for edge in &mut graph.edges {
+        if edge
+            .to_symbol
+            .as_ref()
+            .is_some_and(|target| removed_symbols.contains(target))
+        {
+            let target = edge.to_symbol.take().expect("resolved target must exist");
+            edge.unresolved_target = Some(target);
+            edge.resolution = Resolution::Unresolved;
+            edge.confidence = Confidence::Low;
+            edge.limitation_code = Some("repository-fuzz-target-deleted".to_string());
+        }
+    }
+}
+
+fn rename_path(graph: &mut RepositoryGraph, old: &RepoPath, new: &RepoPath) {
+    for file in &mut graph.files {
+        if file.path == *old {
+            file.path = new.clone();
+        }
+    }
+    for module in &mut graph.modules {
+        if module.path == *old {
+            module.path = new.clone();
+        }
+    }
+    for symbol in &mut graph.symbols {
+        if symbol.path == *old {
+            symbol.path = new.clone();
+        }
+    }
+    for edge in &mut graph.edges {
+        if edge.path == *old {
+            edge.path = new.clone();
+        }
+    }
+}
+
+fn canonicalize_graph(graph: &mut RepositoryGraph) {
+    graph
+        .files
+        .sort_by(|left, right| left.path.cmp(&right.path));
+    graph
+        .modules
+        .sort_by(|left, right| left.module_id.cmp(&right.module_id));
+    graph
+        .symbols
+        .sort_by(|left, right| left.symbol_id.cmp(&right.symbol_id));
+    graph
+        .edges
+        .sort_by(|left, right| left.edge_id.cmp(&right.edge_id));
 }
 
 pub fn publish_graph(root: &Path, graph: &RepositoryGraph) -> PathBuf {
