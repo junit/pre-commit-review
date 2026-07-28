@@ -456,6 +456,53 @@ fn index_clean_defaults_to_dry_run_and_stays_inside_repository_namespace(
     Ok(())
 }
 
+#[test]
+fn index_clean_bounds_generation_enumeration_and_integrity_scan() -> Result<(), Box<dyn Error>> {
+    let repo = rust_repository()?;
+    let cache = tempfile::tempdir()?;
+    let built = build_index(&repo, cache.path())?;
+    let generation_path = generation_path(cache.path(), &built);
+    let graphs = generation_path.parent().ok_or("missing graph directory")?;
+    let extra_generation = graphs.join(format!("{}.sqlite", "f".repeat(64)));
+    fs::copy(&generation_path, &extra_generation)?;
+
+    let generation_limited = repository_context(
+        &repo,
+        cache.path(),
+        &["index", "clean", "--invalid", "--max-scan-generations", "1"],
+    )?;
+    let generation_limited = parse_report(&generation_limited)?;
+    assert_eq!(generation_limited.status, IndexReportStatus::Partial);
+    assert!(generation_limited.limitations.iter().any(|limitation| {
+        limitation.code == "repository-index-clean-generation-budget-exhausted"
+    }));
+    assert!(generation_path.is_file());
+    assert!(extra_generation.is_file());
+
+    fs::remove_file(&extra_generation)?;
+    let byte_limited = repository_context(
+        &repo,
+        cache.path(),
+        &["index", "clean", "--invalid", "--max-scan-bytes", "1"],
+    )?;
+    let byte_limited = parse_report(&byte_limited)?;
+    assert_eq!(byte_limited.status, IndexReportStatus::Partial);
+    assert!(byte_limited.limitations.iter().any(|limitation| {
+        limitation.code == "repository-index-clean-scan-byte-budget-exhausted"
+    }));
+    assert!(generation_path.is_file());
+
+    for arguments in [
+        &["index", "clean", "--max-scan-generations", "0"][..],
+        &["index", "clean", "--max-scan-bytes", "0"][..],
+        &["index", "clean", "--timeout-ms", "0"][..],
+    ] {
+        let output = repository_context(&repo, cache.path(), arguments)?;
+        assert_eq!(output.status.code(), Some(2));
+    }
+    Ok(())
+}
+
 #[cfg(unix)]
 #[test]
 fn index_clean_does_not_follow_symlinked_locator_directory() -> Result<(), Box<dyn Error>> {

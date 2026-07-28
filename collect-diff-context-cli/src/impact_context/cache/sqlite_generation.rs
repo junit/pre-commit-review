@@ -355,6 +355,43 @@ impl RepositoryGraphReader {
     }
 
     pub fn integrity_check(&self) -> Result<(), RepositoryGraphError> {
+        self.integrity_check_inner()
+    }
+
+    pub fn integrity_check_bounded(
+        &self,
+        deadline: std::time::Duration,
+    ) -> Result<(), RepositoryGraphError> {
+        if deadline.is_zero() {
+            return Err(RepositoryGraphError::new(
+                "generation-integrity-deadline-exhausted",
+                "the generation integrity deadline was exhausted",
+            ));
+        }
+        let interrupt = self.connection.get_interrupt_handle();
+        let (cancel, cancelled) = std::sync::mpsc::sync_channel(1);
+        let watchdog = std::thread::spawn(move || {
+            if cancelled.recv_timeout(deadline).is_err() {
+                interrupt.interrupt();
+                true
+            } else {
+                false
+            }
+        });
+        let result = self.integrity_check_inner();
+        let _ = cancel.send(());
+        let timed_out = watchdog.join().unwrap_or(true);
+        if timed_out {
+            Err(RepositoryGraphError::new(
+                "generation-integrity-deadline-exhausted",
+                "the generation integrity deadline was exhausted",
+            ))
+        } else {
+            result
+        }
+    }
+
+    fn integrity_check_inner(&self) -> Result<(), RepositoryGraphError> {
         let meta: (String, String, i64, i64, i64, i64, i64, String) = self
             .connection
             .query_row(

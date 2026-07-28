@@ -35,6 +35,9 @@ pub struct CleanRequest {
     pub maximum_bytes: usize,
     pub retain_generations: usize,
     pub invalid_only: bool,
+    pub maximum_scan_generations: usize,
+    pub maximum_scan_bytes: usize,
+    pub deadline: Duration,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -317,7 +320,25 @@ pub fn clean_repository_cache(
     request: CleanRequest,
 ) -> Result<CacheOperationResult, CacheOperationError> {
     let started = Instant::now();
-    let mut candidates = generation_candidates(layout)?;
+    let mut limitations = Vec::new();
+    let Some(mut candidates) = generation_candidates(
+        layout,
+        request.maximum_scan_generations,
+        started,
+        request.deadline,
+        &mut limitations,
+    )?
+    else {
+        let mut metrics = empty_metrics();
+        metrics.elapsed_ms = elapsed_ms(started);
+        sort_limitations(&mut limitations);
+        return Ok(CacheOperationResult {
+            status: IndexReportStatus::Partial,
+            generation_key: None,
+            metrics,
+            limitations,
+        });
+    };
     candidates.sort_by(|left, right| {
         right
             .modified
@@ -335,8 +356,51 @@ pub fn clean_repository_cache(
         });
     let mut projected_bytes = total_bytes;
     let mut selected = Vec::new();
+    let mut scanned_bytes = 0usize;
     for (index, candidate) in candidates.iter().enumerate().rev() {
-        let invalid = generation_is_invalid(&candidate.path)?;
+        let invalid = if request.invalid_only {
+            if started.elapsed() >= request.deadline {
+                limitations.push(limitation(
+                    "repository-index-clean-deadline-exhausted",
+                    "cleanup exhausted its deadline before validating every generation",
+                    "unscanned generations were deferred without modification",
+                ));
+                break;
+            }
+            let Some(next_scanned_bytes) = scanned_bytes.checked_add(candidate.bytes) else {
+                limitations.push(limitation(
+                    "repository-index-clean-scan-byte-budget-exhausted",
+                    "cleanup integrity scanning exceeded its byte budget",
+                    "unscanned generations were deferred without modification",
+                ));
+                break;
+            };
+            if next_scanned_bytes > request.maximum_scan_bytes {
+                limitations.push(limitation(
+                    "repository-index-clean-scan-byte-budget-exhausted",
+                    "cleanup integrity scanning exceeded its byte budget",
+                    "unscanned generations were deferred without modification",
+                ));
+                break;
+            }
+            scanned_bytes = next_scanned_bytes;
+            match generation_is_invalid(
+                &candidate.path,
+                request.deadline.saturating_sub(started.elapsed()),
+            )? {
+                Some(invalid) => invalid,
+                None => {
+                    limitations.push(limitation(
+                        "repository-index-clean-deadline-exhausted",
+                        "cleanup exhausted its deadline during generation integrity validation",
+                        "the timed-out generation and remaining candidates were deferred",
+                    ));
+                    break;
+                }
+            }
+        } else {
+            false
+        };
         let retained = index < request.retain_generations;
         let select = if request.invalid_only {
             invalid
@@ -350,7 +414,6 @@ pub fn clean_repository_cache(
     }
     selected.sort_by(|left, right| left.key.cmp(&right.key));
 
-    let mut limitations = Vec::new();
     if !request.invalid_only && retained_bytes > request.maximum_bytes {
         limitations.push(limitation(
             "repository-index-clean-retention-prevents-target",
@@ -361,6 +424,14 @@ pub fn clean_repository_cache(
     if request.execute {
         let mut removed_any = false;
         for candidate in selected {
+            if started.elapsed() >= request.deadline {
+                limitations.push(limitation(
+                    "repository-index-clean-deadline-exhausted",
+                    "cleanup exhausted its deadline before processing every selected generation",
+                    "remaining generations were deferred without modification",
+                ));
+                break;
+            }
             let writer_lock = match acquire_writer_lock(layout, &candidate.key, Duration::ZERO) {
                 Ok(writer_lock) => writer_lock,
                 Err(error) if error.code == "writer-busy" => {
@@ -449,10 +520,14 @@ struct GenerationCandidate {
 
 fn generation_candidates(
     layout: &CacheLayout,
-) -> Result<Vec<GenerationCandidate>, CacheOperationError> {
+    maximum_generations: usize,
+    started: Instant,
+    deadline: Duration,
+    limitations: &mut Vec<IndexLimitation>,
+) -> Result<Option<Vec<GenerationCandidate>>, CacheOperationError> {
     let entries = match fs::read_dir(&layout.graphs_dir) {
         Ok(entries) => entries,
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Vec::new()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(Some(Vec::new())),
         Err(error) => {
             return Err(CacheOperationError::new(
                 "repository-index-clean-read-failed",
@@ -462,6 +537,14 @@ fn generation_candidates(
     };
     let mut candidates = Vec::new();
     for entry in entries {
+        if started.elapsed() >= deadline {
+            limitations.push(limitation(
+                "repository-index-clean-deadline-exhausted",
+                "cleanup exhausted its deadline while enumerating graph generations",
+                "no generation was selected from the incomplete candidate set",
+            ));
+            return Ok(None);
+        }
         let path = entry
             .map_err(|error| {
                 CacheOperationError::new(
@@ -488,6 +571,14 @@ fn generation_candidates(
         if !valid_sha256(key) {
             continue;
         }
+        if candidates.len() >= maximum_generations {
+            limitations.push(limitation(
+                "repository-index-clean-generation-budget-exhausted",
+                "cleanup found more graph generations than its scan budget allows",
+                "no generation was selected from the incomplete candidate set",
+            ));
+            return Ok(None);
+        }
         candidates.push(GenerationCandidate {
             key: key.to_string(),
             path,
@@ -495,10 +586,13 @@ fn generation_candidates(
             modified: metadata.modified().unwrap_or(SystemTime::UNIX_EPOCH),
         });
     }
-    Ok(candidates)
+    Ok(Some(candidates))
 }
 
-fn generation_is_invalid(path: &Path) -> Result<bool, CacheOperationError> {
+fn generation_is_invalid(
+    path: &Path,
+    deadline: Duration,
+) -> Result<Option<bool>, CacheOperationError> {
     let limits = ReaderLimits {
         maximum_database_bytes: MAXIMUM_DATABASE_BYTES,
         maximum_rows_per_query: 1,
@@ -508,12 +602,18 @@ fn generation_is_invalid(path: &Path) -> Result<bool, CacheOperationError> {
         match RepositoryGraphReader::read_identity_immutable(path, limits).map_err(graph_error)? {
             CacheLookup::Hit(identity) => identity,
             CacheLookup::Miss | CacheLookup::Stale { .. } | CacheLookup::Corrupt { .. } => {
-                return Ok(true)
+                return Ok(Some(true))
             }
         };
     match RepositoryGraphReader::open_immutable(path, &identity, limits).map_err(graph_error)? {
-        CacheLookup::Hit(reader) => Ok(reader.integrity_check().is_err()),
-        CacheLookup::Miss | CacheLookup::Stale { .. } | CacheLookup::Corrupt { .. } => Ok(true),
+        CacheLookup::Hit(reader) => match reader.integrity_check_bounded(deadline) {
+            Ok(()) => Ok(Some(false)),
+            Err(error) if error.code == "generation-integrity-deadline-exhausted" => Ok(None),
+            Err(_) => Ok(Some(true)),
+        },
+        CacheLookup::Miss | CacheLookup::Stale { .. } | CacheLookup::Corrupt { .. } => {
+            Ok(Some(true))
+        }
     }
 }
 
@@ -587,7 +687,24 @@ fn selected_generation_paths(
     if let Some(generation) = generation {
         return Ok(vec![layout.graphs_dir.join(format!("{generation}.sqlite"))]);
     }
-    Ok(generation_candidates(layout)?
+    let mut limitations = Vec::new();
+    let Some(candidates) = generation_candidates(
+        layout,
+        100_000,
+        Instant::now(),
+        Duration::from_secs(30),
+        &mut limitations,
+    )?
+    else {
+        return Err(CacheOperationError::new(
+            "repository-index-doctor-generation-budget-exhausted",
+            limitations
+                .first()
+                .map(|limitation| limitation.reason.clone())
+                .unwrap_or_else(|| "doctor could not enumerate bounded generations".to_string()),
+        ));
+    };
+    Ok(candidates
         .into_iter()
         .map(|candidate| candidate.path)
         .collect())

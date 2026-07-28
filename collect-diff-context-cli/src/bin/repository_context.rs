@@ -32,7 +32,7 @@ use std::time::{Duration, Instant};
 
 const HELP: &str = "Usage:\n  repository-context-cli collect --source <staged|unstaged|branch> --expect-scope <fingerprint> --mode <fast|deep> [options]\n  repository-context-cli index <build|doctor|inspect|clean> [options]\n";
 const COLLECT_HELP: &str = "Usage: repository-context-cli collect --source <staged|unstaged|branch> --expect-scope <fingerprint> --mode <fast|deep> [options]\n\nOptions:\n  --deadline-ms <positive bounded integer>\n  --max-changed-files <positive bounded integer>\n  --max-file-bytes <positive bounded integer>\n  --max-total-bytes <positive bounded integer>\n  --max-nodes <positive bounded integer>\n  --max-facts <positive bounded integer>\n  --max-edges <positive bounded integer>\n  --max-output-bytes <positive bounded integer>\n  -h, --help\n";
-const INDEX_HELP: &str = "Usage:\n  repository-context-cli index build --source <staged|unstaged|branch> --expect-scope <fingerprint> [index limits]\n  repository-context-cli index doctor [--cache-dir <absolute>] [--generation <digest>]\n  repository-context-cli index inspect --generation <digest> (--path <repo-path> | --symbol <id>) [--max-rows <n>]\n  repository-context-cli index clean [--dry-run|--execute] [--max-bytes <n>] [--retain-generations <n>] [--invalid]\n";
+const INDEX_HELP: &str = "Usage:\n  repository-context-cli index build --source <staged|unstaged|branch> --expect-scope <fingerprint> [index limits]\n  repository-context-cli index doctor [--cache-dir <absolute>] [--generation <digest>]\n  repository-context-cli index inspect --generation <digest> (--path <repo-path> | --symbol <id>) [--max-rows <n>]\n  repository-context-cli index clean [--dry-run|--execute] [--max-bytes <n>] [--retain-generations <n>] [--invalid] [--max-scan-generations <n>] [--max-scan-bytes <n>] [--timeout-ms <n>]\n";
 const INDEX_BUILD_HELP: &str = "Usage: repository-context-cli index build --source <staged|unstaged|branch> --expect-scope <fingerprint> [index limits]\n\nLimits may only lower the built-in Deep defaults.\n";
 
 #[derive(Debug)]
@@ -69,6 +69,9 @@ struct IndexCleanArgs {
     maximum_bytes: usize,
     retain_generations: usize,
     invalid_only: bool,
+    maximum_scan_generations: usize,
+    maximum_scan_bytes: usize,
+    deadline: Duration,
 }
 
 enum RepositoryContextCommand {
@@ -411,6 +414,9 @@ fn parse_index_clean(arguments: Vec<String>) -> Result<ParseOutcome, String> {
     let mut maximum_bytes = 2 * 1024 * 1024 * 1024usize;
     let mut retain_generations = 2usize;
     let mut invalid_only = false;
+    let mut maximum_scan_generations = 100_000usize;
+    let mut maximum_scan_bytes = 2 * 1024 * 1024 * 1024usize;
+    let mut timeout_millis = 30_000usize;
     let mut index = 0;
     while index < arguments.len() {
         match arguments[index].as_str() {
@@ -446,6 +452,15 @@ fn parse_index_clean(arguments: Vec<String>) -> Result<ParseOutcome, String> {
                             );
                         }
                     }
+                    "--max-scan-generations" => {
+                        maximum_scan_generations = parse_limit(flag, value, 100_000)?;
+                    }
+                    "--max-scan-bytes" => {
+                        maximum_scan_bytes = parse_limit(flag, value, 2 * 1024 * 1024 * 1024usize)?;
+                    }
+                    "--timeout-ms" => {
+                        timeout_millis = parse_limit(flag, value, 30_000)?;
+                    }
                     observed => return Err(format!("unsupported argument: {observed}")),
                 }
                 index += consumed;
@@ -458,6 +473,9 @@ fn parse_index_clean(arguments: Vec<String>) -> Result<ParseOutcome, String> {
             maximum_bytes,
             retain_generations,
             invalid_only,
+            maximum_scan_generations,
+            maximum_scan_bytes,
+            deadline: Duration::from_millis(timeout_millis as u64),
         },
     )))
 }
@@ -770,6 +788,9 @@ fn run_index_clean(arguments: IndexCleanArgs) -> i32 {
             maximum_bytes: arguments.maximum_bytes,
             retain_generations: arguments.retain_generations,
             invalid_only: arguments.invalid_only,
+            maximum_scan_generations: arguments.maximum_scan_generations,
+            maximum_scan_bytes: arguments.maximum_scan_bytes,
+            deadline: arguments.deadline,
         },
     ) {
         Ok(operation) => operation,

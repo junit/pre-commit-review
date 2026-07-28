@@ -498,6 +498,21 @@ fn immutable_reader_opens_with_query_only_and_creates_no_sidecars() {
 }
 
 #[test]
+fn immutable_reader_integrity_check_rejects_exhausted_deadline() {
+    let cache = tempfile::tempdir().unwrap();
+    let writer = RepositoryGraphWriter::new(layout(cache.path()));
+    let graph = graph();
+    let outcome = publish(&writer, &graph);
+    let reader = reader(outcome_path(&outcome), &graph.identity);
+
+    let error = reader
+        .integrity_check_bounded(std::time::Duration::ZERO)
+        .unwrap_err();
+
+    assert_eq!(error.code, "generation-integrity-deadline-exhausted");
+}
+
+#[test]
 fn reader_validates_identity_schema_counts_and_consumed_rows() {
     let cache = tempfile::tempdir().unwrap();
     let writer = RepositoryGraphWriter::new(layout(cache.path()));
