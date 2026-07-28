@@ -3,7 +3,7 @@ use crate::impact_context::cache::file_facts::{
     set_private_file_permissions, sync_directory, CacheLayout, CacheLookup,
 };
 use crate::impact_context::cache::integrity::{
-    canonical_graph_rows, graph_rows_root, CanonicalGraphRows,
+    canonical_graph_rows, graph_rows_root, CanonicalGraphRows, GraphRowsRootHasher,
 };
 use crate::impact_context::cache::locking::acquire_writer_lock;
 use crate::impact_context::contracts::{
@@ -355,6 +355,64 @@ impl RepositoryGraphReader {
     }
 
     pub fn integrity_check(&self) -> Result<(), RepositoryGraphError> {
+        let meta: (String, String, i64, i64, i64, i64, i64, String) = self
+            .connection
+            .query_row(
+                "SELECT identity_json, completeness, file_count, module_count,
+                        symbol_count, edge_count, limitation_count, application_root
+                 FROM generation_meta",
+                [],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                        row.get(5)?,
+                        row.get(6)?,
+                        row.get(7)?,
+                    ))
+                },
+            )
+            .map_err(sqlite_error)?;
+        let counts = [meta.2, meta.3, meta.4, meta.5, meta.6]
+            .map(usize_from_sql)
+            .into_iter()
+            .collect::<Result<Vec<_>, _>>()?;
+        let mut root = GraphRowsRootHasher::new(&meta.0, &meta.1);
+        for (count, sql) in counts.into_iter().zip([
+            "SELECT canonical_json FROM files ORDER BY path",
+            "SELECT canonical_json FROM modules ORDER BY module_id",
+            "SELECT canonical_json FROM symbols ORDER BY symbol_id",
+            "SELECT canonical_json FROM edges ORDER BY edge_id",
+            "SELECT canonical_json FROM limitations ORDER BY sort_order",
+        ]) {
+            hash_canonical_rows(
+                &self.connection,
+                &mut root,
+                count,
+                sql,
+                self.limits.maximum_string_bytes.saturating_mul(16),
+            )?;
+        }
+        if root.finish() != meta.7 {
+            return Err(invalid_generation("generation-application-root-mismatch"));
+        }
+        validate_canonical_row_columns(&self.connection)?;
+        let mut foreign_keys = self
+            .connection
+            .prepare("PRAGMA foreign_key_check")
+            .map_err(sqlite_error)?;
+        if foreign_keys
+            .query([])
+            .map_err(sqlite_error)?
+            .next()
+            .map_err(sqlite_error)?
+            .is_some()
+        {
+            return Err(invalid_generation("generation-foreign-key-mismatch"));
+        }
         let result: String = self
             .connection
             .query_row("PRAGMA integrity_check", [], |row| row.get(0))
@@ -540,6 +598,150 @@ impl RepositoryGraphReader {
             ));
         }
         Ok(())
+    }
+}
+
+fn hash_canonical_rows(
+    connection: &Connection,
+    root: &mut GraphRowsRootHasher,
+    expected_rows: usize,
+    sql: &'static str,
+    maximum_string_bytes: usize,
+) -> Result<(), RepositoryGraphError> {
+    root.start_group(expected_rows);
+    let mut statement = connection.prepare(sql).map_err(sqlite_error)?;
+    let mut rows = statement.query([]).map_err(sqlite_error)?;
+    let mut observed_rows = 0usize;
+    while let Some(row) = rows.next().map_err(sqlite_error)? {
+        let canonical = row_text(row, 0, maximum_string_bytes)?;
+        root.push_row(&canonical);
+        observed_rows = observed_rows
+            .checked_add(1)
+            .ok_or_else(|| invalid_generation("generation-count-overflow"))?;
+    }
+    if observed_rows != expected_rows {
+        return Err(invalid_generation("generation-count-mismatch"));
+    }
+    Ok(())
+}
+
+fn validate_canonical_row_columns(connection: &Connection) -> Result<(), RepositoryGraphError> {
+    for sql in [
+        "SELECT EXISTS(SELECT 1 FROM files WHERE json_valid(canonical_json) = 0)",
+        "SELECT EXISTS(SELECT 1 FROM modules WHERE json_valid(canonical_json) = 0)",
+        "SELECT EXISTS(SELECT 1 FROM symbols WHERE json_valid(canonical_json) = 0)",
+        "SELECT EXISTS(SELECT 1 FROM edges WHERE json_valid(canonical_json) = 0)",
+        "SELECT EXISTS(SELECT 1 FROM limitations WHERE json_valid(canonical_json) = 0)",
+        "SELECT EXISTS(SELECT 1 FROM files WHERE file_fact_key_json IS NOT NULL AND json_valid(file_fact_key_json) = 0)",
+    ] {
+        if query_exists(connection, sql)? {
+            return Err(row_corrupt());
+        }
+    }
+
+    for sql in [
+        "SELECT EXISTS(SELECT 1 FROM files WHERE
+            json_extract(canonical_json, '$.path') IS NOT path OR
+            json_extract(canonical_json, '$.mode') IS NOT mode OR
+            json_extract(canonical_json, '$.presence') IS NOT presence OR
+            json_extract(canonical_json, '$.content_sha256') IS NOT content_sha256 OR
+            CASE WHEN file_fact_key_json IS NULL
+                THEN json_type(canonical_json, '$.file_fact_key') IS NOT 'null'
+                ELSE json(file_fact_key_json) IS NOT json_extract(canonical_json, '$.file_fact_key')
+            END OR
+            json_extract(canonical_json, '$.language') IS NOT language OR
+            json_extract(canonical_json, '$.module_id') IS NOT module_id)",
+        "SELECT EXISTS(SELECT 1 FROM modules WHERE
+            json_extract(canonical_json, '$.module_id') IS NOT module_id OR
+            json_extract(canonical_json, '$.parent_module_id') IS NOT parent_module_id OR
+            json_extract(canonical_json, '$.crate_name') IS NOT crate_name OR
+            json_extract(canonical_json, '$.path') IS NOT path OR
+            json_extract(canonical_json, '$.inline') IS NOT inline OR
+            json_extract(canonical_json, '$.root_module') IS NOT root_module OR
+            json_extract(canonical_json, '$.resolution_status') IS NOT resolution_status)",
+        "SELECT EXISTS(SELECT 1 FROM symbols WHERE
+            json_extract(canonical_json, '$.symbol_id') IS NOT symbol_id OR
+            json_extract(canonical_json, '$.local_id') IS NOT local_id OR
+            json_extract(canonical_json, '$.module_id') IS NOT module_id OR
+            json_extract(canonical_json, '$.path') IS NOT path OR
+            json_extract(canonical_json, '$.language') IS NOT language OR
+            json_extract(canonical_json, '$.kind') IS NOT kind OR
+            json_extract(canonical_json, '$.name') IS NOT name OR
+            json_extract(canonical_json, '$.owner_symbol_id') IS NOT owner_symbol_id OR
+            json_extract(canonical_json, '$.signature') IS NOT signature OR
+            json_extract(canonical_json, '$.visibility') IS NOT visibility OR
+            json_extract(canonical_json, '$.range.start_line') IS NOT start_line OR
+            json_extract(canonical_json, '$.range.start_column') IS NOT start_column OR
+            json_extract(canonical_json, '$.range.end_line') IS NOT end_line OR
+            json_extract(canonical_json, '$.range.end_column') IS NOT end_column OR
+            json_extract(canonical_json, '$.range.start_byte') IS NOT start_byte OR
+            json_extract(canonical_json, '$.range.end_byte') IS NOT end_byte OR
+            json_extract(canonical_json, '$.confidence') IS NOT confidence)",
+        "SELECT EXISTS(SELECT 1 FROM edges WHERE
+            json_extract(canonical_json, '$.edge_id') IS NOT edge_id OR
+            json_extract(canonical_json, '$.kind') IS NOT kind OR
+            json_extract(canonical_json, '$.from_symbol') IS NOT from_symbol OR
+            json_extract(canonical_json, '$.to_symbol') IS NOT to_symbol OR
+            json_extract(canonical_json, '$.unresolved_target') IS NOT unresolved_target OR
+            json_extract(canonical_json, '$.path') IS NOT path OR
+            json_extract(canonical_json, '$.range.start_line') IS NOT start_line OR
+            json_extract(canonical_json, '$.range.start_column') IS NOT start_column OR
+            json_extract(canonical_json, '$.range.end_line') IS NOT end_line OR
+            json_extract(canonical_json, '$.range.end_column') IS NOT end_column OR
+            json_extract(canonical_json, '$.range.start_byte') IS NOT start_byte OR
+            json_extract(canonical_json, '$.range.end_byte') IS NOT end_byte OR
+            json_extract(canonical_json, '$.provider_id') IS NOT provider_id OR
+            json_extract(canonical_json, '$.provider_version') IS NOT provider_version OR
+            json_extract(canonical_json, '$.resolution') IS NOT resolution OR
+            json_extract(canonical_json, '$.confidence') IS NOT confidence OR
+            json_extract(canonical_json, '$.limitation_code') IS NOT limitation_code)",
+        "SELECT EXISTS(SELECT 1 FROM limitations WHERE
+            json_extract(canonical_json, '$.code') IS NOT code OR
+            json_extract(canonical_json, '$.path') IS NOT path OR
+            json_extract(canonical_json, '$.symbol_id') IS NOT symbol_id OR
+            json_extract(canonical_json, '$.reason') IS NOT reason OR
+            json_extract(canonical_json, '$.interpretation') IS NOT interpretation)",
+    ] {
+        if query_exists(connection, sql)? {
+            return Err(row_corrupt());
+        }
+    }
+    validate_limitation_row_ids(connection)
+}
+
+fn validate_limitation_row_ids(connection: &Connection) -> Result<(), RepositoryGraphError> {
+    let mut statement = connection
+        .prepare(
+            "SELECT limitation_id, sort_order, canonical_json
+             FROM limitations ORDER BY sort_order",
+        )
+        .map_err(sqlite_error)?;
+    let mut rows = statement.query([]).map_err(sqlite_error)?;
+    let mut expected_order = 0usize;
+    while let Some(row) = rows.next().map_err(sqlite_error)? {
+        let observed_id = row_text(row, 0, 64)?;
+        let observed_order = row_usize(row, 1)?;
+        let canonical = row_text(row, 2, 64 * 1024)?;
+        if observed_order != expected_order
+            || observed_id != limitation_id(expected_order, &canonical)
+        {
+            return Err(row_corrupt());
+        }
+        expected_order = expected_order
+            .checked_add(1)
+            .ok_or_else(|| invalid_generation("generation-count-overflow"))?;
+    }
+    Ok(())
+}
+
+fn query_exists(connection: &Connection, sql: &'static str) -> Result<bool, RepositoryGraphError> {
+    let value: i64 = connection
+        .query_row(sql, [], |row| row.get(0))
+        .map_err(sqlite_error)?;
+    match value {
+        0 => Ok(false),
+        1 => Ok(true),
+        _ => Err(row_corrupt()),
     }
 }
 

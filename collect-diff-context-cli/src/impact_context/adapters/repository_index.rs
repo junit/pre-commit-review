@@ -809,11 +809,15 @@ fn impact_limitations(provider_id: &str, limitations: &[IndexLimitation]) -> Vec
     let mut output = limitations
         .iter()
         .map(|limitation| {
+            let path = limitation.path.as_ref().map(RepoPath::as_str).unwrap_or("");
+            let symbol_id = limitation.symbol_id.as_deref().unwrap_or("");
             let limitation_id = stable_id(
                 "impact-limitation/v1",
                 &[
                     limitation.code.as_str(),
                     provider_id,
+                    path,
+                    symbol_id,
                     limitation.reason.as_str(),
                     limitation.interpretation.as_str(),
                 ],
@@ -822,8 +826,11 @@ fn impact_limitations(provider_id: &str, limitations: &[IndexLimitation]) -> Vec
                 limitation_id,
                 code: limitation.code.clone(),
                 provider_id: Some(provider_id.to_string()),
-                path: None,
-                symbol_id: None,
+                path: limitation
+                    .path
+                    .as_ref()
+                    .map(|path| path.as_str().to_string()),
+                symbol_id: limitation.symbol_id.clone(),
                 reason: limitation.reason.clone(),
                 interpretation: limitation.interpretation.clone(),
                 improvable_in_deep_mode: true,

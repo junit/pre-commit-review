@@ -616,6 +616,11 @@ impl ImpactContext {
                 MAX_MESSAGE_CHARS,
                 "limitation interpretation",
             )?;
+            let repository_scoped = limitation
+                .provider_id
+                .as_deref()
+                .and_then(|provider_id| providers.get(provider_id))
+                .is_some_and(|provider| provider.provider_kind == "repository-index");
             if let Some(provider_id) = &limitation.provider_id {
                 if !providers.contains_key(provider_id.as_str()) {
                     return invalid("limitation references an unknown provider");
@@ -623,12 +628,13 @@ impl ImpactContext {
             }
             if let Some(path) = &limitation.path {
                 validate_path(path)?;
-                if !units.contains_key(path.as_str()) {
+                if !units.contains_key(path.as_str()) && !repository_scoped {
                     return invalid("limitation path has no impact unit");
                 }
             }
             if let Some(symbol_id) = &limitation.symbol_id {
-                if !symbols.contains_key(symbol_id.as_str()) {
+                validate_id(symbol_id, "limitation symbol id")?;
+                if !symbols.contains_key(symbol_id.as_str()) && !repository_scoped {
                     return invalid("limitation references an unknown symbol");
                 }
             }

@@ -415,6 +415,32 @@ fn index_clean_defaults_to_dry_run_and_stays_inside_repository_namespace(
 }
 
 #[test]
+fn index_clean_invalid_removes_generation_with_corrupt_graph_rows() -> Result<(), Box<dyn Error>> {
+    let repo = rust_repository()?;
+    let cache = tempfile::tempdir()?;
+    let built = build_index(&repo, cache.path())?;
+    let generation_path = generation_path(cache.path(), &built);
+    let connection = Connection::open(&generation_path)?;
+    let updated = connection.execute(
+        "UPDATE edges SET kind = 'invalid-kind' WHERE edge_id = (SELECT edge_id FROM edges ORDER BY edge_id LIMIT 1)",
+        [],
+    )?;
+    assert_eq!(updated, 1);
+    drop(connection);
+
+    let output = repository_context(
+        &repo,
+        cache.path(),
+        &["index", "clean", "--invalid", "--execute"],
+    )?;
+    let report = parse_report(&output)?;
+
+    assert_eq!(report.status, IndexReportStatus::Completed);
+    assert!(!generation_path.exists());
+    Ok(())
+}
+
+#[test]
 fn index_clean_defers_in_use_windows_generations() -> Result<(), Box<dyn Error>> {
     let repo = rust_repository()?;
     let cache = tempfile::tempdir()?;

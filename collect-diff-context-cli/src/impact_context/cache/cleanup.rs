@@ -442,10 +442,17 @@ fn generation_is_invalid(path: &Path) -> Result<bool, CacheOperationError> {
         maximum_rows_per_query: 1,
         maximum_string_bytes: MAXIMUM_STRING_BYTES,
     };
-    Ok(!matches!(
-        RepositoryGraphReader::read_identity_immutable(path, limits).map_err(graph_error)?,
-        CacheLookup::Hit(_)
-    ))
+    let identity =
+        match RepositoryGraphReader::read_identity_immutable(path, limits).map_err(graph_error)? {
+            CacheLookup::Hit(identity) => identity,
+            CacheLookup::Miss | CacheLookup::Stale { .. } | CacheLookup::Corrupt { .. } => {
+                return Ok(true)
+            }
+        };
+    match RepositoryGraphReader::open_immutable(path, &identity, limits).map_err(graph_error)? {
+        CacheLookup::Hit(reader) => Ok(reader.integrity_check().is_err()),
+        CacheLookup::Miss | CacheLookup::Stale { .. } | CacheLookup::Corrupt { .. } => Ok(true),
+    }
 }
 
 fn valid_sha256(value: &str) -> bool {

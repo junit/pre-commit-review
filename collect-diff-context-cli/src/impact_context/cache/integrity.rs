@@ -50,10 +50,7 @@ pub(crate) fn canonical_graph_rows(graph: &RepositoryGraph) -> Result<CanonicalG
 }
 
 pub(crate) fn graph_rows_root(rows: &CanonicalGraphRows) -> String {
-    let mut digest = Sha256::new();
-    hash_component(&mut digest, b"repository-graph-application-root/v1");
-    hash_component(&mut digest, rows.identity.as_bytes());
-    hash_component(&mut digest, rows.completeness.as_bytes());
+    let mut digest = GraphRowsRootHasher::new(&rows.identity, &rows.completeness);
     for group in [
         &rows.files,
         &rows.modules,
@@ -61,12 +58,38 @@ pub(crate) fn graph_rows_root(rows: &CanonicalGraphRows) -> String {
         &rows.edges,
         &rows.limitations,
     ] {
-        hash_component(&mut digest, &(group.len() as u64).to_be_bytes());
+        digest.start_group(group.len());
         for row in group {
-            hash_component(&mut digest, row.as_bytes());
+            digest.push_row(row);
         }
     }
-    format!("{:x}", digest.finalize())
+    digest.finish()
+}
+
+pub(crate) struct GraphRowsRootHasher {
+    digest: Sha256,
+}
+
+impl GraphRowsRootHasher {
+    pub(crate) fn new(identity: &str, completeness: &str) -> Self {
+        let mut digest = Sha256::new();
+        hash_component(&mut digest, b"repository-graph-application-root/v1");
+        hash_component(&mut digest, identity.as_bytes());
+        hash_component(&mut digest, completeness.as_bytes());
+        Self { digest }
+    }
+
+    pub(crate) fn start_group(&mut self, row_count: usize) {
+        hash_component(&mut self.digest, &(row_count as u64).to_be_bytes());
+    }
+
+    pub(crate) fn push_row(&mut self, canonical_row: &str) {
+        hash_component(&mut self.digest, canonical_row.as_bytes());
+    }
+
+    pub(crate) fn finish(self) -> String {
+        format!("{:x}", self.digest.finalize())
+    }
 }
 
 fn serialize_rows<T: serde::Serialize>(rows: &[T]) -> Result<Vec<String>, String> {

@@ -608,6 +608,47 @@ fn repository_index_provider_reports_hits_misses_stale_corrupt_and_limitations()
 }
 
 #[test]
+fn repository_index_limitations_preserve_affected_paths() {
+    let cache = tempfile::tempdir().unwrap();
+    let layout = cache_layout(cache.path());
+    let candidate = MemoryCandidate::changed_auth();
+    let mut source = MemoryManifestSource::partial();
+    source.manifest.limitations.push(IndexLimitation {
+        code: "fixture-manifest-partial".to_string(),
+        path: Some(repo_path("src/api.rs")),
+        symbol_id: None,
+        reason: "fixture omits an external workspace member".to_string(),
+        interpretation: "the repository index is intentionally partial".to_string(),
+    });
+    source.manifest.limitations.sort_by(|left, right| {
+        left.path
+            .as_ref()
+            .map(RepoPath::as_str)
+            .cmp(&right.path.as_ref().map(RepoPath::as_str))
+    });
+
+    let runtime = RepositoryIndexRuntime {
+        manifest_source: &source,
+        cache_layout: layout,
+    };
+    let context = build_impact_context_with_repository_index(
+        &candidate,
+        ImpactRequest::deep_defaults(),
+        Some(runtime),
+    )
+    .unwrap();
+    let mut affected_paths = context
+        .limitations
+        .iter()
+        .filter(|limitation| limitation.code == "fixture-manifest-partial")
+        .filter_map(|limitation| limitation.path.as_deref())
+        .collect::<Vec<_>>();
+    affected_paths.sort_unstable();
+
+    assert_eq!(affected_paths, ["src/api.rs", "src/auth.rs"]);
+}
+
+#[test]
 fn heuristic_edges_never_become_semantic_or_high_confidence() {
     let cache = tempfile::tempdir().unwrap();
     let layout = cache_layout(cache.path());
