@@ -1,0 +1,157 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "repository-context-provider-report.schema.json",
+  "title": "RepositoryContextProviderReport",
+  "type": "object",
+  "required": ["schema_version", "kind", "candidate", "provider", "status", "index_completeness", "query_completeness", "seed_symbols", "related_symbols", "edges", "limitations", "isolation", "metrics"],
+  "properties": {
+    "schema_version": { "type": "integer", "const": 1 },
+    "kind": { "type": "string", "const": "repository_context_provider_report" },
+    "candidate": { "$ref": "#/$defs/candidate" },
+    "provider": { "$ref": "#/$defs/provider" },
+    "status": { "type": "string", "enum": ["completed", "partial", "unavailable", "timeout", "invalid-output", "failed"] },
+    "index_completeness": { "type": "string", "const": "unknown" },
+    "query_completeness": { "type": "string", "enum": ["complete", "partial", "unavailable", "unknown"] },
+    "seed_symbols": { "type": "array", "maxItems": 64, "uniqueItems": true, "items": { "$ref": "#/$defs/seedSymbol" } },
+    "related_symbols": { "type": "array", "maxItems": 5000, "uniqueItems": true, "items": { "$ref": "#/$defs/contextSymbol" } },
+    "edges": { "type": "array", "maxItems": 10000, "uniqueItems": true, "items": { "$ref": "#/$defs/edge" } },
+    "limitations": { "type": "array", "maxItems": 1000, "uniqueItems": true, "items": { "$ref": "#/$defs/limitation" } },
+    "isolation": { "$ref": "#/$defs/isolation" },
+    "metrics": { "$ref": "#/$defs/metrics" }
+  },
+  "$defs": {
+    "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "identifier": { "type": "string", "minLength": 1, "maxLength": 256, "pattern": "^[A-Za-z0-9_.:-]+$" },
+    "relativePath": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 4096,
+      "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.?(?:/|$))(?!.*//)(?!.*\\\\)(?!.*:)(?!.*\/$).+$"
+    },
+    "candidate": {
+      "type": "object",
+      "required": ["source", "scope_fingerprint", "candidate_digest", "snapshot_sha256", "snapshot_files", "snapshot_bytes", "project_model_digest"],
+      "properties": {
+        "source": { "type": "string", "enum": ["staged", "unstaged", "branch"] },
+        "scope_fingerprint": { "$ref": "#/$defs/sha256" },
+        "candidate_digest": { "$ref": "#/$defs/sha256" },
+        "snapshot_sha256": { "$ref": "#/$defs/sha256" },
+        "snapshot_files": { "type": "integer", "minimum": 1 },
+        "snapshot_bytes": { "type": "integer", "minimum": 0, "maximum": 67108864 },
+        "project_model_digest": { "$ref": "#/$defs/sha256" }
+      },
+      "additionalProperties": false
+    },
+    "provider": {
+      "type": "object",
+      "required": ["kind", "version", "profile_sha256", "executable_sha256", "configuration_sha256", "target_triple", "toolchain_mode", "project_model_algorithm", "negotiated_encoding"],
+      "properties": {
+        "kind": { "type": "string", "const": "rust-analyzer" },
+        "version": { "type": "string", "minLength": 1, "maxLength": 100 },
+        "profile_sha256": { "$ref": "#/$defs/sha256" },
+        "executable_sha256": { "$ref": "#/$defs/sha256" },
+        "configuration_sha256": { "$ref": "#/$defs/sha256" },
+        "target_triple": { "type": "string", "minLength": 1, "maxLength": 256, "pattern": "^[A-Za-z0-9_.-]+$" },
+        "toolchain_mode": { "type": "string", "const": "none" },
+        "project_model_algorithm": { "type": "string", "const": "rust-analyzer-linked-project-v1" },
+        "negotiated_encoding": { "type": ["string", "null"], "enum": ["utf-8", "utf-16", null] }
+      },
+      "additionalProperties": false
+    },
+    "range": {
+      "type": "object",
+      "required": ["format", "start_line", "start_column", "end_line", "end_column", "start_byte", "end_byte"],
+      "properties": {
+        "format": { "type": "string", "const": "provider-source-range-v1/utf8-byte-columns/end-exclusive" },
+        "start_line": { "type": "integer", "minimum": 1, "maximum": 4294967295 },
+        "start_column": { "type": "integer", "minimum": 1, "maximum": 4294967295 },
+        "end_line": { "type": "integer", "minimum": 1, "maximum": 4294967295 },
+        "end_column": { "type": "integer", "minimum": 1, "maximum": 4294967295 },
+        "start_byte": { "type": "integer", "minimum": 0, "maximum": 4194303 },
+        "end_byte": { "type": "integer", "minimum": 1, "maximum": 4194304 }
+      },
+      "additionalProperties": false
+    },
+    "contextSymbol": {
+      "type": "object",
+      "required": ["symbol_id", "path", "kind", "name", "symbol_range", "selection_range"],
+      "properties": {
+        "symbol_id": { "$ref": "#/$defs/sha256" },
+        "path": { "$ref": "#/$defs/relativePath" },
+        "kind": { "type": "string", "enum": ["function", "method", "associated-function", "function-declaration", "method-declaration", "associated-function-declaration"] },
+        "name": { "type": "string", "minLength": 1, "maxLength": 1024, "pattern": "^[^\\r\\n]*$" },
+        "symbol_range": { "$ref": "#/$defs/range" },
+        "selection_range": { "$ref": "#/$defs/range" }
+      },
+      "additionalProperties": false
+    },
+    "seedSymbol": {
+      "type": "object",
+      "required": ["changed_symbol_id", "symbol"],
+      "properties": {
+        "changed_symbol_id": { "$ref": "#/$defs/sha256" },
+        "symbol": { "$ref": "#/$defs/contextSymbol" }
+      },
+      "additionalProperties": false
+    },
+    "edge": {
+      "type": "object",
+      "required": ["edge_id", "from_symbol", "to_symbol", "call_site_path", "call_site_range", "kind", "resolution", "confidence", "provider_id", "provider_version"],
+      "properties": {
+        "edge_id": { "$ref": "#/$defs/sha256" },
+        "from_symbol": { "$ref": "#/$defs/sha256" },
+        "to_symbol": { "$ref": "#/$defs/sha256" },
+        "call_site_path": { "$ref": "#/$defs/relativePath" },
+        "call_site_range": { "$ref": "#/$defs/range" },
+        "kind": { "type": "string", "const": "calls" },
+        "resolution": { "type": "string", "const": "semantic" },
+        "confidence": { "type": "string", "const": "high" },
+        "provider_id": { "type": "string", "const": "rust-analyzer" },
+        "provider_version": { "type": "string", "minLength": 1, "maxLength": 100 }
+      },
+      "additionalProperties": false
+    },
+    "limitation": {
+      "type": "object",
+      "required": ["code", "message", "changed_symbol_id", "path"],
+      "properties": {
+        "code": { "$ref": "#/$defs/identifier" },
+        "message": { "type": "string", "minLength": 1, "maxLength": 4096, "pattern": "^[^\\r\\n]*$" },
+        "changed_symbol_id": { "anyOf": [{ "$ref": "#/$defs/sha256" }, { "type": "null" }] },
+        "path": { "anyOf": [{ "$ref": "#/$defs/relativePath" }, { "type": "null" }] }
+      },
+      "additionalProperties": false
+    },
+    "isolation": {
+      "type": "object",
+      "required": ["network", "shell_enabled", "original_repository_access"],
+      "properties": {
+        "network": { "type": "string", "const": "best-effort-offline" },
+        "shell_enabled": { "type": "boolean", "const": false },
+        "original_repository_access": { "type": "boolean", "const": false }
+      },
+      "additionalProperties": false
+    },
+    "metrics": {
+      "type": "object",
+      "required": ["requests", "messages", "notifications", "server_requests", "invalid_messages", "call_ranges", "protocol_bytes", "stderr_bytes", "source_bytes", "nodes", "edges", "report_bytes", "elapsed_ms"],
+      "properties": {
+        "requests": { "type": "integer", "minimum": 0, "maximum": 512 },
+        "messages": { "type": "integer", "minimum": 0, "maximum": 2048 },
+        "notifications": { "type": "integer", "minimum": 0, "maximum": 512 },
+        "server_requests": { "type": "integer", "minimum": 0, "maximum": 128 },
+        "invalid_messages": { "type": "integer", "minimum": 0, "maximum": 32 },
+        "call_ranges": { "type": "integer", "minimum": 0, "maximum": 1000 },
+        "protocol_bytes": { "type": "integer", "minimum": 0, "maximum": 67108864 },
+        "stderr_bytes": { "type": "integer", "minimum": 0, "maximum": 1048576 },
+        "source_bytes": { "type": "integer", "minimum": 0, "maximum": 67108864 },
+        "nodes": { "type": "integer", "minimum": 0, "maximum": 5000 },
+        "edges": { "type": "integer", "minimum": 0, "maximum": 10000 },
+        "report_bytes": { "type": "integer", "minimum": 0, "maximum": 16777216 },
+        "elapsed_ms": { "type": "integer", "minimum": 0, "maximum": 30000 }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

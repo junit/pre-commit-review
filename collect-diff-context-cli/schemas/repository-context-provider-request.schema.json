@@ -1,0 +1,130 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "repository-context-provider-request.schema.json",
+  "title": "RepositoryContextProviderRequest",
+  "type": "object",
+  "required": ["schema_version", "kind", "candidate", "provider", "seeds", "directions", "limits"],
+  "properties": {
+    "schema_version": { "type": "integer", "const": 1 },
+    "kind": { "type": "string", "const": "repository_context_provider_request" },
+    "candidate": { "$ref": "#/$defs/candidate" },
+    "provider": { "$ref": "#/$defs/provider" },
+    "seeds": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 64,
+      "uniqueItems": true,
+      "items": { "$ref": "#/$defs/seed" }
+    },
+    "directions": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 2,
+      "uniqueItems": true,
+      "items": { "type": "string", "enum": ["incoming", "outgoing"] }
+    },
+    "limits": { "$ref": "#/$defs/limits" }
+  },
+  "$defs": {
+    "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "absolutePath": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 4096,
+      "pattern": "^(?:/|[A-Za-z]:[\\\\/])"
+    },
+    "relativePath": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 4096,
+      "pattern": "^(?!/)(?!.*(?:^|/)\\.\\.?(?:/|$))(?!.*//)(?!.*\\\\)(?!.*:)(?!.*\/$).+$"
+    },
+    "candidate": {
+      "type": "object",
+      "required": ["source", "scope_fingerprint", "candidate_digest", "snapshot_root", "snapshot_sha256", "snapshot_files", "snapshot_bytes", "project_model_digest"],
+      "properties": {
+        "source": { "type": "string", "enum": ["staged", "unstaged", "branch"] },
+        "scope_fingerprint": { "$ref": "#/$defs/sha256" },
+        "candidate_digest": { "$ref": "#/$defs/sha256" },
+        "snapshot_root": { "$ref": "#/$defs/absolutePath" },
+        "snapshot_sha256": { "$ref": "#/$defs/sha256" },
+        "snapshot_files": { "type": "integer", "minimum": 1 },
+        "snapshot_bytes": { "type": "integer", "minimum": 0, "maximum": 67108864 },
+        "project_model_digest": { "$ref": "#/$defs/sha256" }
+      },
+      "additionalProperties": false
+    },
+    "provider": {
+      "type": "object",
+      "required": ["kind", "version", "profile_path", "profile_sha256", "executable_path", "executable_sha256", "configuration_sha256", "target_triple", "toolchain_mode"],
+      "properties": {
+        "kind": { "type": "string", "const": "rust-analyzer" },
+        "version": { "type": "string", "minLength": 1, "maxLength": 100 },
+        "profile_path": { "$ref": "#/$defs/absolutePath" },
+        "profile_sha256": { "$ref": "#/$defs/sha256" },
+        "executable_path": { "$ref": "#/$defs/absolutePath" },
+        "executable_sha256": { "$ref": "#/$defs/sha256" },
+        "configuration_sha256": { "$ref": "#/$defs/sha256" },
+        "target_triple": { "type": "string", "minLength": 1, "maxLength": 256, "pattern": "^[A-Za-z0-9_.-]+$" },
+        "toolchain_mode": { "type": "string", "const": "none" }
+      },
+      "additionalProperties": false
+    },
+    "range": {
+      "type": "object",
+      "required": ["format", "start_line", "start_column", "end_line", "end_column", "start_byte", "end_byte"],
+      "properties": {
+        "format": { "type": "string", "const": "provider-source-range-v1/utf8-byte-columns/end-exclusive" },
+        "start_line": { "type": "integer", "minimum": 1, "maximum": 4294967295 },
+        "start_column": { "type": "integer", "minimum": 1, "maximum": 4294967295 },
+        "end_line": { "type": "integer", "minimum": 1, "maximum": 4294967295 },
+        "end_column": { "type": "integer", "minimum": 1, "maximum": 4294967295 },
+        "start_byte": { "type": "integer", "minimum": 0, "maximum": 4194303 },
+        "end_byte": { "type": "integer", "minimum": 1, "maximum": 4194304 }
+      },
+      "additionalProperties": false
+    },
+    "seed": {
+      "type": "object",
+      "required": ["changed_symbol_id", "path", "kind", "name", "symbol_range", "selection_range", "query_byte"],
+      "properties": {
+        "changed_symbol_id": { "$ref": "#/$defs/sha256" },
+        "path": { "$ref": "#/$defs/relativePath" },
+        "kind": { "type": "string", "enum": ["function", "method", "associated-function", "function-declaration", "method-declaration", "associated-function-declaration"] },
+        "name": { "type": "string", "minLength": 1, "maxLength": 1024, "pattern": "^[^\\r\\n]*$" },
+        "symbol_range": { "$ref": "#/$defs/range" },
+        "selection_range": { "$ref": "#/$defs/range" },
+        "query_byte": { "type": "integer", "minimum": 0, "maximum": 4194303 }
+      },
+      "additionalProperties": false
+    },
+    "limits": {
+      "type": "object",
+      "required": ["deadline_ms", "max_depth", "max_seeds", "max_requests", "max_pending_requests", "max_messages", "max_notifications", "max_server_requests", "max_invalid_messages", "max_call_ranges", "max_header_bytes", "max_frame_bytes", "max_protocol_bytes", "max_stderr_bytes", "max_total_output_bytes", "max_source_file_bytes", "max_source_bytes", "max_nodes", "max_edges", "max_report_bytes"],
+      "properties": {
+        "deadline_ms": { "type": "integer", "minimum": 1, "maximum": 30000 },
+        "max_depth": { "type": "integer", "minimum": 1, "maximum": 2 },
+        "max_seeds": { "type": "integer", "minimum": 1, "maximum": 64 },
+        "max_requests": { "type": "integer", "minimum": 1, "maximum": 512 },
+        "max_pending_requests": { "type": "integer", "minimum": 1, "maximum": 1 },
+        "max_messages": { "type": "integer", "minimum": 1, "maximum": 2048 },
+        "max_notifications": { "type": "integer", "minimum": 1, "maximum": 512 },
+        "max_server_requests": { "type": "integer", "minimum": 1, "maximum": 128 },
+        "max_invalid_messages": { "type": "integer", "minimum": 1, "maximum": 32 },
+        "max_call_ranges": { "type": "integer", "minimum": 1, "maximum": 1000 },
+        "max_header_bytes": { "type": "integer", "minimum": 1, "maximum": 16384 },
+        "max_frame_bytes": { "type": "integer", "minimum": 1, "maximum": 4194304 },
+        "max_protocol_bytes": { "type": "integer", "minimum": 1, "maximum": 67108864 },
+        "max_stderr_bytes": { "type": "integer", "minimum": 1, "maximum": 1048576 },
+        "max_total_output_bytes": { "type": "integer", "minimum": 1, "maximum": 68157440 },
+        "max_source_file_bytes": { "type": "integer", "minimum": 1, "maximum": 4194304 },
+        "max_source_bytes": { "type": "integer", "minimum": 1, "maximum": 67108864 },
+        "max_nodes": { "type": "integer", "minimum": 1, "maximum": 5000 },
+        "max_edges": { "type": "integer", "minimum": 1, "maximum": 10000 },
+        "max_report_bytes": { "type": "integer", "minimum": 1, "maximum": 16777216 }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

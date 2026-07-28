@@ -1,0 +1,67 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "repository-context-provider-profile.schema.json",
+  "title": "AuthorizedProviderProfile",
+  "type": "object",
+  "required": ["schema_version", "kind", "provider_kind", "provider_version", "executable_sha256", "configuration_sha256", "target_triple", "toolchain_mode", "arguments", "hardening", "maximum_limits"],
+  "properties": {
+    "schema_version": { "type": "integer", "const": 1 },
+    "kind": { "type": "string", "const": "repository_context_provider_profile" },
+    "provider_kind": { "type": "string", "const": "rust-analyzer" },
+    "provider_version": { "type": "string", "minLength": 1, "maxLength": 100 },
+    "executable_sha256": { "$ref": "#/$defs/sha256" },
+    "configuration_sha256": { "$ref": "#/$defs/sha256" },
+    "target_triple": { "type": "string", "minLength": 1, "maxLength": 256, "pattern": "^[A-Za-z0-9_.-]+$" },
+    "toolchain_mode": { "type": "string", "const": "none" },
+    "arguments": { "type": "array", "const": ["--stdio"] },
+    "hardening": { "$ref": "#/$defs/hardening" },
+    "maximum_limits": { "$ref": "#/$defs/maximumLimits" }
+  },
+  "$defs": {
+    "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "hardening": {
+      "type": "object",
+      "required": ["cargo_build_scripts", "cargo_no_deps", "cargo_sysroot", "cargo_sysroot_src", "proc_macro", "check_on_save", "workspace_discovery", "empty_path", "server_status_notification"],
+      "properties": {
+        "cargo_build_scripts": { "type": "boolean", "const": false },
+        "cargo_no_deps": { "type": "boolean", "const": true },
+        "cargo_sysroot": { "type": "null" },
+        "cargo_sysroot_src": { "type": "null" },
+        "proc_macro": { "type": "boolean", "const": false },
+        "check_on_save": { "type": "boolean", "const": false },
+        "workspace_discovery": { "type": "boolean", "const": false },
+        "empty_path": { "type": "boolean", "const": true },
+        "server_status_notification": { "type": "boolean", "const": true }
+      },
+      "additionalProperties": false
+    },
+    "maximumLimits": {
+      "type": "object",
+      "required": ["deadline_ms", "max_depth", "max_seeds", "max_requests", "max_pending_requests", "max_messages", "max_notifications", "max_server_requests", "max_invalid_messages", "max_call_ranges", "max_header_bytes", "max_frame_bytes", "max_protocol_bytes", "max_stderr_bytes", "max_total_output_bytes", "max_source_file_bytes", "max_source_bytes", "max_nodes", "max_edges", "max_report_bytes"],
+      "properties": {
+        "deadline_ms": { "type": "integer", "const": 30000 },
+        "max_depth": { "type": "integer", "const": 2 },
+        "max_seeds": { "type": "integer", "const": 64 },
+        "max_requests": { "type": "integer", "const": 512 },
+        "max_pending_requests": { "type": "integer", "const": 1 },
+        "max_messages": { "type": "integer", "const": 2048 },
+        "max_notifications": { "type": "integer", "const": 512 },
+        "max_server_requests": { "type": "integer", "const": 128 },
+        "max_invalid_messages": { "type": "integer", "const": 32 },
+        "max_call_ranges": { "type": "integer", "const": 1000 },
+        "max_header_bytes": { "type": "integer", "const": 16384 },
+        "max_frame_bytes": { "type": "integer", "const": 4194304 },
+        "max_protocol_bytes": { "type": "integer", "const": 67108864 },
+        "max_stderr_bytes": { "type": "integer", "const": 1048576 },
+        "max_total_output_bytes": { "type": "integer", "const": 68157440 },
+        "max_source_file_bytes": { "type": "integer", "const": 4194304 },
+        "max_source_bytes": { "type": "integer", "const": 67108864 },
+        "max_nodes": { "type": "integer", "const": 5000 },
+        "max_edges": { "type": "integer", "const": 10000 },
+        "max_report_bytes": { "type": "integer", "const": 16777216 }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}
