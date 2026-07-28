@@ -2,10 +2,13 @@
 
 use collect_diff_context_cli::candidate::snapshot::{CandidateSnapshot, SnapshotLimits};
 use collect_diff_context_cli::repository_context_provider::contract::{
-    CandidateBinding, PositionEncoding, ProviderLimits, RustAnalyzerCrate, RustAnalyzerProjectModel,
+    CallDirection, CandidateBinding, PositionEncoding, ProviderBinding, ProviderLimits,
+    ProviderRange, ProviderRangeFormat, RustAnalyzerCrate, RustAnalyzerProjectModel, SeedKind,
+    SeedSymbol,
 };
 use collect_diff_context_cli::repository_context_provider::rust_analyzer::{
-    initialize_and_gate, Readiness, RustAnalyzerHandshakeError,
+    initialize_and_gate, traverse_call_hierarchy, CallHierarchyTraversal, Readiness,
+    RustAnalyzerHandshakeError,
 };
 use collect_diff_context_cli::repository_context_provider::session::{
     ManagedLspSession, SessionLaunch,
@@ -50,7 +53,11 @@ impl Fixture {
         let repository = TempDir::new().unwrap();
         git(repository.path(), &["init", "-q"]);
         fs::create_dir_all(repository.path().join("src")).unwrap();
-        fs::write(repository.path().join("src/lib.rs"), b"pub fn seed() {}\n").unwrap();
+        fs::write(
+            repository.path().join("src/lib.rs"),
+            b"pub fn seed() { caller(); }\npub fn caller() { seed(); }\npub fn callee() {}\n",
+        )
+        .unwrap();
         git(repository.path(), &["add", "--", "."]);
         let snapshot = CandidateSnapshot::materialize(
             repository.path(),
@@ -152,6 +159,124 @@ impl Fixture {
         session.terminate();
         result.map(|handshake| (handshake.position_encoding, handshake.readiness))
     }
+
+    fn run_graph(&self) -> CallHierarchyTraversal {
+        let bound =
+            BoundCandidateSnapshot::new(&self.snapshot, &self.model, &self.binding).unwrap();
+        let profile_path = self.tools.path().join("profile.json");
+        fs::write(&profile_path, b"fixture-profile").unwrap();
+        let request_provider = ProviderBinding {
+            kind: "rust-analyzer".to_string(),
+            version: "fixture".to_string(),
+            profile_path,
+            profile_sha256: digest('3'),
+            executable_path: self.executable.clone(),
+            executable_sha256: self.executable_sha256.clone(),
+            configuration_sha256: digest('4'),
+            target_triple: self.model.target_triple.clone(),
+            toolchain_mode: "none".to_string(),
+        };
+        let request = collect_diff_context_cli::repository_context_provider::contract::RepositoryContextProviderRequest {
+            schema_version: 1,
+            kind: "repository_context_provider_request".to_string(),
+            candidate: self.binding.clone(),
+            provider: request_provider,
+            seeds: vec![SeedSymbol {
+                changed_symbol_id: digest('5'),
+                path: "src/lib.rs".to_string(),
+                kind: SeedKind::Function,
+                name: "seed".to_string(),
+                symbol_range: ProviderRange {
+                    format: ProviderRangeFormat::Utf8ByteColumnsEndExclusiveV1,
+                    start_line: 1,
+                    start_column: 1,
+                    end_line: 1,
+                    end_column: 27,
+                    start_byte: 0,
+                    end_byte: 26,
+                },
+                selection_range: ProviderRange {
+                    format: ProviderRangeFormat::Utf8ByteColumnsEndExclusiveV1,
+                    start_line: 1,
+                    start_column: 8,
+                    end_line: 1,
+                    end_column: 12,
+                    start_byte: 7,
+                    end_byte: 11,
+                },
+                query_byte: 8,
+            }],
+            directions: vec![CallDirection::Incoming, CallDirection::Outgoing],
+            limits: graph_limits(),
+        };
+        request.validate().unwrap();
+        let binding_digest = request.binding_digest(&self.model.algorithm).unwrap();
+        let arguments = Box::leak(
+            vec![
+                "graph".to_string(),
+                self.tools
+                    .path()
+                    .join("graph.log")
+                    .to_string_lossy()
+                    .into_owned(),
+            ]
+            .into_boxed_slice(),
+        );
+        let limits = Box::leak(Box::new(graph_limits()));
+        let launch = SessionLaunch {
+            snapshot: &bound,
+            executable: &self.executable,
+            executable_sha256: &self.executable_sha256,
+            arguments,
+            source: ReviewSource::Staged,
+            scope_fingerprint: &self.binding.scope_fingerprint,
+            limits,
+            cancellation: Arc::new(AtomicBool::new(false)),
+        };
+        let mut session = ManagedLspSession::spawn(launch).unwrap();
+        let handshake =
+            initialize_and_gate(&mut session, &bound, &self.model, &self.model.target_triple)
+                .unwrap();
+        let result = traverse_call_hierarchy(
+            &mut session,
+            &bound,
+            &request.seeds,
+            &request.directions,
+            limits,
+            handshake.position_encoding,
+            &binding_digest,
+            "rust-analyzer",
+            "fixture",
+        )
+        .unwrap();
+        session.terminate();
+        result
+    }
+}
+
+fn graph_limits() -> ProviderLimits {
+    ProviderLimits {
+        deadline_ms: 2_000,
+        max_depth: 2,
+        max_seeds: 1,
+        max_requests: 64,
+        max_pending_requests: 1,
+        max_messages: 256,
+        max_notifications: 64,
+        max_server_requests: 32,
+        max_invalid_messages: 4,
+        max_call_ranges: 64,
+        max_header_bytes: 4096,
+        max_frame_bytes: 64 * 1024,
+        max_protocol_bytes: 512 * 1024,
+        max_stderr_bytes: 1024,
+        max_total_output_bytes: 2 * 1024 * 1024,
+        max_source_file_bytes: 4096,
+        max_source_bytes: 4096,
+        max_nodes: 16,
+        max_edges: 32,
+        max_report_bytes: 64 * 1024,
+    }
 }
 
 #[test]
@@ -207,6 +332,40 @@ fn handshake_services_positional_configuration_and_rejects_mixed_registration() 
         Fixture::new().run("registration-disallowed").unwrap().1,
         Readiness::Healthy
     );
+}
+
+#[test]
+fn call_hierarchy_bfs_deduplicates_edges_and_is_deterministic() {
+    let fixture = Fixture::new();
+    let first = fixture.run_graph();
+    let second = fixture.run_graph();
+    assert_eq!(first, second);
+    assert_eq!(first.seed_symbols.len(), 1);
+    assert!(first
+        .related_symbols
+        .iter()
+        .any(|symbol| symbol.name == "caller"));
+    assert!(first
+        .related_symbols
+        .iter()
+        .any(|symbol| symbol.name == "callee"));
+    assert!(first
+        .edges
+        .iter()
+        .any(|edge| { edge.from_symbol != edge.to_symbol && edge.call_site_path == "src/lib.rs" }));
+    assert_eq!(
+        first.edges.len(),
+        first
+            .edges
+            .iter()
+            .map(|edge| &edge.edge_id)
+            .collect::<std::collections::BTreeSet<_>>()
+            .len()
+    );
+    assert!(first
+        .edges
+        .windows(2)
+        .all(|edges| edges[0].edge_id < edges[1].edge_id));
 }
 
 fn _unused_json_value() -> serde_json::Value {

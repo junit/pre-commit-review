@@ -28,6 +28,7 @@ fn main() {
         "missing-capability" => handshake_missing_capability(log_path.as_deref()),
         "initialize-error" => handshake_initialize_error(log_path.as_deref()),
         "unknown-encoding" => handshake(log_path.as_deref(), "ok", Some("utf-32")),
+        "graph" => graph(log_path.as_deref()),
         "stderr-flood" => stderr_flood(),
         "hang" => hang(),
         "malformed-frame" => malformed_frame(),
@@ -223,6 +224,126 @@ fn handshake_hang(log_path: Option<&str>) -> io::Result<()> {
     log_method(log_path, initialize.get("method").and_then(Value::as_str))?;
     thread::sleep(Duration::from_secs(30));
     Ok(())
+}
+
+fn graph(log_path: Option<&str>) -> io::Result<()> {
+    let mut input = io::stdin().lock();
+    let mut output = io::stdout().lock();
+    let initialize = read_json_frame(&mut input)?;
+    log_method(log_path, initialize.get("method").and_then(Value::as_str))?;
+    validate_initialize_request(&initialize)?;
+    let root_uri = initialize
+        .get("params")
+        .and_then(|params| params.get("rootUri"))
+        .and_then(Value::as_str)
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "root URI missing"))?;
+    write_frame(
+        &mut output,
+        &json!({
+            "jsonrpc": "2.0",
+            "id": initialize.get("id").cloned().unwrap_or(Value::Null),
+            "result": {"capabilities": {"callHierarchyProvider": true, "positionEncoding": "utf-8"}}
+        }),
+    )?;
+    let initialized = read_json_frame(&mut input)?;
+    log_method(log_path, initialized.get("method").and_then(Value::as_str))?;
+    write_frame(
+        &mut output,
+        &json!({"jsonrpc":"2.0","method":"experimental/serverStatus","params":{"health":"ok","quiescent":true}}),
+    )?;
+    let uri = format!("{root_uri}src/lib.rs");
+    loop {
+        let message = read_json_frame(&mut input)?;
+        let method = message.get("method").and_then(Value::as_str);
+        log_method(log_path, method)?;
+        let id = message.get("id").cloned().unwrap_or(Value::Null);
+        match method {
+            Some("textDocument/prepareCallHierarchy") => write_frame(
+                &mut output,
+                &json!({"jsonrpc":"2.0","id":id,"result":[graph_item(&uri, "seed")]}),
+            )?,
+            Some("callHierarchy/incomingCalls") => {
+                let name = message
+                    .get("params")
+                    .and_then(|params| params.get("item"))
+                    .and_then(|item| item.get("name"))
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
+                write_frame(
+                    &mut output,
+                    &json!({"jsonrpc":"2.0","id":id,"result":graph_incoming(&uri, name)}),
+                )?;
+            }
+            Some("callHierarchy/outgoingCalls") => {
+                let name = message
+                    .get("params")
+                    .and_then(|params| params.get("item"))
+                    .and_then(|item| item.get("name"))
+                    .and_then(Value::as_str)
+                    .unwrap_or_default();
+                write_frame(
+                    &mut output,
+                    &json!({"jsonrpc":"2.0","id":id,"result":graph_outgoing(&uri, name)}),
+                )?;
+            }
+            Some("shutdown") => {
+                write_frame(&mut output, &json!({"jsonrpc":"2.0","id":id,"result":null}))?
+            }
+            Some("exit") => break,
+            _ => {}
+        }
+    }
+    Ok(())
+}
+
+fn graph_item(uri: &str, name: &str) -> Value {
+    let (line, start, end, full_end) = match name {
+        "seed" => (0, 7, 11, 26),
+        "caller" => (1, 7, 13, 26),
+        "callee" => (2, 7, 13, 18),
+        _ => (0, 7, 11, 26),
+    };
+    json!({
+        "name": name,
+        "kind": 12,
+        "detail": "fixture",
+        "uri": uri,
+        "range": {"start": {"line": line, "character": 0}, "end": {"line": line, "character": full_end}},
+        "selectionRange": {"start": {"line": line, "character": start}, "end": {"line": line, "character": end}},
+        "data": {"fixture": name}
+    })
+}
+
+fn graph_call(uri: &str, name: &str, start: u32, end: u32) -> Value {
+    json!({
+        "from": graph_item(uri, name),
+        "fromRanges": [{"start": {"line": if name == "caller" {1} else {0}, "character": start}, "end": {"line": if name == "caller" {1} else {0}, "character": end}}]
+    })
+}
+
+fn graph_incoming(uri: &str, name: &str) -> Value {
+    match name {
+        "seed" => json!([
+            graph_call(uri, "caller", 18, 22),
+            graph_call(uri, "caller", 18, 22)
+        ]),
+        "caller" => json!([graph_call(uri, "seed", 16, 22)]),
+        _ => json!([]),
+    }
+}
+
+fn graph_outgoing(uri: &str, name: &str) -> Value {
+    match name {
+        "seed" => json!([
+            {"to": graph_item(uri, "caller"), "fromRanges": [{"start": {"line": 0, "character": 16}, "end": {"line": 0, "character": 22}}]},
+            {"to": graph_item(uri, "caller"), "fromRanges": [{"start": {"line": 0, "character": 16}, "end": {"line": 0, "character": 22}}]},
+            {"to": graph_item(uri, "callee"), "fromRanges": [{"start": {"line": 0, "character": 7}, "end": {"line": 0, "character": 11}}]}
+        ]),
+        "caller" => json!([
+            {"to": graph_item(uri, "seed"), "fromRanges": [{"start": {"line": 1, "character": 18}, "end": {"line": 1, "character": 22}}]}
+        ]),
+        _ => json!([]),
+    }
 }
 
 fn finish_lifecycle(
