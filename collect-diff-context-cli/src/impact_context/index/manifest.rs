@@ -22,6 +22,7 @@ const LOCATOR_DEADLINE: Duration = Duration::from_secs(5);
 
 pub trait RepositoryManifestSource {
     fn scope_fingerprint(&self) -> &str;
+    fn revalidate_scope_bounded(&self, deadline: Duration) -> Result<(), RepositoryManifestError>;
     fn source(&self) -> ReviewSource;
     fn repository_locator(&self) -> &RepositoryLocator;
     fn manifest_bounded(
@@ -130,6 +131,11 @@ impl GitRepositoryManifestSource {
 impl RepositoryManifestSource for GitRepositoryManifestSource {
     fn scope_fingerprint(&self) -> &str {
         &self.scope.fingerprint
+    }
+
+    fn revalidate_scope_bounded(&self, deadline: Duration) -> Result<(), RepositoryManifestError> {
+        crate::review_scope::revalidate_scope_bounded(&self.scope, deadline)
+            .map_err(|error| RepositoryManifestError::new("index-scope-drift", error.to_string()))
     }
 
     fn source(&self) -> ReviewSource {

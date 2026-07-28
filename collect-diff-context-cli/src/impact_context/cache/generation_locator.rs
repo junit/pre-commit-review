@@ -46,6 +46,11 @@ pub struct LocatedGeneration {
     pub reader: RepositoryGraphReader,
 }
 
+pub(crate) struct GenerationPublishOutcome {
+    pub(crate) result: PublishResult,
+    pub(crate) published_paths: Vec<PathBuf>,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 struct GenerationReferenceEnvelope {
@@ -239,6 +244,27 @@ impl GenerationLocatorStore {
         manifest_files: usize,
         manifest_bytes: u64,
     ) -> Result<PublishResult, CacheError> {
+        Ok(self
+            .publish_exact_tracked(
+                locator,
+                compatibility,
+                identity,
+                completeness,
+                manifest_files,
+                manifest_bytes,
+            )?
+            .result)
+    }
+
+    pub(crate) fn publish_exact_tracked(
+        &self,
+        locator: &RepositoryLocator,
+        compatibility: &GenerationCompatibility,
+        identity: &GraphGenerationIdentity,
+        completeness: Completeness,
+        manifest_files: usize,
+        manifest_bytes: u64,
+    ) -> Result<GenerationPublishOutcome, CacheError> {
         validate_lookup(locator, compatibility)?;
         identity.validate().map_err(|error| {
             CacheError::new(
@@ -283,7 +309,11 @@ impl GenerationLocatorStore {
             ReviewSource::Unstaged => {}
         }
         let mut outcome = PublishResult::Reused;
+        let mut published_paths = Vec::new();
         for lookup in lookups {
+            let published_path = self
+                .bucket(&lookup, compatibility)?
+                .join(format!("{generation_key}.json"));
             let published = self.publish_lookup(
                 lookup,
                 locator,
@@ -296,9 +326,13 @@ impl GenerationLocatorStore {
             )?;
             if published == PublishResult::Published {
                 outcome = PublishResult::Published;
+                published_paths.push(published_path);
             }
         }
-        Ok(outcome)
+        Ok(GenerationPublishOutcome {
+            result: outcome,
+            published_paths,
+        })
     }
 
     #[allow(clippy::too_many_arguments)]

@@ -123,12 +123,6 @@ fn snapshot(root: &Path) -> Vec<(String, u64, u128)> {
     output
 }
 
-fn contains_sqlite(root: &Path) -> bool {
-    snapshot(root)
-        .iter()
-        .any(|(path, _, _)| path.ends_with(".sqlite"))
-}
-
 #[test]
 fn help_lists_collect_fast_deep_and_index_subcommands() -> Result<(), Box<dyn Error>> {
     let repo = GitRepo::new()?;
@@ -660,6 +654,11 @@ fn collect_deep_revalidates_scope_after_cache_writes_and_queries() -> Result<(),
     assert_eq!(context.status, ImpactStatus::Invalidated);
     assert!(context.changed_symbols.is_empty());
     assert!(context.impact_edges.is_empty());
-    assert!(contains_sqlite(cache.path()));
+    assert!(
+        !snapshot(cache.path()).iter().any(|(path, _, _)| {
+            path.ends_with(".facts") || path.ends_with(".sqlite") || path.ends_with(".json")
+        }),
+        "scope-invalid collection must not leave reusable FileFacts, graph, or locator artifacts"
+    );
     Ok(())
 }

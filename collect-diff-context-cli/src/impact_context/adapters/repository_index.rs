@@ -1,7 +1,7 @@
 use crate::candidate::{CandidateContent, CandidatePresence, RepoPath};
 use crate::impact_context::adapters::tree_sitter_rust::TreeSitterRustAdapter;
 use crate::impact_context::cache::file_facts::{
-    CacheLayout, CacheLookup, FileFactsStore, PublishResult,
+    sync_directory, CacheLayout, CacheLookup, FileFactsStore, PublishResult,
 };
 use crate::impact_context::cache::generation_locator::{
     GenerationCompatibility, GenerationLocatorStore, LocatedGeneration,
@@ -31,6 +31,7 @@ use crate::impact_context::normalizer::{normalize_repository_graph, stable_id};
 use crate::impact_context::summarizer::summarize_repository_graph;
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
+use std::path::PathBuf;
 use std::time::Instant;
 
 const PROVIDER_KIND: &str = "repository-index";
@@ -122,13 +123,15 @@ impl RepositoryIndexAdapter {
         validate_request(&request)?;
         let started = Instant::now();
         let opening_scope = request.candidate.scope_fingerprint().to_string();
-        validate_scope(&request, &opening_scope)?;
+        let mut published_artifacts = Vec::new();
+        validate_scope(&request, &opening_scope, started, &published_artifacts)?;
         let provider_id = repository_index_provider_id();
         if request.mode == ImpactMode::Fast {
             return self.analyze_fast_exact(request, &opening_scope, &provider_id, started);
         }
         let mut tracker = IndexBudgetTracker::new(request.index_budget.clone());
         let prepared = prepare_index(request.manifest_source, &mut tracker)?;
+        validate_scope(&request, &opening_scope, started, &published_artifacts)?;
         let mut cache = CacheStats::default();
         let mut metrics = IndexMetrics {
             elapsed_ms: 0,
@@ -199,6 +202,8 @@ impl RepositoryIndexAdapter {
                 &mut cache,
                 &mut metrics,
                 &mut index_limitations,
+                started,
+                &mut published_artifacts,
             )?;
             let mut graph = resolve_rust_repository(
                 &prepared.manifest,
@@ -262,16 +267,18 @@ impl RepositoryIndexAdapter {
             metrics.symbols = graph.symbols.len();
             metrics.edges = graph.edges.len();
             index_limitations.extend(graph.limitations.clone());
-            validate_scope(&request, &opening_scope)?;
-            let path = match writer
+            validate_scope(&request, &opening_scope, started, &published_artifacts)?;
+            let outcome = writer
                 .publish(&graph, &mut tracker)
-                .map_err(map_graph_error)?
-            {
-                GraphPublishOutcome::Published { path } | GraphPublishOutcome::Reused { path } => {
+                .map_err(map_graph_error)?;
+            let path = match outcome {
+                GraphPublishOutcome::Published { path } => {
+                    published_artifacts.push(path.clone());
                     path
                 }
+                GraphPublishOutcome::Reused { path } => path,
             };
-            validate_scope(&request, &opening_scope)?;
+            validate_scope(&request, &opening_scope, started, &published_artifacts)?;
             metrics.generation_bytes = std::fs::metadata(&path)
                 .map(|metadata| metadata.len())
                 .unwrap_or(0);
@@ -291,7 +298,7 @@ impl RepositoryIndexAdapter {
                 "repository-index-generation-miss",
                 "no compatible immutable repository graph generation is available",
             ));
-            validate_scope(&request, &opening_scope)?;
+            validate_scope(&request, &opening_scope, started, &published_artifacts)?;
             return Ok(finalize_unavailable(
                 &provider_id,
                 &prepared,
@@ -303,9 +310,9 @@ impl RepositoryIndexAdapter {
         };
 
         if request.cache_write {
-            validate_scope(&request, &opening_scope)?;
-            GenerationLocatorStore::new(self.layout.clone())
-                .publish_exact(
+            validate_scope(&request, &opening_scope, started, &published_artifacts)?;
+            let locator_outcome = GenerationLocatorStore::new(self.layout.clone())
+                .publish_exact_tracked(
                     &prepared.manifest.locator,
                     &generation_compatibility(),
                     &prepared.identity,
@@ -314,10 +321,11 @@ impl RepositoryIndexAdapter {
                     manifest_input_bytes(&prepared.manifest),
                 )
                 .map_err(map_cache_error)?;
-            validate_scope(&request, &opening_scope)?;
+            published_artifacts.extend(locator_outcome.published_paths);
+            validate_scope(&request, &opening_scope, started, &published_artifacts)?;
         }
 
-        validate_scope(&request, &opening_scope)?;
+        validate_scope(&request, &opening_scope, started, &published_artifacts)?;
         let query = query_graph(
             &reader,
             None,
@@ -332,7 +340,7 @@ impl RepositoryIndexAdapter {
         metrics.output_bytes = serde_json::to_vec(&query.edges)
             .map(|bytes| bytes.len())
             .unwrap_or(0);
-        validate_scope(&request, &opening_scope)?;
+        validate_scope(&request, &opening_scope, started, &published_artifacts)?;
 
         let limitations = impact_limitations(&provider_id, &index_limitations);
         let status = provider_status(
@@ -456,7 +464,7 @@ impl RepositoryIndexAdapter {
                 "repository-index-generation-miss",
                 "no exact compatible immutable repository graph generation is available",
             ));
-            validate_scope(&request, opening_scope)?;
+            validate_scope(&request, opening_scope, started, &[])?;
             let lookup_key = locator_store
                 .exact_lookup_digest(request.manifest_source.repository_locator(), &compatibility)
                 .map_err(map_cache_error)?;
@@ -491,11 +499,13 @@ impl RepositoryIndexAdapter {
             let mut tracker = IndexBudgetTracker::new(request.index_budget.clone());
             let candidate_graph = build_fast_candidate_graph(
                 &request,
+                opening_scope,
                 &reader,
                 &reference.identity,
                 &mut tracker,
                 &mut index_limitations,
                 &mut metrics,
+                started,
             )?;
             let changed_paths = request
                 .candidate
@@ -511,7 +521,7 @@ impl RepositoryIndexAdapter {
             overlay_query_rows = tracker.amount(IndexResource::QueryRows).consumed;
         }
 
-        validate_scope(&request, opening_scope)?;
+        validate_scope(&request, opening_scope, started, &[])?;
         let mut query_budget = request.index_budget.clone();
         query_budget.max_query_rows = query_budget
             .max_query_rows
@@ -525,7 +535,7 @@ impl RepositoryIndexAdapter {
             &query_budget,
             &mut index_limitations,
         )?;
-        validate_scope(&request, opening_scope)?;
+        validate_scope(&request, opening_scope, started, &[])?;
         let limitations = impact_limitations(provider_id, &index_limitations);
         let status = provider_status(
             query.index_completeness,
@@ -601,13 +611,16 @@ struct OverlayPathDelta {
     limitations: Vec<IndexLimitation>,
 }
 
+#[allow(clippy::too_many_arguments)]
 fn build_fast_candidate_graph(
     request: &RepositoryIndexRequest<'_>,
+    opening_scope: &str,
     base: &RepositoryGraphReader,
     base_identity: &GraphGenerationIdentity,
     tracker: &mut IndexBudgetTracker,
     limitations: &mut Vec<IndexLimitation>,
     metrics: &mut IndexMetrics,
+    started: Instant,
 ) -> Result<RepositoryGraph, RepositoryIndexError> {
     let mut identity = base_identity.clone();
     identity.candidate_manifest_digest = request
@@ -649,15 +662,7 @@ fn build_fast_candidate_graph(
             continue;
         }
 
-        let content = request
-            .candidate
-            .read_bounded(&changed.path, request.index_budget.max_file_bytes)
-            .map_err(|error| {
-                RepositoryIndexError::new(
-                    "repository-overlay-candidate-read-failed",
-                    format!("cannot read {}: {error}", changed.path.as_str()),
-                )
-            })?;
+        let content = read_candidate_bytes(request, opening_scope, &changed.path, started, &[])?;
         let key = FileFactKey {
             language: "rust".to_string(),
             content_sha256: content.sha256.clone(),
@@ -1205,6 +1210,8 @@ fn build_file_facts(
     cache: &mut CacheStats,
     metrics: &mut IndexMetrics,
     limitations: &mut Vec<IndexLimitation>,
+    started: Instant,
+    published_artifacts: &mut Vec<PathBuf>,
 ) -> Result<Vec<RustRepositoryFileFacts>, RepositoryIndexError> {
     let mut output = Vec::new();
     for (path, key) in &prepared.file_keys {
@@ -1225,15 +1232,14 @@ fn build_file_facts(
             CacheLookup::Miss => {
                 cache.misses += 1;
                 metrics.file_fact_misses += 1;
-                let content = request
-                    .manifest_source
-                    .read_bounded(path, request.index_budget.max_file_bytes)
-                    .map_err(|error| {
-                        RepositoryIndexError::new(
-                            "repository-index-file-read-failed",
-                            format!("cannot read {}: {error}", path.as_str()),
-                        )
-                    })?;
+                let content = read_manifest_bytes(
+                    request,
+                    opening_scope,
+                    path,
+                    &key.content_sha256,
+                    started,
+                    published_artifacts,
+                )?;
                 let facts = TreeSitterRustAdapter::analyze_index(&content.bytes, tracker).map_err(
                     |error| {
                         RepositoryIndexError::new(
@@ -1247,12 +1253,17 @@ fn build_file_facts(
                     .parsed_bytes
                     .saturating_add(content.bytes.len() as u64);
                 if request.cache_write {
-                    validate_scope(request, opening_scope)?;
+                    validate_scope(request, opening_scope, started, published_artifacts)?;
                     match store.publish(key, &facts).map_err(map_cache_error)? {
-                        PublishResult::Published => metrics.file_fact_writes += 1,
+                        PublishResult::Published => {
+                            published_artifacts
+                                .push(store.object_path(key).map_err(map_cache_error)?);
+                            validate_scope(request, opening_scope, started, published_artifacts)?;
+                            metrics.file_fact_writes += 1;
+                        }
                         PublishResult::Reused => {}
                     }
-                    validate_scope(request, opening_scope)?;
+                    validate_scope(request, opening_scope, started, published_artifacts)?;
                 }
                 facts
             }
@@ -1263,7 +1274,16 @@ fn build_file_facts(
                     "repository-index-file-facts-stale",
                     &code,
                 ));
-                parse_without_publish(request, path, tracker, metrics)?
+                parse_without_publish(
+                    request,
+                    opening_scope,
+                    path,
+                    &key.content_sha256,
+                    tracker,
+                    metrics,
+                    started,
+                    published_artifacts,
+                )?
             }
             CacheLookup::Corrupt { code } => {
                 cache.corrupt += 1;
@@ -1272,7 +1292,16 @@ fn build_file_facts(
                     "repository-index-file-facts-corrupt",
                     &code,
                 ));
-                parse_without_publish(request, path, tracker, metrics)?
+                parse_without_publish(
+                    request,
+                    opening_scope,
+                    path,
+                    &key.content_sha256,
+                    tracker,
+                    metrics,
+                    started,
+                    published_artifacts,
+                )?
             }
         };
         for code in &facts.limitations {
@@ -1287,13 +1316,45 @@ fn build_file_facts(
     Ok(output)
 }
 
+#[allow(clippy::too_many_arguments)]
 fn parse_without_publish(
     request: &RepositoryIndexRequest<'_>,
+    opening_scope: &str,
     path: &RepoPath,
+    content_sha256: &str,
     tracker: &mut IndexBudgetTracker,
     metrics: &mut IndexMetrics,
+    started: Instant,
+    published_artifacts: &[PathBuf],
 ) -> Result<crate::impact_context::adapters::tree_sitter_rust::RustFileFacts, RepositoryIndexError>
 {
+    let content = read_manifest_bytes(
+        request,
+        opening_scope,
+        path,
+        content_sha256,
+        started,
+        published_artifacts,
+    )?;
+    let facts = TreeSitterRustAdapter::analyze_index(&content.bytes, tracker).map_err(|error| {
+        RepositoryIndexError::new("repository-index-rust-parse-failed", error.to_string())
+    })?;
+    metrics.parsed_files += 1;
+    metrics.parsed_bytes = metrics
+        .parsed_bytes
+        .saturating_add(content.bytes.len() as u64);
+    Ok(facts)
+}
+
+fn read_manifest_bytes(
+    request: &RepositoryIndexRequest<'_>,
+    opening_scope: &str,
+    path: &RepoPath,
+    expected_sha256: &str,
+    started: Instant,
+    published_artifacts: &[PathBuf],
+) -> Result<crate::candidate::CandidateBytes, RepositoryIndexError> {
+    validate_scope(request, opening_scope, started, published_artifacts)?;
     let content = request
         .manifest_source
         .read_bounded(path, request.index_budget.max_file_bytes)
@@ -1303,14 +1364,51 @@ fn parse_without_publish(
                 format!("cannot read {}: {error}", path.as_str()),
             )
         })?;
-    let facts = TreeSitterRustAdapter::analyze_index(&content.bytes, tracker).map_err(|error| {
-        RepositoryIndexError::new("repository-index-rust-parse-failed", error.to_string())
-    })?;
-    metrics.parsed_files += 1;
-    metrics.parsed_bytes = metrics
-        .parsed_bytes
-        .saturating_add(content.bytes.len() as u64);
-    Ok(facts)
+    validate_content_digest(path, &content, Some(expected_sha256))?;
+    validate_scope(request, opening_scope, started, published_artifacts)?;
+    Ok(content)
+}
+
+fn read_candidate_bytes(
+    request: &RepositoryIndexRequest<'_>,
+    opening_scope: &str,
+    path: &RepoPath,
+    started: Instant,
+    published_artifacts: &[PathBuf],
+) -> Result<crate::candidate::CandidateBytes, RepositoryIndexError> {
+    validate_scope(request, opening_scope, started, published_artifacts)?;
+    let content = request
+        .candidate
+        .read_bounded(path, request.index_budget.max_file_bytes)
+        .map_err(|error| {
+            RepositoryIndexError::new(
+                "repository-overlay-candidate-read-failed",
+                format!("cannot read {}: {error}", path.as_str()),
+            )
+        })?;
+    validate_content_digest(path, &content, None)?;
+    validate_scope(request, opening_scope, started, published_artifacts)?;
+    Ok(content)
+}
+
+fn validate_content_digest(
+    path: &RepoPath,
+    content: &crate::candidate::CandidateBytes,
+    expected_sha256: Option<&str>,
+) -> Result<(), RepositoryIndexError> {
+    let actual_sha256 = sha256_hex(&content.bytes);
+    if content.sha256 != actual_sha256
+        || expected_sha256.is_some_and(|expected| expected != actual_sha256)
+    {
+        return Err(RepositoryIndexError::new(
+            "repository-index-file-content-digest-mismatch",
+            format!(
+                "content bytes for {} do not match the authoritative FileFacts digest",
+                path.as_str()
+            ),
+        ));
+    }
+    Ok(())
 }
 
 fn query_graph(
@@ -1756,14 +1854,56 @@ fn validate_request(request: &RepositoryIndexRequest<'_>) -> Result<(), Reposito
 fn validate_scope(
     request: &RepositoryIndexRequest<'_>,
     opening_scope: &str,
+    started: Instant,
+    published_artifacts: &[PathBuf],
 ) -> Result<(), RepositoryIndexError> {
-    if request.candidate.scope_fingerprint() != opening_scope
+    let authoritative = request.manifest_source.revalidate_scope_bounded(
+        request
+            .index_budget
+            .deadline
+            .saturating_sub(started.elapsed()),
+    );
+    if authoritative.is_err()
+        || request.candidate.scope_fingerprint() != opening_scope
         || request.manifest_source.scope_fingerprint() != opening_scope
     {
-        return Err(RepositoryIndexError::new(
+        let mut error = RepositoryIndexError::new(
             "repository-index-scope-drift",
             "authoritative scope changed during repository index collection",
-        ));
+        );
+        if let Err(cleanup_error) = remove_published_artifacts(published_artifacts) {
+            error.message = format!("{}; {cleanup_error}", error.message);
+        }
+        return Err(error);
+    }
+    Ok(())
+}
+
+fn remove_published_artifacts(paths: &[PathBuf]) -> Result<(), String> {
+    let mut parents = BTreeSet::new();
+    for path in paths.iter().rev() {
+        match std::fs::remove_file(path) {
+            Ok(()) => {
+                if let Some(parent) = path.parent() {
+                    parents.insert(parent.to_path_buf());
+                }
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => {
+                return Err(format!(
+                    "cannot remove scope-invalid cache artifact {}: {error}",
+                    path.display()
+                ))
+            }
+        }
+    }
+    for parent in parents {
+        sync_directory(&parent).map_err(|error| {
+            format!(
+                "cannot synchronize scope-invalid cache cleanup {}: {error}",
+                parent.display()
+            )
+        })?;
     }
     Ok(())
 }

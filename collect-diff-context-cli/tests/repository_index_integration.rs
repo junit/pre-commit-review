@@ -1,11 +1,15 @@
+mod support;
+
 use collect_diff_context_cli::candidate::{
     CandidateBytes, CandidateContent, CandidateError, CandidateFile, CandidatePresence,
-    ChangedRange, RepoPath,
+    ChangedRange, GitCandidateContent, RepoPath,
 };
 use collect_diff_context_cli::impact_context::adapters::repository_index::{
     RepositoryIndexAdapter, RepositoryIndexRequest,
 };
-use collect_diff_context_cli::impact_context::cache::file_facts::CacheLayout;
+use collect_diff_context_cli::impact_context::cache::file_facts::{
+    CacheLayout, CacheLookup, FileFactsStore,
+};
 use collect_diff_context_cli::impact_context::contracts::{
     ChangedSymbol, Completeness, Confidence, ImpactMode, ImpactStatus, Resolution, SourceRange,
     UnitStatus,
@@ -14,9 +18,11 @@ use collect_diff_context_cli::impact_context::engine::{
     build_impact_context_with_repository_index, ImpactRequest, RepositoryIndexRuntime,
 };
 use collect_diff_context_cli::impact_context::index::budget::IndexBudget;
-use collect_diff_context_cli::impact_context::index::manifest::RepositoryManifestSource;
+use collect_diff_context_cli::impact_context::index::manifest::{
+    GitRepositoryManifestSource, RepositoryManifestSource,
+};
 use collect_diff_context_cli::impact_context::index::model::{
-    GraphGenerationIdentity, IndexLimitation, RepositoryLocator, RepositoryManifest,
+    FileFactKey, GraphGenerationIdentity, IndexLimitation, RepositoryLocator, RepositoryManifest,
     RepositoryManifestEntry,
 };
 use collect_diff_context_cli::review_scope::ReviewSource;
@@ -28,6 +34,7 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::time::{Duration, Instant, UNIX_EPOCH};
+use support::GitRepo;
 
 fn digest(bytes: &[u8]) -> String {
     format!("{:x}", Sha256::digest(bytes))
@@ -227,6 +234,8 @@ struct MemoryManifestSource {
     opening_scope: String,
     drifted_scope: String,
     drift_after_scope_reads: Option<usize>,
+    invalidate_authoritative_on_scope_read: Option<usize>,
+    authoritative_scope_valid: Cell<bool>,
     scope_reads: Cell<usize>,
     files: BTreeMap<RepoPath, Vec<u8>>,
     manifest: RepositoryManifest,
@@ -264,6 +273,12 @@ impl MemoryManifestSource {
 
     fn drifting_before_first_publish() -> Self {
         Self::new(Some(1), false)
+    }
+
+    fn invalidating_during_next_publish() -> Self {
+        let mut source = Self::new(None, false);
+        source.invalidate_authoritative_on_scope_read = Some(2);
+        source
     }
 
     fn new(drift_after_scope_reads: Option<usize>, partial: bool) -> Self {
@@ -326,6 +341,8 @@ impl MemoryManifestSource {
             opening_scope: repeated('a'),
             drifted_scope: repeated('c'),
             drift_after_scope_reads,
+            invalidate_authoritative_on_scope_read: None,
+            authoritative_scope_valid: Cell::new(true),
             scope_reads: Cell::new(0),
             files,
             manifest,
@@ -340,12 +357,37 @@ impl RepositoryManifestSource for MemoryManifestSource {
         let read = self.scope_reads.get();
         self.scope_reads.set(read + 1);
         if self
+            .invalidate_authoritative_on_scope_read
+            .is_some_and(|threshold| read + 1 == threshold)
+        {
+            self.authoritative_scope_valid.set(false);
+        }
+        if self
             .drift_after_scope_reads
             .is_some_and(|threshold| read >= threshold)
         {
             &self.drifted_scope
         } else {
             &self.opening_scope
+        }
+    }
+
+    fn revalidate_scope_bounded(
+        &self,
+        _deadline: Duration,
+    ) -> Result<
+        (),
+        collect_diff_context_cli::impact_context::index::manifest::RepositoryManifestError,
+    > {
+        if self.authoritative_scope_valid.get() {
+            Ok(())
+        } else {
+            Err(
+                collect_diff_context_cli::impact_context::index::manifest::RepositoryManifestError {
+                    code: "index-scope-drift",
+                    message: "fixture authoritative scope changed".to_string(),
+                },
+            )
         }
     }
 
@@ -977,6 +1019,146 @@ fn deep_scope_drift_before_first_file_facts_publish_leaves_cache_unchanged() {
 
     assert_eq!(error.code, "repository-index-scope-drift");
     assert_eq!(snapshot(cache.path()), before);
+}
+
+#[test]
+fn authoritative_drift_during_file_facts_publish_leaves_no_reusable_artifacts() {
+    let cache = tempfile::tempdir().unwrap();
+    let layout = cache_layout(cache.path());
+    let candidate = MemoryCandidate::changed_auth();
+    let source = MemoryManifestSource::invalidating_during_next_publish();
+
+    let error = RepositoryIndexAdapter::new(layout.clone())
+        .analyze(deep_request(&candidate, &source))
+        .unwrap_err();
+
+    assert_eq!(error.code, "repository-index-scope-drift");
+    assert!(
+        snapshot(&layout.facts_dir)
+            .iter()
+            .all(|(path, _, _)| !path.ends_with(".facts")),
+        "scope-invalid FileFacts must not remain reusable"
+    );
+    assert!(
+        snapshot(&layout.graphs_dir)
+            .iter()
+            .all(|(path, _, _)| !path.ends_with(".sqlite") && !path.ends_with(".json")),
+        "scope-invalid graph artifacts must not remain reusable"
+    );
+}
+
+#[test]
+fn authoritative_drift_during_graph_publish_removes_new_generation() {
+    let cache = tempfile::tempdir().unwrap();
+    let layout = cache_layout(cache.path());
+    let candidate = MemoryCandidate::changed_auth();
+    let stable = MemoryManifestSource::stable();
+    RepositoryIndexAdapter::new(layout.clone())
+        .analyze(deep_request(&candidate, &stable))
+        .unwrap();
+    fs::remove_dir_all(&layout.graphs_dir).unwrap();
+    let source = MemoryManifestSource::invalidating_during_next_publish();
+
+    let error = RepositoryIndexAdapter::new(layout.clone())
+        .analyze(deep_request(&candidate, &source))
+        .unwrap_err();
+
+    assert_eq!(error.code, "repository-index-scope-drift");
+    assert!(
+        snapshot(&layout.graphs_dir)
+            .iter()
+            .all(|(path, _, _)| !path.ends_with(".sqlite") && !path.ends_with(".json")),
+        "scope-invalid graph generation must not remain reusable"
+    );
+}
+
+#[test]
+fn real_git_scope_drift_before_indexing_leaves_no_reusable_cache_artifacts(
+) -> Result<(), Box<dyn std::error::Error>> {
+    let repository = GitRepo::new()?;
+    repository.commit_file("src/lib.rs", b"pub fn original() {}\n")?;
+    repository.write("src/lib.rs", b"pub fn first_staged() {}\n")?;
+    repository.git(["add", "--", "src/lib.rs"])?;
+
+    let scope = repository.scope(ReviewSource::Staged)?;
+    let candidate = GitCandidateContent::open(&scope)?;
+    let source = GitRepositoryManifestSource::new(&scope)?;
+    let cache = tempfile::tempdir()?;
+    let layout = cache_layout(cache.path());
+
+    repository.write("src/lib.rs", b"pub fn second_staged() {}\n")?;
+    repository.git(["add", "--", "src/lib.rs"])?;
+
+    let error = RepositoryIndexAdapter::new(layout.clone())
+        .analyze(RepositoryIndexRequest {
+            candidate: &candidate,
+            manifest_source: &source,
+            changed_symbols: &[],
+            mode: ImpactMode::Deep,
+            cache_read: true,
+            cache_write: true,
+            index_budget: IndexBudget::deep_defaults(),
+        })
+        .expect_err("a changed staged scope must invalidate the opened manifest source");
+
+    assert_eq!(error.code, "repository-index-scope-drift");
+    assert!(
+        snapshot(&layout.facts_dir).is_empty(),
+        "scope-invalid FileFacts must not be reusable under the stale manifest key"
+    );
+    assert!(
+        snapshot(&layout.graphs_dir).is_empty(),
+        "scope-invalid graph generations and locators must not be reusable"
+    );
+    Ok(())
+}
+
+#[test]
+fn file_facts_are_never_published_under_a_mismatched_content_digest() {
+    let cache = tempfile::tempdir().unwrap();
+    let layout = cache_layout(cache.path());
+    let candidate = MemoryCandidate::changed_auth();
+    let mut source = MemoryManifestSource::stable();
+    source.files.insert(
+        repo_path("src/auth.rs"),
+        b"pub fn validate() -> bool { false }\n".to_vec(),
+    );
+
+    let error = RepositoryIndexAdapter::new(layout.clone())
+        .analyze(deep_request(&candidate, &source))
+        .expect_err("content bytes must agree with the FileFacts manifest key");
+
+    assert_eq!(error.code, "repository-index-file-content-digest-mismatch");
+    let expected_digest = source
+        .manifest
+        .entries
+        .iter()
+        .find(|entry| entry.path.as_str() == "src/auth.rs")
+        .and_then(|entry| entry.content_sha256.as_deref())
+        .unwrap();
+    let stale_key = FileFactKey {
+        language: "rust".to_string(),
+        content_sha256: expected_digest.to_string(),
+        grammar_version: "tree-sitter-rust@0.24.2".to_string(),
+        query_digest: digest(b"tree-sitter-rust-index-query/v1"),
+        adapter_version: "tree-sitter-rust-index/v1".to_string(),
+        normalization_rules_digest: digest(b"repository-index-normalization/v1"),
+        schema_version: 1,
+    };
+    assert!(
+        matches!(
+            FileFactsStore::new(layout.clone(), 16 * 1024 * 1024)
+                .unwrap()
+                .lookup(&stale_key)
+                .unwrap(),
+            CacheLookup::Miss
+        ),
+        "H2 bytes must not be published under the H1 FileFacts key"
+    );
+    assert!(
+        snapshot(&layout.graphs_dir).is_empty(),
+        "a content-mismatched facts set must not produce a graph or locator"
+    );
 }
 
 #[test]
