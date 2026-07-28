@@ -7,6 +7,7 @@ pub mod repository_context_provider;
 pub mod review_scope;
 pub mod secret_scan;
 pub mod static_analysis;
+mod trusted_runtime;
 #[cfg(windows)]
 mod windows_acl;
 
