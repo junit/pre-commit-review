@@ -86,6 +86,7 @@ pub fn build_repository_overlay(
             completeness: merge_completeness(base.completeness(), candidate.completeness),
             limitations: candidate.limitations.clone(),
         },
+        authoritative_changed_paths: changed_paths.clone(),
         queued_paths: changed_paths.clone(),
         queue: changed_paths.iter().cloned().collect(),
         queried_symbols: BTreeSet::new(),
@@ -99,6 +100,7 @@ struct OverlayBuilder<'a> {
     candidate: &'a RepositoryGraph,
     budget: &'a mut IndexBudgetTracker,
     overlay: RepositoryOverlay,
+    authoritative_changed_paths: BTreeSet<RepoPath>,
     queued_paths: BTreeSet<RepoPath>,
     queue: VecDeque<RepoPath>,
     queried_symbols: BTreeSet<String>,
@@ -121,6 +123,20 @@ impl OverlayBuilder<'_> {
     }
 
     fn process_path(&mut self, path: &RepoPath) -> Result<(), OverlayError> {
+        if !self.authoritative_changed_paths.contains(path) && !self.candidate_has_path(path) {
+            self.overlay.completeness = Completeness::Partial;
+            self.overlay.limitations.push(IndexLimitation {
+                code: "repository-overlay-dependent-refresh-unavailable".to_string(),
+                path: Some(path.clone()),
+                symbol_id: None,
+                reason: "a known reverse dependent was not present in the bounded candidate delta"
+                    .to_string(),
+                interpretation:
+                    "the compatible base relationships were retained, but the dependent was not re-resolved"
+                        .to_string(),
+            });
+            return Ok(());
+        }
         self.overlay.path_tombstones.insert(path.clone());
 
         let base_symbols = self.query_symbols_for_path(path)?;
@@ -130,8 +146,8 @@ impl OverlayBuilder<'_> {
 
         self.insert_candidate_path(path)?;
 
-        let target_deleted = !self.candidate_path_is_present(path);
         for symbol in base_symbols {
+            let target_removed = !self.overlay.symbols.contains_key(&symbol.symbol_id);
             if !self.queried_symbols.insert(symbol.symbol_id.clone()) {
                 continue;
             }
@@ -142,7 +158,7 @@ impl OverlayBuilder<'_> {
                 ) {
                     self.enqueue_path(edge.path.clone());
                 }
-                if target_deleted && !self.overlay.path_tombstones.contains(&edge.path) {
+                if target_removed && !self.overlay.path_tombstones.contains(&edge.path) {
                     self.overlay
                         .suppressed_base_edge_ids
                         .insert(edge.edge_id.clone());
@@ -155,6 +171,21 @@ impl OverlayBuilder<'_> {
             }
         }
         Ok(())
+    }
+
+    fn candidate_has_path(&self, path: &RepoPath) -> bool {
+        self.candidate.files.iter().any(|file| file.path == *path)
+            || self
+                .candidate
+                .modules
+                .iter()
+                .any(|module| module.path == *path)
+            || self
+                .candidate
+                .symbols
+                .iter()
+                .any(|symbol| symbol.path == *path)
+            || self.candidate.edges.iter().any(|edge| edge.path == *path)
     }
 
     fn insert_candidate_path(&mut self, path: &RepoPath) -> Result<(), OverlayError> {
@@ -219,13 +250,6 @@ impl OverlayBuilder<'_> {
             self.insert_edge(edge);
         }
         Ok(())
-    }
-
-    fn candidate_path_is_present(&self, path: &RepoPath) -> bool {
-        self.candidate
-            .files
-            .iter()
-            .any(|file| file.path == *path && file.presence == CandidatePresence::Present)
     }
 
     fn enqueue_path(&mut self, path: RepoPath) {

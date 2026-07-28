@@ -12,10 +12,14 @@ use std::os::unix::fs::PermissionsExt;
 use std::path::PathBuf;
 use std::process::{Command, Output};
 #[cfg(unix)]
+use std::sync::Mutex;
+#[cfg(unix)]
 use std::time::{Duration, Instant};
 use support::GitRepo;
-#[cfg(unix)]
 use tempfile::TempDir;
+
+#[cfg(unix)]
+static SLOW_GIT_TEST_LOCK: Mutex<()> = Mutex::new(());
 
 fn repository_context(repo: &GitRepo, arguments: &[&str]) -> Result<Output, Box<dyn Error>> {
     Ok(Command::new(env!("CARGO_BIN_EXE_repository-context-cli"))
@@ -23,6 +27,55 @@ fn repository_context(repo: &GitRepo, arguments: &[&str]) -> Result<Output, Box<
         .current_dir(repo.path())
         .env("PRE_COMMIT_REVIEW_SECRET_SCAN", "off")
         .output()?)
+}
+
+fn repository_context_with_cache(
+    repo: &GitRepo,
+    cache: &std::path::Path,
+    arguments: &[&str],
+) -> Result<Output, Box<dyn Error>> {
+    Ok(Command::new(env!("CARGO_BIN_EXE_repository-context-cli"))
+        .args(arguments)
+        .current_dir(repo.path())
+        .env("PRE_COMMIT_REVIEW_CACHE_DIR", cache)
+        .env("PRE_COMMIT_REVIEW_SECRET_SCAN", "off")
+        .output()?)
+}
+
+fn cache_snapshot(root: &std::path::Path) -> Vec<(String, u64, u128)> {
+    fn visit(
+        base: &std::path::Path,
+        path: &std::path::Path,
+        output: &mut Vec<(String, u64, u128)>,
+    ) {
+        let Ok(entries) = std::fs::read_dir(path) else {
+            return;
+        };
+        for entry in entries {
+            let path = entry.unwrap().path();
+            let metadata = std::fs::symlink_metadata(&path).unwrap();
+            output.push((
+                path.strip_prefix(base)
+                    .unwrap()
+                    .to_string_lossy()
+                    .into_owned(),
+                metadata.len(),
+                metadata
+                    .modified()
+                    .unwrap()
+                    .duration_since(std::time::UNIX_EPOCH)
+                    .unwrap()
+                    .as_nanos(),
+            ));
+            if metadata.is_dir() {
+                visit(base, &path, output);
+            }
+        }
+    }
+    let mut output = Vec::new();
+    visit(root, root, &mut output);
+    output.sort();
+    output
 }
 
 fn repository_context_with_required_sanitizer(
@@ -235,6 +288,93 @@ fn unstaged_and_branch_collect_use_their_exact_candidate_sources() -> Result<(),
 }
 
 #[test]
+fn branch_index_then_staged_fast_uses_read_only_candidate_overlay() -> Result<(), Box<dyn Error>> {
+    let repo = GitRepo::new()?;
+    repo.write(
+        "Cargo.toml",
+        b"[package]\nname = \"fixture\"\nversion = \"0.1.0\"\nedition = \"2021\"\n",
+    )?;
+    repo.write("src/lib.rs", b"pub mod api;\npub mod auth;\n")?;
+    repo.write(
+        "src/api.rs",
+        b"use crate::auth::validate;\npub fn login() { validate(); }\n",
+    )?;
+    repo.write("src/auth.rs", b"pub fn validate() -> bool { true }\n")?;
+    repo.git([
+        "add",
+        "--",
+        "Cargo.toml",
+        "src/lib.rs",
+        "src/api.rs",
+        "src/auth.rs",
+    ])?;
+    repo.git(["commit", "-qm", "base"])?;
+    repo.git(["branch", "-m", "main"])?;
+    repo.git(["checkout", "-qb", "feature"])?;
+    repo.write("src/auth.rs", b"pub fn validate() -> bool { false }\n")?;
+    repo.git(["add", "--", "src/auth.rs"])?;
+    repo.git(["commit", "-qm", "branch change"])?;
+
+    let cache = TempDir::new()?;
+    let branch_scope = repo.scope(ReviewSource::Branch)?;
+    let built = repository_context_with_cache(
+        &repo,
+        cache.path(),
+        &[
+            "index",
+            "build",
+            "--source",
+            "branch",
+            "--expect-scope",
+            &branch_scope.fingerprint,
+        ],
+    )?;
+    assert!(
+        built.status.success(),
+        "{}",
+        String::from_utf8_lossy(&built.stderr)
+    );
+
+    repo.write("src/auth.rs", b"pub fn authorize() -> bool { false }\n")?;
+    repo.git(["add", "--", "src/auth.rs"])?;
+    let staged_scope = repo.scope(ReviewSource::Staged)?;
+    let before = cache_snapshot(cache.path());
+    let collected = repository_context_with_cache(
+        &repo,
+        cache.path(),
+        &[
+            "collect",
+            "--source",
+            "staged",
+            "--expect-scope",
+            &staged_scope.fingerprint,
+            "--mode",
+            "fast",
+        ],
+    )?;
+
+    assert!(
+        collected.status.success(),
+        "{}",
+        String::from_utf8_lossy(&collected.stderr)
+    );
+    let context: ImpactContext = serde_json::from_slice(&collected.stdout)?;
+    context.validate()?;
+    assert!(
+        context.coverage.cache_hits > 0,
+        "Branch base was not reused: {context:#?}; cache={:#?}",
+        cache_snapshot(cache.path())
+    );
+    assert!(context.impact_edges.iter().any(|edge| {
+        edge.path == "src/api.rs"
+            && edge.resolution
+                == collect_diff_context_cli::impact_context::contracts::Resolution::Unresolved
+    }));
+    assert_eq!(cache_snapshot(cache.path()), before);
+    Ok(())
+}
+
+#[test]
 fn limit_overrides_can_only_lower_fast_defaults() -> Result<(), Box<dyn Error>> {
     let repo = GitRepo::new()?;
     for arguments in [
@@ -322,6 +462,7 @@ fn candidate_preparation_limits_release_valid_bounded_context() -> Result<(), Bo
 #[cfg(unix)]
 #[test]
 fn candidate_preparation_deadline_terminates_slow_git() -> Result<(), Box<dyn Error>> {
+    let _slow_git_guard = SLOW_GIT_TEST_LOCK.lock().unwrap();
     let repo = GitRepo::new()?;
     repo.commit_file("src/lib.rs", b"pub fn base() {}\n")?;
     repo.write("src/lib.rs", b"pub fn changed() {}\n")?;
@@ -417,7 +558,61 @@ fn candidate_preparation_deadline_terminates_slow_git() -> Result<(), Box<dyn Er
 
 #[cfg(unix)]
 #[test]
+fn repository_locator_obeys_remaining_fast_deadline() -> Result<(), Box<dyn Error>> {
+    let _slow_git_guard = SLOW_GIT_TEST_LOCK.lock().unwrap();
+    let repo = GitRepo::new()?;
+    repo.commit_file("src/lib.rs", b"pub fn base() {}\n")?;
+    repo.write("src/lib.rs", b"pub fn changed() {}\n")?;
+    repo.git(["add", "--", "src/lib.rs"])?;
+    let scope = repo.scope(ReviewSource::Staged)?;
+
+    let wrapper_root = TempDir::new()?;
+    let wrapper = wrapper_root.path().join("git");
+    fs::write(
+        &wrapper,
+        b"#!/bin/sh\nif [ \"$*\" = \"ls-files --stage -z --\" ]; then sleep 2; fi\nexec \"$REAL_GIT\" \"$@\"\n",
+    )?;
+    fs::set_permissions(&wrapper, fs::Permissions::from_mode(0o755))?;
+    let real_git = executable_on_path("git")?;
+    let original_path = std::env::var_os("PATH").ok_or("PATH is unavailable")?;
+    let injected_path = std::env::join_paths(
+        std::iter::once(wrapper_root.path().to_path_buf())
+            .chain(std::env::split_paths(&original_path)),
+    )?;
+
+    let started = Instant::now();
+    let output = Command::new(env!("CARGO_BIN_EXE_repository-context-cli"))
+        .args([
+            "collect",
+            "--source",
+            "staged",
+            "--expect-scope",
+            &scope.fingerprint,
+            "--mode",
+            "fast",
+            "--deadline-ms",
+            "750",
+        ])
+        .current_dir(repo.path())
+        .env("PATH", &injected_path)
+        .env("REAL_GIT", &real_git)
+        .env("PRE_COMMIT_REVIEW_SECRET_SCAN", "off")
+        .output()?;
+
+    assert!(
+        started.elapsed() < Duration::from_millis(1_200),
+        "repository locator escaped the remaining Fast deadline: {:?}; stdout={} stderr={}",
+        started.elapsed(),
+        String::from_utf8_lossy(&output.stdout),
+        String::from_utf8_lossy(&output.stderr),
+    );
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
 fn fast_path_deadline_terminates_slow_git_descendants() -> Result<(), Box<dyn Error>> {
+    let _slow_git_guard = SLOW_GIT_TEST_LOCK.lock().unwrap();
     let repo = GitRepo::new()?;
     repo.commit_file("src/lib.rs", b"pub fn base() {}\n")?;
     repo.write("src/lib.rs", b"pub fn changed() {}\n")?;

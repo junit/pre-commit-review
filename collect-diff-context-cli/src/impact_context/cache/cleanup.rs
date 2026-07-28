@@ -1,7 +1,9 @@
 use crate::candidate::RepoPath;
 use crate::impact_context::cache::file_facts::{
-    sync_directory, CacheLayout, CacheLookup, FileFactsEnvelope, FileFactsStore,
+    is_symlink_or_reparse, sync_directory, CacheLayout, CacheLookup, FileFactsEnvelope,
+    FileFactsStore,
 };
+use crate::impact_context::cache::generation_locator::GenerationLocatorStore;
 use crate::impact_context::cache::locking::acquire_writer_lock;
 use crate::impact_context::cache::sqlite_generation::{ReaderLimits, RepositoryGraphReader};
 use crate::impact_context::index::model::{IndexLimitation, IndexMetrics, IndexReportStatus};
@@ -108,6 +110,55 @@ pub fn doctor_repository_cache(
                 .unwrap_or(0),
         );
         doctor_generation(&path, &mut limitations)?;
+    }
+
+    if generation.is_none() {
+        let locator_store = GenerationLocatorStore::new(layout.clone());
+        let limits = ReaderLimits {
+            maximum_database_bytes: MAXIMUM_DATABASE_BYTES,
+            maximum_rows_per_query: 50_000,
+            maximum_string_bytes: MAXIMUM_STRING_BYTES,
+        };
+        for path in regular_files_bounded(&layout.graphs_dir.join("locators"), maximum_files)?
+            .into_iter()
+            .filter(|path| {
+                path.extension()
+                    .is_some_and(|extension| extension == "json")
+            })
+        {
+            if !consume_path_budget(
+                &path,
+                maximum_files,
+                maximum_bytes,
+                &mut consumed_files,
+                &mut consumed_bytes,
+                &mut limitations,
+            )? {
+                break;
+            }
+            match locator_store.validate_reference_path(&path, limits) {
+                Ok(CacheLookup::Hit(())) => {}
+                Ok(CacheLookup::Miss) | Ok(CacheLookup::Stale { .. }) => {
+                    limitations.push(limitation(
+                        "repository-index-generation-reference-stale",
+                        "a generation locator reference has no compatible immutable target",
+                        "doctor is read-only; rebuild the index or run explicit cleanup",
+                    ));
+                }
+                Ok(CacheLookup::Corrupt { .. }) => {
+                    limitations.push(limitation(
+                        "repository-index-generation-reference-corrupt",
+                        "a generation locator reference failed envelope, identity, path, or target validation",
+                        "doctor is read-only; rebuild the index or run explicit cleanup",
+                    ));
+                }
+                Err(error) => limitations.push(limitation(
+                    "repository-index-generation-reference-unreadable",
+                    &error.message,
+                    "the unreadable locator reference was not modified",
+                )),
+            }
+        }
     }
 
     let store = FileFactsStore::new(layout.clone(), MAXIMUM_OBJECT_BYTES)
@@ -330,7 +381,18 @@ pub fn clean_repository_cache(
                 }
             };
             match fs::remove_file(&candidate.path) {
-                Ok(()) => removed_any = true,
+                Ok(()) => {
+                    removed_any = true;
+                    if let Err(error) =
+                        remove_generation_references(layout, &candidate.key, &mut limitations)
+                    {
+                        limitations.push(limitation(
+                            "repository-index-clean-reference-remove-failed",
+                            &error.message,
+                            "cleanup removed the generation but did not traverse an unsafe locator path",
+                        ));
+                    }
+                }
                 Err(error)
                     if matches!(
                         error.kind(),
@@ -525,7 +587,40 @@ fn selected_generation_paths(
     if let Some(generation) = generation {
         return Ok(vec![layout.graphs_dir.join(format!("{generation}.sqlite"))]);
     }
-    regular_files_bounded(&layout.graphs_dir, 100_000)
+    Ok(generation_candidates(layout)?
+        .into_iter()
+        .map(|candidate| candidate.path)
+        .collect())
+}
+
+fn remove_generation_references(
+    layout: &CacheLayout,
+    generation_key: &str,
+    limitations: &mut Vec<IndexLimitation>,
+) -> Result<(), CacheOperationError> {
+    let root = layout.graphs_dir.join("locators");
+    let expected_name = format!("{generation_key}.json");
+    let references = regular_files_bounded(&root, 100_000)?;
+    for path in references {
+        if path.file_name().and_then(|name| name.to_str()) != Some(expected_name.as_str()) {
+            continue;
+        }
+        match fs::remove_file(&path) {
+            Ok(()) => {
+                if let Some(parent) = path.parent() {
+                    sync_directory(parent)
+                        .map_err(|error| CacheOperationError::new(error.code, error.message))?;
+                }
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => limitations.push(limitation(
+                "repository-index-clean-reference-remove-failed",
+                &format!("cannot remove generation locator reference: {error}"),
+                "cleanup removed the generation but left a stale locator reference",
+            )),
+        }
+    }
+    Ok(())
 }
 
 fn regular_files_bounded(
@@ -535,6 +630,25 @@ fn regular_files_bounded(
     let mut pending = vec![root.to_path_buf()];
     let mut files = Vec::new();
     while let Some(directory) = pending.pop() {
+        let metadata = match fs::symlink_metadata(&directory) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
+            Err(error) => {
+                return Err(CacheOperationError::new(
+                    "repository-index-cache-metadata-failed",
+                    format!("cannot inspect cache directory: {error}"),
+                ))
+            }
+        };
+        if is_symlink_or_reparse(&directory, &metadata) || !metadata.file_type().is_dir() {
+            return Err(CacheOperationError::new(
+                "repository-index-cache-directory-unsafe",
+                format!(
+                    "cache directory is not a regular directory: {}",
+                    directory.display()
+                ),
+            ));
+        }
         let entries = match fs::read_dir(&directory) {
             Ok(entries) => entries,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => continue,
@@ -562,7 +676,7 @@ fn regular_files_bounded(
                     format!("cannot inspect cache entry: {error}"),
                 )
             })?;
-            if metadata.file_type().is_symlink() {
+            if is_symlink_or_reparse(&path, &metadata) {
                 continue;
             }
             if metadata.is_dir() {

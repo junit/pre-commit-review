@@ -573,7 +573,11 @@ fn run_collect(arguments: CollectArgs) -> i32 {
         Ok(candidate) => candidate,
         Err(error) => return cli_error(&error.to_string(), 2),
     };
-    let manifest_source = GitRepositoryManifestSource::new(&scope).ok();
+    let manifest_source = GitRepositoryManifestSource::new_bounded(
+        &scope,
+        total_deadline.saturating_sub(collection_started.elapsed()),
+    )
+    .ok();
     let cache_layout = CacheLayout::resolve(&scope.repository, None).ok();
     let repository_runtime =
         manifest_source
@@ -649,7 +653,10 @@ fn run_index_build(arguments: IndexBuildArgs) -> i32 {
         Ok(candidate) => candidate,
         Err(error) => return cli_error(&error.to_string(), 2),
     };
-    let manifest_source = match GitRepositoryManifestSource::new(&scope) {
+    let manifest_source = match GitRepositoryManifestSource::new_bounded(
+        &scope,
+        arguments.budget.deadline.saturating_sub(started.elapsed()),
+    ) {
         Ok(source) => source,
         Err(error) => return cli_error(&error.to_string(), 2),
     };

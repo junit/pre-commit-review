@@ -11,7 +11,7 @@ use crate::impact_context::contracts::{
 };
 use crate::impact_context::index::budget::{IndexBudgetTracker, IndexResource};
 use crate::impact_context::index::model::{
-    GraphEdge, GraphGenerationIdentity, GraphSymbol, IndexLimitation, RepositoryGraph,
+    GraphEdge, GraphFile, GraphGenerationIdentity, GraphSymbol, IndexLimitation, RepositoryGraph,
 };
 use percent_encoding::{utf8_percent_encode, NON_ALPHANUMERIC};
 use rusqlite::{params, Connection, OpenFlags, OptionalExtension, Transaction};
@@ -481,6 +481,48 @@ impl RepositoryGraphReader {
             symbols.push(symbol);
         }
         Ok(symbols)
+    }
+
+    pub fn file_for_path(
+        &self,
+        path: &crate::candidate::RepoPath,
+    ) -> Result<Option<GraphFile>, RepositoryGraphError> {
+        let canonical = self
+            .connection
+            .query_row(
+                "SELECT canonical_json FROM files WHERE path = ?1",
+                [path.as_str()],
+                |row| row.get::<_, String>(0),
+            )
+            .optional()
+            .map_err(sqlite_error)?;
+        let Some(canonical) = canonical else {
+            return Ok(None);
+        };
+        if bounded_reader_text(
+            &canonical,
+            self.limits.maximum_string_bytes.saturating_mul(16),
+        )
+        .is_err()
+        {
+            return Err(row_corrupt());
+        }
+        let file: GraphFile = serde_json::from_str(&canonical).map_err(|_| row_corrupt())?;
+        if file.path != *path
+            || file.mode.len() != 6
+            || !file.mode.bytes().all(|byte| matches!(byte, b'0'..=b'7'))
+            || file
+                .content_sha256
+                .as_deref()
+                .is_some_and(|digest| validate_hex(digest).is_err())
+            || file
+                .file_fact_key
+                .as_ref()
+                .is_some_and(|key| key.validate().is_err())
+        {
+            return Err(row_corrupt());
+        }
+        Ok(Some(file))
     }
 
     pub fn symbol(&self, symbol_id: &str) -> Result<Option<GraphSymbol>, RepositoryGraphError> {

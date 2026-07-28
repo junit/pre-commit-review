@@ -3,19 +3,23 @@ use crate::impact_context::adapters::tree_sitter_rust::TreeSitterRustAdapter;
 use crate::impact_context::cache::file_facts::{
     CacheLayout, CacheLookup, FileFactsStore, PublishResult,
 };
+use crate::impact_context::cache::generation_locator::{
+    GenerationCompatibility, GenerationLocatorStore, LocatedGeneration,
+};
 use crate::impact_context::cache::sqlite_generation::{
     GraphPublishOutcome, ReaderLimits, RepositoryGraphReader, RepositoryGraphWriter,
 };
 use crate::impact_context::contracts::{
-    ChangedSymbol, Completeness, DomainSummary, EdgeKind, ImpactEdge, ImpactMode, Limitation,
-    ProviderRecord, ProviderStatus,
+    ChangedSymbol, Completeness, Confidence, DomainSummary, EdgeKind, ImpactEdge, ImpactMode,
+    Limitation, ProviderRecord, ProviderStatus, Resolution, SourceRange,
 };
-use crate::impact_context::index::budget::{IndexBudget, IndexBudgetTracker};
+use crate::impact_context::index::budget::{IndexBudget, IndexBudgetTracker, IndexResource};
 use crate::impact_context::index::manifest::RepositoryManifestSource;
 use crate::impact_context::index::model::{
-    FileFactKey, GraphGenerationIdentity, GraphSymbol, IndexLimitation, IndexMetrics,
-    RepositoryManifest,
+    FileFactKey, GraphEdge, GraphFile, GraphGenerationIdentity, GraphSymbol, IndexLimitation,
+    IndexMetrics, RepositoryGraph, RepositoryManifest,
 };
+use crate::impact_context::index::overlay::{build_repository_overlay, RepositoryOverlay};
 use crate::impact_context::index::project_model::{build_rust_project_model, RustProjectModel};
 use crate::impact_context::index::resolver::rust::{
     resolve_rust_repository, RustRepositoryFileFacts,
@@ -120,6 +124,9 @@ impl RepositoryIndexAdapter {
         let opening_scope = request.candidate.scope_fingerprint().to_string();
         validate_scope(&request, &opening_scope)?;
         let provider_id = repository_index_provider_id();
+        if request.mode == ImpactMode::Fast {
+            return self.analyze_fast_exact(request, &opening_scope, &provider_id, started);
+        }
         let mut tracker = IndexBudgetTracker::new(request.index_budget.clone());
         let prepared = prepare_index(request.manifest_source, &mut tracker)?;
         let mut cache = CacheStats::default();
@@ -295,9 +302,25 @@ impl RepositoryIndexAdapter {
             ));
         };
 
+        if request.cache_write {
+            validate_scope(&request, &opening_scope)?;
+            GenerationLocatorStore::new(self.layout.clone())
+                .publish_exact(
+                    &prepared.manifest.locator,
+                    &generation_compatibility(),
+                    &prepared.identity,
+                    reader.completeness(),
+                    prepared.manifest.entries.len(),
+                    manifest_input_bytes(&prepared.manifest),
+                )
+                .map_err(map_cache_error)?;
+            validate_scope(&request, &opening_scope)?;
+        }
+
         validate_scope(&request, &opening_scope)?;
         let query = query_graph(
             &reader,
+            None,
             request.changed_symbols,
             &provider_id,
             &request.index_budget,
@@ -323,7 +346,8 @@ impl RepositoryIndexAdapter {
             &provider_id,
             &prepared.identity,
             status,
-            &prepared.manifest,
+            prepared.manifest.entries.len(),
+            manifest_input_bytes(&prepared.manifest),
             &query,
             &cache,
             &limitations,
@@ -333,6 +357,218 @@ impl RepositoryIndexAdapter {
             generation_key: prepared.identity.generation_key().map_err(|error| {
                 RepositoryIndexError::new("repository-index-identity-invalid", error.to_string())
             })?,
+            provider,
+            symbols: query.symbols,
+            edges: query.edges,
+            domain_summaries: query.summaries,
+            index_completeness: query.index_completeness,
+            query_completeness: query.query_completeness,
+            reached_depth: query.reached_depth,
+            output_truncated: query.output_truncated,
+            limitations,
+            metrics,
+        })
+    }
+
+    fn analyze_fast_exact(
+        &self,
+        request: RepositoryIndexRequest<'_>,
+        opening_scope: &str,
+        provider_id: &str,
+        started: Instant,
+    ) -> Result<RepositoryIndexOutput, RepositoryIndexError> {
+        let compatibility = generation_compatibility();
+        let locator_store = GenerationLocatorStore::new(self.layout.clone());
+        let mut cache = CacheStats::default();
+        let mut index_limitations = Vec::new();
+        let mut located = if request.cache_read {
+            match locator_store
+                .lookup_exact(
+                    request.manifest_source.repository_locator(),
+                    &compatibility,
+                    reader_limits(&request.index_budget),
+                )
+                .map_err(map_cache_error)?
+            {
+                CacheLookup::Hit(located) => {
+                    cache.hits += 1;
+                    Some(located)
+                }
+                CacheLookup::Miss => {
+                    cache.misses += 1;
+                    None
+                }
+                CacheLookup::Stale { code } => {
+                    cache.stale += 1;
+                    index_limitations.push(simple_index_limitation(
+                        "repository-index-generation-stale",
+                        &code,
+                    ));
+                    None
+                }
+                CacheLookup::Corrupt { code } => {
+                    cache.corrupt += 1;
+                    index_limitations.push(simple_index_limitation(
+                        "repository-index-generation-corrupt",
+                        &code,
+                    ));
+                    None
+                }
+            }
+        } else {
+            cache.misses += 1;
+            None
+        };
+
+        if located.is_none() && request.cache_read {
+            match locator_store
+                .lookup_base(
+                    request.manifest_source.repository_locator(),
+                    &compatibility,
+                    reader_limits(&request.index_budget),
+                )
+                .map_err(map_cache_error)?
+            {
+                CacheLookup::Hit(base) => {
+                    cache.hits += 1;
+                    located = Some(base);
+                }
+                CacheLookup::Miss => {}
+                CacheLookup::Stale { code } => {
+                    cache.stale += 1;
+                    index_limitations.push(simple_index_limitation(
+                        "repository-index-base-generation-stale",
+                        &code,
+                    ));
+                }
+                CacheLookup::Corrupt { code } => {
+                    cache.corrupt += 1;
+                    index_limitations.push(simple_index_limitation(
+                        "repository-index-base-generation-corrupt",
+                        &code,
+                    ));
+                }
+            }
+        }
+
+        let Some(LocatedGeneration { reference, reader }) = located else {
+            index_limitations.push(simple_index_limitation(
+                "repository-index-generation-miss",
+                "no exact compatible immutable repository graph generation is available",
+            ));
+            validate_scope(&request, opening_scope)?;
+            let lookup_key = locator_store
+                .exact_lookup_digest(request.manifest_source.repository_locator(), &compatibility)
+                .map_err(map_cache_error)?;
+            return Ok(finalize_fast_unavailable(
+                provider_id,
+                &lookup_key,
+                &compatibility,
+                cache,
+                index_limitations,
+                started,
+            ));
+        };
+
+        let mut metrics = IndexMetrics {
+            elapsed_ms: elapsed_ms(started),
+            manifest_files: reference.manifest_files,
+            manifest_bytes: reference.manifest_bytes,
+            file_fact_hits: 0,
+            file_fact_misses: 0,
+            file_fact_writes: 0,
+            parsed_files: 0,
+            parsed_bytes: 0,
+            symbols: 0,
+            edges: 0,
+            query_rows: 0,
+            generation_bytes: 0,
+            output_bytes: 0,
+        };
+        let mut overlay = None;
+        let mut overlay_query_rows = 0usize;
+        if reference.locator != *request.manifest_source.repository_locator() {
+            let mut tracker = IndexBudgetTracker::new(request.index_budget.clone());
+            let candidate_graph = build_fast_candidate_graph(
+                &request,
+                &reader,
+                &reference.identity,
+                &mut tracker,
+                &mut index_limitations,
+                &mut metrics,
+            )?;
+            let changed_paths = request
+                .candidate
+                .files()
+                .iter()
+                .map(|file| file.path.clone())
+                .collect::<BTreeSet<_>>();
+            let built =
+                build_repository_overlay(&reader, &candidate_graph, &changed_paths, &mut tracker)
+                    .map_err(|error| RepositoryIndexError::new(error.code, error.message))?;
+            index_limitations.extend(built.limitations.clone());
+            overlay = Some(built);
+            overlay_query_rows = tracker.amount(IndexResource::QueryRows).consumed;
+        }
+
+        validate_scope(&request, opening_scope)?;
+        let mut query_budget = request.index_budget.clone();
+        query_budget.max_query_rows = query_budget
+            .max_query_rows
+            .saturating_sub(overlay_query_rows);
+        query_budget.deadline = query_budget.deadline.saturating_sub(started.elapsed());
+        let query = query_graph(
+            &reader,
+            overlay.as_ref(),
+            request.changed_symbols,
+            provider_id,
+            &query_budget,
+            &mut index_limitations,
+        )?;
+        validate_scope(&request, opening_scope)?;
+        let limitations = impact_limitations(provider_id, &index_limitations);
+        let status = provider_status(
+            query.index_completeness,
+            query.query_completeness,
+            query.output_truncated,
+            &index_limitations,
+        );
+        metrics.elapsed_ms = elapsed_ms(started);
+        metrics.symbols = query.symbols.len();
+        metrics.edges = query.edges.len();
+        metrics.query_rows = overlay_query_rows.saturating_add(query.rows_read);
+        metrics.output_bytes = serde_json::to_vec(&query.edges)
+            .map(|bytes| bytes.len())
+            .unwrap_or(0);
+        let generation_path = self
+            .layout
+            .graphs_dir
+            .join(format!("{}.sqlite", reference.generation_key));
+        metrics.generation_bytes = std::fs::metadata(generation_path)
+            .map(|metadata| metadata.len())
+            .unwrap_or(0);
+        let mut provider = provider_record(
+            provider_id,
+            &reference.identity,
+            status,
+            reference.manifest_files,
+            reference.manifest_bytes,
+            &query,
+            &cache,
+            &limitations,
+            elapsed_ms(started),
+        );
+        if overlay.is_some() {
+            provider.configuration_digest = sha256_hex(
+                &serde_json::to_vec(&(
+                    &reference.identity,
+                    request.manifest_source.repository_locator(),
+                ))
+                .unwrap_or_else(|_| b"invalid".to_vec()),
+            );
+        }
+        Ok(RepositoryIndexOutput {
+            generation_key: reference.generation_key,
             provider,
             symbols: query.symbols,
             edges: query.edges,
@@ -356,6 +592,550 @@ struct QueryOutput {
     reached_depth: usize,
     rows_read: usize,
     output_truncated: bool,
+}
+
+struct OverlayPathDelta {
+    files: Vec<GraphFile>,
+    symbols: Vec<GraphSymbol>,
+    edges: Vec<GraphEdge>,
+    limitations: Vec<IndexLimitation>,
+}
+
+fn build_fast_candidate_graph(
+    request: &RepositoryIndexRequest<'_>,
+    base: &RepositoryGraphReader,
+    base_identity: &GraphGenerationIdentity,
+    tracker: &mut IndexBudgetTracker,
+    limitations: &mut Vec<IndexLimitation>,
+    metrics: &mut IndexMetrics,
+) -> Result<RepositoryGraph, RepositoryIndexError> {
+    let mut identity = base_identity.clone();
+    identity.candidate_manifest_digest = request
+        .manifest_source
+        .repository_locator()
+        .overlay_candidate_digest
+        .clone();
+    identity.validate().map_err(|error| {
+        RepositoryIndexError::new("repository-overlay-identity-invalid", error.to_string())
+    })?;
+
+    let mut files = Vec::new();
+    let mut symbols = Vec::new();
+    let mut edges = Vec::new();
+    let mut graph_limitations = Vec::new();
+    for changed in request
+        .candidate
+        .files()
+        .iter()
+        .filter(|file| file.manifest_unit_id.is_some())
+    {
+        tracker
+            .check_deadline()
+            .map_err(|error| RepositoryIndexError::new(error.code(), error.to_string()))?;
+        if changed.presence != CandidatePresence::Present {
+            graph_limitations.push(overlay_limitation(
+                "repository-overlay-path-removed",
+                changed.path.clone(),
+                "the candidate path is absent and its base symbols are tombstoned",
+            ));
+            continue;
+        }
+        if !changed.path.as_str().ends_with(".rs") {
+            graph_limitations.push(overlay_limitation(
+                "repository-overlay-language-unsupported",
+                changed.path.clone(),
+                "the changed path has no incremental repository resolver",
+            ));
+            continue;
+        }
+
+        let content = request
+            .candidate
+            .read_bounded(&changed.path, request.index_budget.max_file_bytes)
+            .map_err(|error| {
+                RepositoryIndexError::new(
+                    "repository-overlay-candidate-read-failed",
+                    format!("cannot read {}: {error}", changed.path.as_str()),
+                )
+            })?;
+        let key = FileFactKey {
+            language: "rust".to_string(),
+            content_sha256: content.sha256.clone(),
+            grammar_version: GRAMMAR_VERSION.to_string(),
+            query_digest: sha256_hex(b"tree-sitter-rust-index-query/v1"),
+            adapter_version: ADAPTER_VERSION.to_string(),
+            normalization_rules_digest: sha256_hex(NORMALIZATION_VERSION.as_bytes()),
+            schema_version: 1,
+        };
+        let facts =
+            TreeSitterRustAdapter::analyze_index(&content.bytes, tracker).map_err(|error| {
+                RepositoryIndexError::new("repository-overlay-rust-parse-failed", error.to_string())
+            })?;
+        metrics.file_fact_misses = metrics.file_fact_misses.saturating_add(1);
+        metrics.parsed_files = metrics.parsed_files.saturating_add(1);
+        metrics.parsed_bytes = metrics
+            .parsed_bytes
+            .saturating_add(content.bytes.len() as u64);
+        let base_file = base.file_for_path(&changed.path).map_err(map_graph_error)?;
+        let symbol_limit = base
+            .maximum_rows_per_query()
+            .min(tracker.amount(IndexResource::QueryRows).remaining);
+        let base_symbols = if symbol_limit == 0 {
+            graph_limitations.push(overlay_limitation(
+                "index-query-row-budget-exhausted",
+                changed.path.clone(),
+                "the overlay base-symbol query budget was exhausted",
+            ));
+            Vec::new()
+        } else {
+            let rows = base
+                .symbols_for_path(&changed.path, symbol_limit)
+                .map_err(map_graph_error)?;
+            tracker
+                .consume(IndexResource::QueryRows, rows.len())
+                .map_err(|error| RepositoryIndexError::new(error.code(), error.to_string()))?;
+            if rows.len() == symbol_limit {
+                graph_limitations.push(overlay_limitation(
+                    "index-query-row-budget-exhausted",
+                    changed.path.clone(),
+                    "the overlay base-symbol query reached its exact row limit",
+                ));
+            }
+            rows
+        };
+        let edge_limit = base
+            .maximum_rows_per_query()
+            .min(tracker.amount(IndexResource::QueryRows).remaining);
+        let base_edges = if edge_limit == 0 {
+            graph_limitations.push(overlay_limitation(
+                "index-query-row-budget-exhausted",
+                changed.path.clone(),
+                "the overlay base-edge query budget was exhausted",
+            ));
+            Vec::new()
+        } else {
+            let rows = base
+                .edges_for_path(&changed.path, edge_limit)
+                .map_err(map_graph_error)?;
+            tracker
+                .consume(IndexResource::QueryRows, rows.len())
+                .map_err(|error| RepositoryIndexError::new(error.code(), error.to_string()))?;
+            if rows.len() == edge_limit {
+                graph_limitations.push(overlay_limitation(
+                    "index-query-row-budget-exhausted",
+                    changed.path.clone(),
+                    "the overlay base-edge query reached its exact row limit",
+                ));
+            }
+            rows
+        };
+        let delta = resolve_overlay_path(
+            changed,
+            &content.sha256,
+            key,
+            &facts,
+            base_file,
+            &base_symbols,
+            &base_edges,
+            base,
+            tracker,
+        )?;
+        files.extend(delta.files);
+        symbols.extend(delta.symbols);
+        edges.extend(delta.edges);
+        graph_limitations.extend(delta.limitations);
+    }
+    graph_limitations.push(IndexLimitation {
+        code: "repository-overlay-incremental-resolution".to_string(),
+        path: request.candidate.files().first().map(|file| file.path.clone()),
+        symbol_id: None,
+        reason: "Fast Mode refreshed only the authoritative changed-path closure".to_string(),
+        interpretation:
+            "relationships requiring compiler expansion or an unindexed reverse closure may be incomplete"
+                .to_string(),
+    });
+    graph_limitations.sort_by(|left, right| {
+        (
+            left.code.as_str(),
+            left.path.as_ref().map(RepoPath::as_str).unwrap_or(""),
+            left.symbol_id.as_deref().unwrap_or(""),
+        )
+            .cmp(&(
+                right.code.as_str(),
+                right.path.as_ref().map(RepoPath::as_str).unwrap_or(""),
+                right.symbol_id.as_deref().unwrap_or(""),
+            ))
+    });
+    graph_limitations.dedup();
+    limitations.extend(graph_limitations.clone());
+    files.sort_by(|left, right| left.path.cmp(&right.path));
+    symbols.sort_by(|left, right| left.symbol_id.cmp(&right.symbol_id));
+    edges.sort_by(|left, right| left.edge_id.cmp(&right.edge_id));
+    Ok(RepositoryGraph {
+        identity,
+        files,
+        modules: Vec::new(),
+        symbols,
+        edges,
+        completeness: Completeness::Partial,
+        limitations: graph_limitations,
+    })
+}
+
+#[allow(clippy::too_many_arguments)]
+fn resolve_overlay_path(
+    changed: &crate::candidate::CandidateFile,
+    content_sha256: &str,
+    key: FileFactKey,
+    facts: &crate::impact_context::adapters::tree_sitter_rust::RustFileFacts,
+    base_file: Option<GraphFile>,
+    base_symbols: &[GraphSymbol],
+    base_edges: &[GraphEdge],
+    base: &RepositoryGraphReader,
+    tracker: &mut IndexBudgetTracker,
+) -> Result<OverlayPathDelta, RepositoryIndexError> {
+    let mut limitations = Vec::new();
+    let base_by_local = base_symbols
+        .iter()
+        .map(|symbol| (symbol.local_id.as_str(), symbol))
+        .collect::<BTreeMap<_, _>>();
+    let mut primary_module = base_file
+        .as_ref()
+        .and_then(|file| file.module_id.clone())
+        .or_else(|| base_symbols.first().map(|symbol| symbol.module_id.clone()));
+    if primary_module.is_none() {
+        primary_module = infer_added_file_module(base, &changed.path, tracker)?;
+        if primary_module.is_some() {
+            limitations.push(overlay_limitation(
+                "repository-overlay-module-inferred",
+                changed.path.clone(),
+                "the added Rust file module was inferred from an indexed parent module",
+            ));
+        }
+    }
+    let mut symbols = Vec::new();
+    let mut ids_by_local = BTreeMap::new();
+    for fact in &facts.symbols {
+        let module_id = base_by_local
+            .get(fact.local_id.as_str())
+            .map(|symbol| symbol.module_id.clone())
+            .or_else(|| primary_module.clone());
+        let Some(module_id) = module_id else {
+            limitations.push(overlay_limitation(
+                "repository-overlay-module-unresolved",
+                changed.path.clone(),
+                "the changed symbol could not be assigned to a known base module",
+            ));
+            continue;
+        };
+        if let Err(error) = tracker.consume(IndexResource::Symbols, 1) {
+            limitations.push(overlay_limitation(
+                error.code(),
+                changed.path.clone(),
+                "the overlay symbol budget was exhausted",
+            ));
+            break;
+        }
+        let symbol_id = repository_symbol_id(&module_id, &changed.path, &fact.local_id);
+        ids_by_local.insert(fact.local_id.clone(), symbol_id.clone());
+        symbols.push(GraphSymbol {
+            symbol_id,
+            local_id: fact.local_id.clone(),
+            module_id,
+            path: changed.path.clone(),
+            language: "rust".to_string(),
+            kind: fact.kind.clone(),
+            name: fact.name.clone(),
+            owner_symbol_id: None,
+            signature: (!fact.signature.is_empty()).then(|| fact.signature.clone()),
+            visibility: fact.visibility.clone(),
+            range: fact.range.clone(),
+            confidence: Confidence::Medium,
+        });
+    }
+    for symbol in &mut symbols {
+        symbol.owner_symbol_id = facts
+            .symbols
+            .iter()
+            .find(|fact| fact.local_id == symbol.local_id)
+            .and_then(|fact| fact.owner_local_id.as_ref())
+            .and_then(|owner| ids_by_local.get(owner))
+            .cloned();
+    }
+
+    let candidate_by_base_id = base_symbols
+        .iter()
+        .filter_map(|base_symbol| {
+            ids_by_local
+                .get(&base_symbol.local_id)
+                .map(|candidate| (base_symbol.symbol_id.as_str(), candidate.clone()))
+        })
+        .collect::<BTreeMap<_, _>>();
+    let mut edges = Vec::new();
+    let mut retained_calls = BTreeSet::new();
+    for base_edge in base_edges {
+        let Some(from_symbol) = candidate_by_base_id.get(base_edge.from_symbol.as_str()) else {
+            continue;
+        };
+        let target_name = match base_edge.to_symbol.as_deref() {
+            Some(target) => base
+                .symbol(target)
+                .map_err(map_graph_error)?
+                .map(|symbol| symbol.name),
+            None => base_edge.unresolved_target.clone(),
+        };
+        if !overlay_edge_still_present(base_edge, target_name.as_deref(), facts) {
+            continue;
+        }
+        let to_symbol = base_edge.to_symbol.as_ref().map(|target| {
+            candidate_by_base_id
+                .get(target.as_str())
+                .cloned()
+                .unwrap_or_else(|| target.clone())
+        });
+        let edge = make_overlay_edge(
+            base_edge.kind,
+            from_symbol,
+            to_symbol,
+            base_edge.unresolved_target.clone(),
+            &changed.path,
+            &base_edge.range,
+            base_edge.resolution,
+            base_edge.confidence,
+            base_edge.limitation_code.clone(),
+        );
+        if edge.kind == EdgeKind::Calls {
+            retained_calls.insert((
+                edge.range.start_byte,
+                edge.range.end_byte,
+                target_name.unwrap_or_default(),
+            ));
+        }
+        edges.push(edge);
+    }
+    for call in &facts.calls {
+        if retained_calls.contains(&(
+            call.range.start_byte,
+            call.range.end_byte,
+            call.callee.clone(),
+        )) {
+            continue;
+        }
+        let Some(from_symbol) = call
+            .caller_local_id
+            .as_ref()
+            .and_then(|local| ids_by_local.get(local))
+            .or_else(|| symbols.first().map(|symbol| &symbol.symbol_id))
+        else {
+            continue;
+        };
+        edges.push(make_overlay_edge(
+            EdgeKind::Calls,
+            from_symbol,
+            None,
+            Some(call.callee.clone()),
+            &changed.path,
+            &call.range,
+            Resolution::Unresolved,
+            Confidence::Low,
+            Some("repository-overlay-call-unresolved".to_string()),
+        ));
+    }
+    edges.sort_by(|left, right| left.edge_id.cmp(&right.edge_id));
+    edges.dedup_by(|left, right| left.edge_id == right.edge_id);
+    let file = base_file.unwrap_or(GraphFile {
+        path: changed.path.clone(),
+        mode: changed.mode.clone(),
+        presence: CandidatePresence::Present,
+        content_sha256: None,
+        file_fact_key: None,
+        language: Some("rust".to_string()),
+        module_id: primary_module,
+    });
+    let mut file = file;
+    file.mode = changed.mode.clone();
+    file.presence = CandidatePresence::Present;
+    file.content_sha256 = Some(content_sha256.to_string());
+    file.file_fact_key = Some(key);
+    file.language = Some("rust".to_string());
+    Ok(OverlayPathDelta {
+        files: vec![file],
+        symbols,
+        edges,
+        limitations,
+    })
+}
+
+fn overlay_edge_still_present(
+    edge: &GraphEdge,
+    target_name: Option<&str>,
+    facts: &crate::impact_context::adapters::tree_sitter_rust::RustFileFacts,
+) -> bool {
+    match edge.kind {
+        EdgeKind::Calls => facts.calls.iter().any(|call| {
+            call.range == edge.range
+                && target_name.is_none_or(|target| call.callee.as_str() == target)
+        }),
+        EdgeKind::References => facts.references.iter().any(|reference| {
+            reference.range == edge.range
+                && target_name.is_none_or(|target| reference.name.as_str() == target)
+        }),
+        EdgeKind::Imports | EdgeKind::Exports => facts
+            .imports
+            .iter()
+            .any(|import| import.range == edge.range),
+        EdgeKind::Defines | EdgeKind::Implements | EdgeKind::Overrides => false,
+    }
+}
+
+#[allow(clippy::too_many_arguments)]
+fn make_overlay_edge(
+    kind: EdgeKind,
+    from_symbol: &str,
+    to_symbol: Option<String>,
+    unresolved_target: Option<String>,
+    path: &RepoPath,
+    range: &SourceRange,
+    resolution: Resolution,
+    confidence: Confidence,
+    limitation_code: Option<String>,
+) -> GraphEdge {
+    let mut digest = Sha256::new();
+    hash_component(&mut digest, b"rust-repository-edge/v1");
+    hash_component(&mut digest, edge_kind_name(kind).as_bytes());
+    hash_component(&mut digest, from_symbol.as_bytes());
+    hash_component(&mut digest, to_symbol.as_deref().unwrap_or("").as_bytes());
+    hash_component(
+        &mut digest,
+        unresolved_target.as_deref().unwrap_or("").as_bytes(),
+    );
+    hash_component(&mut digest, path.as_str().as_bytes());
+    hash_component(&mut digest, &range.start_byte.to_be_bytes());
+    hash_component(&mut digest, &range.end_byte.to_be_bytes());
+    GraphEdge {
+        edge_id: format!("{:x}", digest.finalize()),
+        kind,
+        from_symbol: from_symbol.to_string(),
+        to_symbol,
+        unresolved_target,
+        path: path.clone(),
+        range: range.clone(),
+        provider_id: "rust-tree-sitter-resolver".to_string(),
+        provider_version: RESOLVER_VERSION.to_string(),
+        resolution,
+        confidence,
+        limitation_code,
+    }
+}
+
+fn repository_symbol_id(module_id: &str, path: &RepoPath, local_id: &str) -> String {
+    let mut digest = Sha256::new();
+    hash_component(&mut digest, b"rust-repository-symbol/v1");
+    hash_component(&mut digest, module_id.as_bytes());
+    hash_component(&mut digest, path.as_str().as_bytes());
+    hash_component(&mut digest, local_id.as_bytes());
+    format!("{:x}", digest.finalize())
+}
+
+fn infer_added_file_module(
+    base: &RepositoryGraphReader,
+    path: &RepoPath,
+    tracker: &mut IndexBudgetTracker,
+) -> Result<Option<String>, RepositoryIndexError> {
+    let components = path.as_str().split('/').collect::<Vec<_>>();
+    let Some(filename) = components.last().copied() else {
+        return Ok(None);
+    };
+    let (module_name, parent_directory) = if filename == "mod.rs" {
+        if components.len() < 2 {
+            return Ok(None);
+        }
+        (
+            components[components.len() - 2],
+            &components[..components.len() - 2],
+        )
+    } else {
+        let Some(module_name) = filename.strip_suffix(".rs") else {
+            return Ok(None);
+        };
+        (module_name, &components[..components.len() - 1])
+    };
+    if module_name.is_empty() || parent_directory.is_empty() {
+        return Ok(None);
+    }
+
+    let directory = parent_directory.join("/");
+    let mut candidates = Vec::new();
+    if filename != "mod.rs" {
+        candidates.push(format!("{directory}/mod.rs"));
+        if parent_directory.len() > 1 {
+            candidates.push(format!("{directory}.rs"));
+        }
+    }
+    candidates.push(format!("{directory}/lib.rs"));
+    candidates.push(format!("{directory}/main.rs"));
+    candidates.sort();
+    candidates.dedup();
+
+    for candidate in candidates {
+        if tracker.amount(IndexResource::QueryRows).remaining == 0 {
+            return Ok(None);
+        }
+        let candidate = RepoPath::new(candidate).map_err(|error| {
+            RepositoryIndexError::new("repository-overlay-module-path-invalid", error.to_string())
+        })?;
+        let Some(parent) = base.file_for_path(&candidate).map_err(map_graph_error)? else {
+            continue;
+        };
+        tracker
+            .consume(IndexResource::QueryRows, 1)
+            .map_err(|error| RepositoryIndexError::new(error.code(), error.to_string()))?;
+        if let Some(parent_module_id) = parent.module_id {
+            return Ok(Some(repository_module_id(
+                &parent_module_id,
+                module_name,
+                path,
+            )));
+        }
+    }
+    Ok(None)
+}
+
+fn repository_module_id(parent_module_id: &str, name: &str, path: &RepoPath) -> String {
+    let mut digest = Sha256::new();
+    hash_component(&mut digest, b"rust-repository-module/v1");
+    hash_component(&mut digest, parent_module_id.as_bytes());
+    hash_component(&mut digest, name.as_bytes());
+    hash_component(&mut digest, path.as_str().as_bytes());
+    hash_component(&mut digest, &[0]);
+    format!("{:x}", digest.finalize())
+}
+
+fn edge_kind_name(kind: EdgeKind) -> &'static str {
+    match kind {
+        EdgeKind::Defines => "defines",
+        EdgeKind::References => "references",
+        EdgeKind::Imports => "imports",
+        EdgeKind::Exports => "exports",
+        EdgeKind::Calls => "calls",
+        EdgeKind::Implements => "implements",
+        EdgeKind::Overrides => "overrides",
+    }
+}
+
+fn overlay_limitation(code: &str, path: RepoPath, reason: &str) -> IndexLimitation {
+    IndexLimitation {
+        code: code.to_string(),
+        path: Some(path),
+        symbol_id: None,
+        reason: reason.to_string(),
+        interpretation: "the Fast candidate overlay is partial for this path".to_string(),
+    }
+}
+
+fn hash_component(digest: &mut Sha256, value: &[u8]) {
+    digest.update((value.len() as u64).to_be_bytes());
+    digest.update(value);
 }
 
 fn prepare_index(
@@ -535,6 +1315,7 @@ fn parse_without_publish(
 
 fn query_graph(
     reader: &RepositoryGraphReader,
+    overlay: Option<&RepositoryOverlay>,
     changed_symbols: &[ChangedSymbol],
     provider_id: &str,
     budget: &IndexBudget,
@@ -558,11 +1339,33 @@ fn query_graph(
             RepositoryIndexError::new("repository-index-changed-path-invalid", error.to_string())
         })?;
         let path_limit = reader.maximum_rows_per_query().min(remaining);
-        let candidates = reader
+        let mut candidates = reader
             .symbols_for_path(&path, path_limit)
             .map_err(map_graph_error)?;
-        rows_read = rows_read.saturating_add(candidates.len());
-        if candidates.len() == path_limit {
+        let base_rows_read = candidates.len();
+        let mut removed_overlay_symbols = Vec::new();
+        if let Some(overlay) = overlay {
+            if overlay.path_tombstones.contains(&path) {
+                removed_overlay_symbols.extend(
+                    candidates
+                        .iter()
+                        .filter(|symbol| !overlay.symbols.contains_key(&symbol.symbol_id))
+                        .cloned(),
+                );
+                candidates.retain(|symbol| symbol.path != path);
+            }
+            candidates.extend(
+                overlay
+                    .symbols
+                    .values()
+                    .filter(|symbol| symbol.path == path)
+                    .cloned(),
+            );
+            candidates.sort_by(|left, right| left.symbol_id.cmp(&right.symbol_id));
+            candidates.dedup_by(|left, right| left.symbol_id == right.symbol_id);
+        }
+        rows_read = rows_read.saturating_add(base_rows_read);
+        if base_rows_read == path_limit {
             limitations.push(simple_index_limitation(
                 "index-query-row-budget-exhausted",
                 "changed-symbol seed lookup reached its exact row limit",
@@ -595,6 +1398,10 @@ fn query_graph(
             roots.insert(symbol.symbol_id.clone());
             graph_symbols.insert(symbol.symbol_id.clone(), symbol);
         }
+        for symbol in removed_overlay_symbols {
+            roots.insert(symbol.symbol_id.clone());
+            graph_symbols.insert(symbol.symbol_id.clone(), symbol);
+        }
     }
     let request = TraversalRequest {
         roots: roots.iter().cloned().collect(),
@@ -614,7 +1421,7 @@ fn query_graph(
         maximum_bytes: MAXIMUM_TRAVERSAL_OUTPUT_BYTES.min(budget.max_generation_bytes),
         deadline: budget.deadline,
     };
-    let traversal = traverse_repository_graph(reader, None, &request)
+    let traversal = traverse_repository_graph(reader, overlay, &request)
         .map_err(|error| RepositoryIndexError::new(error.code, error.message))?;
     rows_read = rows_read.saturating_add(traversal.rows_read);
     limitations.extend(traversal.limitations.clone());
@@ -636,7 +1443,14 @@ fn query_graph(
                 query_completeness = Completeness::Partial;
                 continue;
             }
-            if let Some(symbol) = reader.symbol(symbol_id).map_err(map_graph_error)? {
+            let symbol = if let Some(symbol) =
+                overlay.and_then(|overlay| overlay.symbols.get(symbol_id).cloned())
+            {
+                Some(symbol)
+            } else {
+                reader.symbol(symbol_id).map_err(map_graph_error)?
+            };
+            if let Some(symbol) = symbol {
                 rows_read = rows_read.saturating_add(1);
                 graph_symbols.insert(symbol_id.to_string(), symbol);
             }
@@ -677,16 +1491,33 @@ fn open_reader(
     identity: &GraphGenerationIdentity,
     budget: &IndexBudget,
 ) -> Result<CacheLookup<RepositoryGraphReader>, RepositoryIndexError> {
-    RepositoryGraphReader::open_immutable(
-        path,
-        identity,
-        ReaderLimits {
-            maximum_database_bytes: u64::try_from(budget.max_generation_bytes).unwrap_or(u64::MAX),
-            maximum_rows_per_query: budget.max_query_rows.max(1),
-            maximum_string_bytes: 4_096,
-        },
-    )
-    .map_err(map_graph_error)
+    RepositoryGraphReader::open_immutable(path, identity, reader_limits(budget))
+        .map_err(map_graph_error)
+}
+
+fn reader_limits(budget: &IndexBudget) -> ReaderLimits {
+    ReaderLimits {
+        maximum_database_bytes: u64::try_from(budget.max_generation_bytes).unwrap_or(u64::MAX),
+        maximum_rows_per_query: budget.max_query_rows.max(1),
+        maximum_string_bytes: 4_096,
+    }
+}
+
+fn generation_compatibility() -> GenerationCompatibility {
+    GenerationCompatibility {
+        graph_schema_version: 1,
+        resolver_digest: sha256_hex(RESOLVER_VERSION.as_bytes()),
+        adapter_query_digest: sha256_hex(b"tree-sitter-rust-index-query/v1"),
+        normalization_rules_digest: sha256_hex(NORMALIZATION_VERSION.as_bytes()),
+    }
+}
+
+fn manifest_input_bytes(manifest: &RepositoryManifest) -> u64 {
+    manifest
+        .entries
+        .iter()
+        .map(|entry| entry.content_bytes.unwrap_or(0) as u64)
+        .sum()
 }
 
 fn finalize_unavailable(
@@ -724,7 +1555,8 @@ fn finalize_unavailable(
             } else {
                 ProviderStatus::Unavailable
             },
-            &prepared.manifest,
+            prepared.manifest.entries.len(),
+            manifest_input_bytes(&prepared.manifest),
             &query,
             &cache,
             &limitations,
@@ -742,12 +1574,79 @@ fn finalize_unavailable(
     }
 }
 
+fn finalize_fast_unavailable(
+    provider_id: &str,
+    lookup_key: &str,
+    compatibility: &GenerationCompatibility,
+    cache: CacheStats,
+    limitations: Vec<IndexLimitation>,
+    started: Instant,
+) -> RepositoryIndexOutput {
+    let limitations = impact_limitations(provider_id, &limitations);
+    let elapsed = elapsed_ms(started);
+    let provider = ProviderRecord {
+        provider_id: provider_id.to_string(),
+        provider_kind: PROVIDER_KIND.to_string(),
+        provider_version: PROVIDER_VERSION.to_string(),
+        configuration_digest: sha256_hex(
+            &serde_json::to_vec(compatibility).unwrap_or_else(|_| b"invalid".to_vec()),
+        ),
+        status: if cache.stale > 0 {
+            ProviderStatus::Stale
+        } else if cache.corrupt > 0 {
+            ProviderStatus::InvalidOutput
+        } else {
+            ProviderStatus::Unavailable
+        },
+        elapsed_ms: elapsed,
+        input_files: 0,
+        input_bytes: 0,
+        output_fact_count: 0,
+        cache_hits: cache.hits,
+        cache_misses: cache.misses,
+        cache_stale: cache.stale,
+        cache_corrupt: cache.corrupt,
+        limitation_ids: limitations
+            .iter()
+            .map(|limitation| limitation.limitation_id.clone())
+            .collect(),
+    };
+    RepositoryIndexOutput {
+        generation_key: lookup_key.to_string(),
+        provider,
+        symbols: Vec::new(),
+        edges: Vec::new(),
+        domain_summaries: Vec::new(),
+        index_completeness: Completeness::Unavailable,
+        query_completeness: Completeness::Unavailable,
+        reached_depth: 0,
+        output_truncated: false,
+        limitations,
+        metrics: IndexMetrics {
+            elapsed_ms: elapsed,
+            manifest_files: 0,
+            manifest_bytes: 0,
+            file_fact_hits: 0,
+            file_fact_misses: 0,
+            file_fact_writes: 0,
+            parsed_files: 0,
+            parsed_bytes: 0,
+            symbols: 0,
+            edges: 0,
+            query_rows: 0,
+            generation_bytes: 0,
+            output_bytes: 0,
+        },
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn provider_record(
     provider_id: &str,
     identity: &GraphGenerationIdentity,
     status: ProviderStatus,
-    manifest: &RepositoryManifest,
+    input_files: usize,
+    input_bytes: u64,
     query: &QueryOutput,
     cache: &CacheStats,
     limitations: &[Limitation],
@@ -762,12 +1661,8 @@ fn provider_record(
         ),
         status,
         elapsed_ms,
-        input_files: manifest.entries.len(),
-        input_bytes: manifest
-            .entries
-            .iter()
-            .map(|entry| entry.content_bytes.unwrap_or(0) as u64)
-            .sum(),
+        input_files,
+        input_bytes,
         output_fact_count: query
             .symbols
             .len()

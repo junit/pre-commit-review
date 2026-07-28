@@ -21,6 +21,7 @@ use collect_diff_context_cli::impact_context::index::model::{
 };
 use collect_diff_context_cli::review_scope::ReviewSource;
 use rusqlite::Connection;
+use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::cell::{Cell, RefCell};
 use std::collections::BTreeMap;
@@ -76,6 +77,7 @@ fn repository_files() -> BTreeMap<RepoPath, Vec<u8>> {
 struct MemoryCandidate {
     scope: String,
     candidate_digest: String,
+    source: ReviewSource,
     files: Vec<CandidateFile>,
     bytes: BTreeMap<RepoPath, Vec<u8>>,
     reads: RefCell<Vec<String>>,
@@ -88,6 +90,7 @@ impl MemoryCandidate {
         Self {
             scope: repeated('a'),
             candidate_digest: repeated('b'),
+            source: ReviewSource::Staged,
             files: vec![CandidateFile {
                 path: auth.clone(),
                 mode: "100644".to_string(),
@@ -98,6 +101,81 @@ impl MemoryCandidate {
                 changed_ranges: vec![ChangedRange {
                     start_line: 1,
                     end_line: 1,
+                    deletion_anchor: false,
+                }],
+            }],
+            bytes,
+            reads: RefCell::new(Vec::new()),
+        }
+    }
+
+    fn with_source(mut self, source: ReviewSource) -> Self {
+        self.source = source;
+        self
+    }
+
+    fn renamed_auth() -> Self {
+        let mut candidate = Self::changed_auth();
+        let path = repo_path("src/auth.rs");
+        let bytes = b"pub fn authorize() -> bool { true }\n".to_vec();
+        candidate.bytes.insert(path, bytes.clone());
+        candidate.files[0].content_identity = Some(digest(&bytes));
+        candidate
+    }
+
+    fn deleted_auth() -> Self {
+        let mut candidate = Self::changed_auth();
+        candidate.files[0].mode = "000000".to_string();
+        candidate.files[0].content_identity = None;
+        candidate.files[0].presence = CandidatePresence::Deleted;
+        candidate.files[0].change_status = Some("D".to_string());
+        candidate
+    }
+
+    fn added_extra() -> Self {
+        let mut bytes = repository_files();
+        let extra = repo_path("src/extra.rs");
+        let content = b"pub fn new_api() -> bool { true }\n".to_vec();
+        bytes.insert(extra.clone(), content.clone());
+        Self {
+            scope: repeated('a'),
+            candidate_digest: repeated('b'),
+            source: ReviewSource::Staged,
+            files: vec![CandidateFile {
+                path: extra.clone(),
+                mode: "100644".to_string(),
+                content_identity: Some(digest(&content)),
+                presence: CandidatePresence::Present,
+                manifest_unit_id: Some("changed:src/extra.rs".to_string()),
+                change_status: Some("A".to_string()),
+                changed_ranges: vec![ChangedRange {
+                    start_line: 1,
+                    end_line: 1,
+                    deletion_anchor: false,
+                }],
+            }],
+            bytes,
+            reads: RefCell::new(Vec::new()),
+        }
+    }
+
+    fn changed_api() -> Self {
+        let bytes = repository_files();
+        let api = repo_path("src/api.rs");
+        Self {
+            scope: repeated('a'),
+            candidate_digest: repeated('b'),
+            source: ReviewSource::Staged,
+            files: vec![CandidateFile {
+                path: api.clone(),
+                mode: "100644".to_string(),
+                content_identity: Some(digest(&bytes[&api])),
+                presence: CandidatePresence::Present,
+                manifest_unit_id: Some("changed:src/api.rs".to_string()),
+                change_status: Some("M".to_string()),
+                changed_ranges: vec![ChangedRange {
+                    start_line: 2,
+                    end_line: 2,
                     deletion_anchor: false,
                 }],
             }],
@@ -117,7 +195,7 @@ impl CandidateContent for MemoryCandidate {
     }
 
     fn source(&self) -> ReviewSource {
-        ReviewSource::Staged
+        self.source
     }
 
     fn files(&self) -> &[CandidateFile] {
@@ -152,6 +230,7 @@ struct MemoryManifestSource {
     scope_reads: Cell<usize>,
     files: BTreeMap<RepoPath, Vec<u8>>,
     manifest: RepositoryManifest,
+    manifest_reads: Cell<usize>,
     reads: RefCell<Vec<String>>,
 }
 
@@ -162,6 +241,21 @@ impl MemoryManifestSource {
 
     fn partial() -> Self {
         Self::new(None, true)
+    }
+
+    fn branch() -> Self {
+        let mut source = Self::new(None, false);
+        source.manifest.locator.source = ReviewSource::Branch;
+        source.manifest.locator.index_manifest_digest = None;
+        source.manifest.locator.overlay_candidate_digest = repeated('4');
+        source
+    }
+
+    fn unstaged() -> Self {
+        let mut source = Self::new(None, false);
+        source.manifest.locator.source = ReviewSource::Unstaged;
+        source.manifest.locator.overlay_candidate_digest = repeated('5');
+        source
     }
 
     fn drifting() -> Self {
@@ -235,6 +329,7 @@ impl MemoryManifestSource {
             scope_reads: Cell::new(0),
             files,
             manifest,
+            manifest_reads: Cell::new(0),
             reads: RefCell::new(Vec::new()),
         }
     }
@@ -255,7 +350,7 @@ impl RepositoryManifestSource for MemoryManifestSource {
     }
 
     fn source(&self) -> ReviewSource {
-        ReviewSource::Staged
+        self.manifest.locator.source
     }
 
     fn repository_locator(&self) -> &RepositoryLocator {
@@ -269,6 +364,8 @@ impl RepositoryManifestSource for MemoryManifestSource {
         RepositoryManifest,
         collect_diff_context_cli::impact_context::index::manifest::RepositoryManifestError,
     > {
+        self.manifest_reads
+            .set(self.manifest_reads.get().saturating_add(1));
         Ok(self.manifest.clone())
     }
 
@@ -307,6 +404,23 @@ fn changed_symbol() -> ChangedSymbol {
         range: source_range(1),
         confidence: Confidence::High,
     }
+}
+
+fn changed_login_symbol() -> ChangedSymbol {
+    let mut symbol = changed_symbol();
+    symbol.path = "src/api.rs".to_string();
+    symbol.name = "login".to_string();
+    symbol.signature = Some("pub fn login()".to_string());
+    symbol.range = source_range(2);
+    symbol
+}
+
+fn changed_extra_symbol() -> ChangedSymbol {
+    let mut symbol = changed_symbol();
+    symbol.path = "src/extra.rs".to_string();
+    symbol.name = "new_api".to_string();
+    symbol.signature = Some("pub fn new_api() -> bool".to_string());
+    symbol
 }
 
 fn cache_layout(root: &Path) -> CacheLayout {
@@ -400,6 +514,27 @@ fn generation_path(layout: &CacheLayout) -> PathBuf {
         .unwrap()
 }
 
+fn locator_reference_path(layout: &CacheLayout, kind: &str) -> PathBuf {
+    snapshot(&layout.graphs_dir)
+        .into_iter()
+        .filter(|(path, _, _)| path.ends_with(".json"))
+        .map(|(path, _, _)| layout.graphs_dir.join(path))
+        .find(|path| {
+            fs::read(path)
+                .ok()
+                .and_then(|bytes| serde_json::from_slice::<Value>(&bytes).ok())
+                .and_then(|value| {
+                    value
+                        .pointer("/payload/lookup/kind")
+                        .and_then(Value::as_str)
+                        .map(str::to_owned)
+                })
+                .as_deref()
+                == Some(kind)
+        })
+        .unwrap_or_else(|| panic!("missing {kind} generation locator reference"))
+}
+
 #[test]
 fn fast_mode_reads_compatible_generation_without_writes() {
     let cache = tempfile::tempdir().unwrap();
@@ -408,6 +543,7 @@ fn fast_mode_reads_compatible_generation_without_writes() {
     let source = MemoryManifestSource::stable();
     let adapter = RepositoryIndexAdapter::new(layout.clone());
     adapter.analyze(deep_request(&candidate, &source)).unwrap();
+    assert_eq!(source.manifest_reads.get(), 1);
     let before = snapshot(cache.path());
     let changed = vec![changed_symbol()];
 
@@ -416,7 +552,329 @@ fn fast_mode_reads_compatible_generation_without_writes() {
         .unwrap();
 
     assert!(output.provider.cache_hits > 0);
+    assert_eq!(source.manifest_reads.get(), 1);
     assert_eq!(snapshot(cache.path()), before);
+}
+
+#[test]
+fn fast_staged_candidate_uses_branch_base_overlay_without_whole_manifest() {
+    let cache = tempfile::tempdir().unwrap();
+    let layout = cache_layout(cache.path());
+    let adapter = RepositoryIndexAdapter::new(layout);
+    let branch_candidate = MemoryCandidate::changed_auth().with_source(ReviewSource::Branch);
+    let branch_source = MemoryManifestSource::branch();
+    let branch = adapter
+        .analyze(deep_request(&branch_candidate, &branch_source))
+        .unwrap();
+
+    let staged_candidate = MemoryCandidate::changed_auth();
+    let staged_source = MemoryManifestSource::stable();
+    let changed = vec![changed_symbol()];
+    let output = adapter
+        .analyze(fast_request(&staged_candidate, &staged_source, &changed))
+        .unwrap();
+
+    assert_eq!(staged_source.manifest_reads.get(), 0);
+    assert!(output.provider.cache_hits > 0);
+    assert_eq!(output.metrics.file_fact_misses, 1);
+    assert_eq!(output.metrics.parsed_files, 1);
+    assert_eq!(
+        output.metrics.parsed_bytes,
+        repository_files()[&repo_path("src/auth.rs")].len() as u64
+    );
+    assert_ne!(
+        output.provider.configuration_digest, branch.provider.configuration_digest,
+        "a base-plus-overlay result must bind the exact candidate identity"
+    );
+    assert!(output.edges.iter().any(|edge| edge.path == "src/api.rs"));
+}
+
+#[test]
+fn fast_locator_rejects_reference_whose_filename_does_not_bind_generation() {
+    let cache = tempfile::tempdir().unwrap();
+    let layout = cache_layout(cache.path());
+    let adapter = RepositoryIndexAdapter::new(layout.clone());
+    let branch_candidate = MemoryCandidate::changed_auth().with_source(ReviewSource::Branch);
+    let branch_source = MemoryManifestSource::branch();
+    adapter
+        .analyze(deep_request(&branch_candidate, &branch_source))
+        .unwrap();
+
+    let reference = locator_reference_path(&layout, "base-tree");
+    let mismatched = reference
+        .parent()
+        .unwrap()
+        .join(format!("{}.json", repeated('0')));
+    fs::rename(reference, mismatched).unwrap();
+
+    let staged_candidate = MemoryCandidate::changed_auth();
+    let staged_source = MemoryManifestSource::stable();
+    let changed = vec![changed_symbol()];
+    let output = adapter
+        .analyze(fast_request(&staged_candidate, &staged_source, &changed))
+        .unwrap();
+
+    assert_eq!(output.index_completeness, Completeness::Unavailable);
+    assert!(output.provider.cache_corrupt > 0);
+    assert!(output
+        .limitations
+        .iter()
+        .any(|limitation| limitation.code == "repository-index-base-generation-corrupt"));
+}
+
+#[test]
+fn fast_locator_faults_are_bounded_and_fail_closed() {
+    for fault in ["corrupt", "missing-target", "cardinality"] {
+        let cache = tempfile::tempdir().unwrap();
+        let layout = cache_layout(cache.path());
+        let adapter = RepositoryIndexAdapter::new(layout.clone());
+        let branch_candidate = MemoryCandidate::changed_auth().with_source(ReviewSource::Branch);
+        let branch_source = MemoryManifestSource::branch();
+        adapter
+            .analyze(deep_request(&branch_candidate, &branch_source))
+            .unwrap();
+        let reference = locator_reference_path(&layout, "base-tree");
+        match fault {
+            "corrupt" => fs::write(&reference, b"{").unwrap(),
+            "missing-target" => fs::remove_file(generation_path(&layout)).unwrap(),
+            "cardinality" => {
+                let bytes = fs::read(&reference).unwrap();
+                for index in 0..32 {
+                    fs::write(
+                        reference
+                            .parent()
+                            .unwrap()
+                            .join(format!("extra-{index}.json")),
+                        &bytes,
+                    )
+                    .unwrap();
+                }
+            }
+            _ => unreachable!(),
+        }
+
+        let staged_candidate = MemoryCandidate::changed_auth();
+        let staged_source = MemoryManifestSource::stable();
+        let changed = vec![changed_symbol()];
+        let output = adapter
+            .analyze(fast_request(&staged_candidate, &staged_source, &changed))
+            .unwrap();
+
+        assert_eq!(
+            output.index_completeness,
+            Completeness::Unavailable,
+            "locator fault {fault} must not release graph evidence"
+        );
+        match fault {
+            "missing-target" => assert!(output.provider.cache_stale > 0),
+            _ => assert!(output.provider.cache_corrupt > 0),
+        }
+    }
+}
+
+#[cfg(unix)]
+#[test]
+fn fast_locator_does_not_follow_reference_symlinks() {
+    use std::os::unix::fs::symlink;
+
+    let cache = tempfile::tempdir().unwrap();
+    let layout = cache_layout(cache.path());
+    let adapter = RepositoryIndexAdapter::new(layout.clone());
+    let branch_candidate = MemoryCandidate::changed_auth().with_source(ReviewSource::Branch);
+    let branch_source = MemoryManifestSource::branch();
+    adapter
+        .analyze(deep_request(&branch_candidate, &branch_source))
+        .unwrap();
+
+    let reference = locator_reference_path(&layout, "base-tree");
+    let sentinel = cache.path().join("outside-reference");
+    fs::write(&sentinel, b"not a locator").unwrap();
+    fs::remove_file(&reference).unwrap();
+    symlink(&sentinel, &reference).unwrap();
+
+    let staged_candidate = MemoryCandidate::changed_auth();
+    let staged_source = MemoryManifestSource::stable();
+    let changed = vec![changed_symbol()];
+    let output = adapter
+        .analyze(fast_request(&staged_candidate, &staged_source, &changed))
+        .unwrap();
+
+    assert_eq!(output.index_completeness, Completeness::Unavailable);
+    assert!(output.provider.cache_corrupt > 0);
+    assert_eq!(fs::read(sentinel).unwrap(), b"not a locator");
+}
+
+#[cfg(unix)]
+#[test]
+fn fast_locator_does_not_follow_symlinked_locator_directories() {
+    use std::os::unix::fs::symlink;
+
+    let cache = tempfile::tempdir().unwrap();
+    let layout = cache_layout(cache.path());
+    let adapter = RepositoryIndexAdapter::new(layout.clone());
+    let branch_candidate = MemoryCandidate::changed_auth().with_source(ReviewSource::Branch);
+    let branch_source = MemoryManifestSource::branch();
+    adapter
+        .analyze(deep_request(&branch_candidate, &branch_source))
+        .unwrap();
+
+    let locator_root = layout.graphs_dir.join("locators");
+    let outside = cache.path().join("outside-locators");
+    fs::rename(&locator_root, &outside).unwrap();
+    symlink(&outside, &locator_root).unwrap();
+
+    let staged_candidate = MemoryCandidate::changed_auth();
+    let staged_source = MemoryManifestSource::stable();
+    let changed = vec![changed_symbol()];
+    let output = adapter
+        .analyze(fast_request(&staged_candidate, &staged_source, &changed))
+        .unwrap();
+
+    assert_eq!(output.index_completeness, Completeness::Unavailable);
+    assert!(output.provider.cache_corrupt > 0);
+    assert!(outside.is_dir());
+}
+
+#[test]
+fn fast_unstaged_candidate_uses_index_base_overlay_without_whole_manifest() {
+    let cache = tempfile::tempdir().unwrap();
+    let layout = cache_layout(cache.path());
+    let adapter = RepositoryIndexAdapter::new(layout);
+    let staged_candidate = MemoryCandidate::changed_auth();
+    let staged_source = MemoryManifestSource::stable();
+    adapter
+        .analyze(deep_request(&staged_candidate, &staged_source))
+        .unwrap();
+
+    let unstaged_candidate = MemoryCandidate::changed_auth().with_source(ReviewSource::Unstaged);
+    let unstaged_source = MemoryManifestSource::unstaged();
+    let changed = vec![changed_symbol()];
+    let output = adapter
+        .analyze(fast_request(
+            &unstaged_candidate,
+            &unstaged_source,
+            &changed,
+        ))
+        .unwrap();
+
+    assert_eq!(unstaged_source.manifest_reads.get(), 0);
+    assert!(output.provider.cache_hits > 0);
+    assert!(output.edges.iter().any(|edge| edge.path == "src/api.rs"));
+}
+
+#[test]
+fn fast_overlay_preserves_replaced_symbol_callers_as_unresolved_impact() {
+    let cache = tempfile::tempdir().unwrap();
+    let layout = cache_layout(cache.path());
+    let adapter = RepositoryIndexAdapter::new(layout);
+    let branch_candidate = MemoryCandidate::changed_auth().with_source(ReviewSource::Branch);
+    let branch_source = MemoryManifestSource::branch();
+    adapter
+        .analyze(deep_request(&branch_candidate, &branch_source))
+        .unwrap();
+
+    let staged_candidate = MemoryCandidate::renamed_auth();
+    let staged_source = MemoryManifestSource::stable();
+    let mut authorize = changed_symbol();
+    authorize.name = "authorize".to_string();
+    authorize.signature = Some("pub fn authorize() -> bool".to_string());
+    let output = adapter
+        .analyze(fast_request(
+            &staged_candidate,
+            &staged_source,
+            &[authorize],
+        ))
+        .unwrap();
+
+    assert!(output.edges.iter().any(|edge| {
+        edge.path == "src/api.rs"
+            && edge.resolution == Resolution::Unresolved
+            && edge.to_symbol.is_none()
+    }));
+}
+
+#[test]
+fn fast_overlay_query_row_budget_degrades_to_partial_context() {
+    let cache = tempfile::tempdir().unwrap();
+    let layout = cache_layout(cache.path());
+    let adapter = RepositoryIndexAdapter::new(layout);
+    let branch_candidate = MemoryCandidate::changed_auth().with_source(ReviewSource::Branch);
+    let branch_source = MemoryManifestSource::branch();
+    adapter
+        .analyze(deep_request(&branch_candidate, &branch_source))
+        .unwrap();
+
+    let staged_candidate = MemoryCandidate::changed_api();
+    let staged_source = MemoryManifestSource::stable();
+    let changed = vec![changed_login_symbol()];
+    let mut request = fast_request(&staged_candidate, &staged_source, &changed);
+    request.index_budget.max_query_rows = 1;
+    let output = adapter.analyze(request).unwrap();
+
+    assert_eq!(output.query_completeness, Completeness::Partial);
+    assert!(output
+        .limitations
+        .iter()
+        .any(|limitation| limitation.code == "index-query-row-budget-exhausted"));
+}
+
+#[test]
+fn fast_deleted_path_accounts_for_base_seed_rows_before_tombstoning() {
+    let cache = tempfile::tempdir().unwrap();
+    let layout = cache_layout(cache.path());
+    let adapter = RepositoryIndexAdapter::new(layout);
+    let branch_candidate = MemoryCandidate::changed_auth().with_source(ReviewSource::Branch);
+    let branch_source = MemoryManifestSource::branch();
+    adapter
+        .analyze(deep_request(&branch_candidate, &branch_source))
+        .unwrap();
+
+    let staged_candidate = MemoryCandidate::deleted_auth();
+    let staged_source = MemoryManifestSource::stable();
+    let changed = vec![changed_symbol()];
+    let mut request = fast_request(&staged_candidate, &staged_source, &changed);
+    request.index_budget.max_query_rows = 1;
+    request.index_budget.max_graph_depth = 0;
+    let output = adapter.analyze(request).unwrap();
+
+    assert_eq!(output.query_completeness, Completeness::Partial);
+    assert_eq!(output.metrics.query_rows, 1);
+    assert!(
+        output.symbols.is_empty(),
+        "overlay construction exhausted the shared row budget before traversal"
+    );
+    assert!(output
+        .limitations
+        .iter()
+        .any(|limitation| limitation.code == "index-query-row-budget-exhausted"));
+}
+
+#[test]
+fn fast_added_rust_file_infers_module_from_existing_crate_root() {
+    let cache = tempfile::tempdir().unwrap();
+    let layout = cache_layout(cache.path());
+    let adapter = RepositoryIndexAdapter::new(layout);
+    let branch_candidate = MemoryCandidate::changed_auth().with_source(ReviewSource::Branch);
+    let branch_source = MemoryManifestSource::branch();
+    adapter
+        .analyze(deep_request(&branch_candidate, &branch_source))
+        .unwrap();
+
+    let staged_candidate = MemoryCandidate::added_extra();
+    let staged_source = MemoryManifestSource::stable();
+    let changed = vec![changed_extra_symbol()];
+    let output = adapter
+        .analyze(fast_request(&staged_candidate, &staged_source, &changed))
+        .unwrap();
+
+    assert!(output
+        .symbols
+        .iter()
+        .any(|symbol| { symbol.path == "src/extra.rs" && symbol.name == "new_api" }));
+    assert!(!output
+        .limitations
+        .iter()
+        .any(|limitation| limitation.code == "repository-overlay-module-unresolved"));
 }
 
 #[test]

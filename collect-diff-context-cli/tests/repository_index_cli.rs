@@ -287,6 +287,50 @@ fn index_doctor_is_read_only_and_reports_corrupt_or_orphaned_objects() -> Result
 }
 
 #[test]
+fn index_doctor_without_generation_ignores_valid_locator_references() -> Result<(), Box<dyn Error>>
+{
+    let repo = rust_repository()?;
+    let cache = tempfile::tempdir()?;
+    build_index(&repo, cache.path())?;
+    let before = snapshot(cache.path());
+
+    let output = repository_context(&repo, cache.path(), &["index", "doctor"])?;
+    let report = parse_report(&output)?;
+
+    assert_eq!(report.status, IndexReportStatus::Completed);
+    assert_eq!(snapshot(cache.path()), before);
+    Ok(())
+}
+
+#[test]
+fn index_doctor_reports_corrupt_locator_references_without_writes() -> Result<(), Box<dyn Error>> {
+    let repo = rust_repository()?;
+    let cache = tempfile::tempdir()?;
+    build_index(&repo, cache.path())?;
+    let reference = snapshot(cache.path())
+        .into_iter()
+        .map(|(path, _, _)| cache.path().join(path))
+        .find(|path| {
+            path.extension()
+                .is_some_and(|extension| extension == "json")
+        })
+        .ok_or("missing generation locator reference")?;
+    fs::write(reference, b"{")?;
+    let before = snapshot(cache.path());
+
+    let output = repository_context(&repo, cache.path(), &["index", "doctor"])?;
+    let report = parse_report(&output)?;
+
+    assert_eq!(report.status, IndexReportStatus::Partial);
+    assert!(report
+        .limitations
+        .iter()
+        .any(|limitation| { limitation.code == "repository-index-generation-reference-corrupt" }));
+    assert_eq!(snapshot(cache.path()), before);
+    Ok(())
+}
+
+#[test]
 fn index_inspect_requires_exact_digest_path_or_symbol_and_bounds_rows() -> Result<(), Box<dyn Error>>
 {
     let repo = rust_repository()?;
@@ -376,6 +420,7 @@ fn index_clean_defaults_to_dry_run_and_stays_inside_repository_namespace(
     let repo = rust_repository()?;
     let cache = tempfile::tempdir()?;
     let built = build_index(&repo, cache.path())?;
+    let generation = built.generation_key.as_deref().unwrap();
     let generation_path = generation_path(cache.path(), &built);
     let sentinel = cache.path().join("outside-repository-namespace");
     fs::write(&sentinel, b"keep")?;
@@ -402,6 +447,9 @@ fn index_clean_defaults_to_dry_run_and_stays_inside_repository_namespace(
     let execute = parse_report(&execute)?;
     assert_eq!(execute.status, IndexReportStatus::Completed);
     assert!(!generation_path.exists());
+    assert!(!snapshot(cache.path())
+        .iter()
+        .any(|(path, _, _)| { path.ends_with(&format!("{generation}.json")) }));
     assert_eq!(fs::read(&sentinel)?, b"keep");
 
     for arguments in [
@@ -411,6 +459,52 @@ fn index_clean_defaults_to_dry_run_and_stays_inside_repository_namespace(
         let output = repository_context(&repo, cache.path(), arguments)?;
         assert_eq!(output.status.code(), Some(2));
     }
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn index_clean_does_not_follow_symlinked_locator_directory() -> Result<(), Box<dyn Error>> {
+    use std::os::unix::fs::symlink;
+
+    let repo = rust_repository()?;
+    let cache = tempfile::tempdir()?;
+    let built = build_index(&repo, cache.path())?;
+    let generation = built.generation_key.as_deref().unwrap();
+    let generation_path = generation_path(cache.path(), &built);
+    let graphs = generation_path.parent().unwrap();
+    let locator_root = graphs.join("locators");
+    let outside = cache.path().join("outside-locators");
+    fs::rename(&locator_root, &outside)?;
+    symlink(&outside, &locator_root)?;
+    let outside_reference = snapshot(&outside)
+        .into_iter()
+        .map(|(path, _, _)| outside.join(path))
+        .find(|path| path.ends_with(format!("{generation}.json")))
+        .ok_or("missing locator reference")?;
+
+    let output = repository_context(
+        &repo,
+        cache.path(),
+        &[
+            "index",
+            "clean",
+            "--execute",
+            "--max-bytes",
+            "1",
+            "--retain-generations",
+            "0",
+        ],
+    )?;
+    let report = parse_report(&output)?;
+
+    assert_eq!(report.status, IndexReportStatus::Partial);
+    assert!(!generation_path.exists());
+    assert!(outside_reference.is_file());
+    assert!(report
+        .limitations
+        .iter()
+        .any(|limitation| { limitation.code == "repository-index-clean-reference-remove-failed" }));
     Ok(())
 }
 

@@ -67,7 +67,7 @@ pub struct CacheError {
 }
 
 impl CacheError {
-    fn new(code: &'static str, message: impl Into<String>) -> Self {
+    pub(crate) fn new(code: &'static str, message: impl Into<String>) -> Self {
         Self {
             code,
             message: message.into(),
@@ -592,7 +592,7 @@ fn normalize_absolute_path(path: &Path) -> Result<PathBuf, CacheError> {
 pub(crate) fn create_private_directory(path: &Path) -> Result<(), CacheError> {
     match fs::symlink_metadata(path) {
         Ok(metadata) => {
-            if !metadata.file_type().is_dir() || metadata.file_type().is_symlink() {
+            if !metadata.file_type().is_dir() || is_symlink_or_reparse(path, &metadata) {
                 return Err(CacheError::new(
                     "cache-directory-unsafe",
                     format!(
@@ -617,7 +617,7 @@ pub(crate) fn create_private_directory(path: &Path) -> Result<(), CacheError> {
                     format!("cannot inspect cache directory {}: {error}", path.display()),
                 )
             })?;
-            if !metadata.file_type().is_dir() || metadata.file_type().is_symlink() {
+            if !metadata.file_type().is_dir() || is_symlink_or_reparse(path, &metadata) {
                 return Err(CacheError::new(
                     "cache-directory-unsafe",
                     format!(
@@ -635,6 +635,28 @@ pub(crate) fn create_private_directory(path: &Path) -> Result<(), CacheError> {
         }
     }
     set_private_directory_permissions(path)
+}
+
+#[cfg(not(windows))]
+pub(crate) fn is_symlink_or_reparse(_path: &Path, metadata: &fs::Metadata) -> bool {
+    metadata.file_type().is_symlink()
+}
+
+#[cfg(windows)]
+pub(crate) fn is_symlink_or_reparse(path: &Path, metadata: &fs::Metadata) -> bool {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Storage::FileSystem::{
+        GetFileAttributesW, FILE_ATTRIBUTE_REPARSE_POINT, INVALID_FILE_ATTRIBUTES,
+    };
+
+    if metadata.file_type().is_symlink() {
+        return true;
+    }
+    let mut wide = path.as_os_str().encode_wide().collect::<Vec<_>>();
+    wide.push(0);
+    // SAFETY: `wide` is a NUL-terminated path buffer valid for the duration of the call.
+    let attributes = unsafe { GetFileAttributesW(wide.as_ptr()) };
+    attributes == INVALID_FILE_ATTRIBUTES || attributes & FILE_ATTRIBUTE_REPARSE_POINT != 0
 }
 
 fn create_private_path(path: &Path) -> Result<(), CacheError> {
@@ -697,7 +719,7 @@ pub(crate) fn set_private_file_permissions(_file: &File) -> Result<(), CacheErro
 }
 
 #[cfg(unix)]
-fn open_regular_file_no_follow(path: &Path) -> std::io::Result<File> {
+pub(crate) fn open_regular_file_no_follow(path: &Path) -> std::io::Result<File> {
     use std::os::unix::fs::OpenOptionsExt;
     let file = OpenOptions::new()
         .read(true)
@@ -713,7 +735,7 @@ fn open_regular_file_no_follow(path: &Path) -> std::io::Result<File> {
 }
 
 #[cfg(windows)]
-fn open_regular_file_no_follow(path: &Path) -> std::io::Result<File> {
+pub(crate) fn open_regular_file_no_follow(path: &Path) -> std::io::Result<File> {
     use std::os::windows::fs::OpenOptionsExt;
     use windows_sys::Win32::Storage::FileSystem::FILE_FLAG_OPEN_REPARSE_POINT;
     let file = OpenOptions::new()

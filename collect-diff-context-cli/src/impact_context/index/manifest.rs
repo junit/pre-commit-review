@@ -74,6 +74,13 @@ struct GitManifestRecord {
 
 impl GitRepositoryManifestSource {
     pub fn new(scope: &AuthoritativeScope) -> Result<Self, RepositoryManifestError> {
+        Self::new_bounded(scope, LOCATOR_DEADLINE)
+    }
+
+    pub fn new_bounded(
+        scope: &AuthoritativeScope,
+        deadline: Duration,
+    ) -> Result<Self, RepositoryManifestError> {
         if !scope.authoritative {
             return Err(RepositoryManifestError::new(
                 "index-scope-not-authoritative",
@@ -85,20 +92,19 @@ impl GitRepositoryManifestSource {
             &scope.repository,
             &["rev-parse", "--show-object-format"],
             started,
-            LOCATOR_DEADLINE,
+            deadline,
             "cannot determine Git object format",
         )?;
         let base_tree = git_text(
             &scope.repository,
             &["rev-parse", "HEAD^{tree}"],
             started,
-            LOCATOR_DEADLINE,
+            deadline,
             "cannot determine opening tree",
         )?;
         let index_manifest_digest =
             if matches!(scope.source, ReviewSource::Staged | ReviewSource::Unstaged) {
-                let records =
-                    list_index_records(&scope.repository, None, started, LOCATOR_DEADLINE)?;
+                let records = list_index_records(&scope.repository, None, started, deadline)?;
                 Some(digest_index_records(&object_format, &records))
             } else {
                 None
