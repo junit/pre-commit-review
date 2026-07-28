@@ -2,7 +2,8 @@
 
 ## Status
 
-Approved for implementation planning on 2026-07-28.
+Approved for implementation planning on 2026-07-28. Amended after contract and
+LSP compatibility review on the same date.
 
 This document defines Phase 2 from
 [Whole-Repository Symbols and Call Graph Options](../../call-graph-open-source-options.md):
@@ -16,9 +17,11 @@ remains a separate completion requirement.
 
 Add an independent `repository_context_provider` contract and a synchronous,
 bounded rust-analyzer LSP client. The provider consumes an already materialized,
-read-only candidate snapshot plus exact scope, candidate, project-model, binary,
-and configuration bindings. It queries only explicitly supplied changed Rust
-functions and their incoming or outgoing callers within one or two hops.
+read-only candidate snapshot plus exact scope, candidate, project-model,
+profile, binary, and configuration bindings. The normalized project model is
+the `linkedProjects` input actually supplied to rust-analyzer. The provider
+queries only explicitly supplied changed Rust functions and their incoming
+callers or outgoing callees within one or two hops.
 
 The provider does not:
 
@@ -30,11 +33,12 @@ The provider does not:
 - persist opaque LSP session data;
 - claim that best-effort offline process configuration is an OS network sandbox.
 
-The first implementation cycle covers the provider contract, strict snapshot
-URI and range mapping, bounded JSON-RPC transport, managed process lifecycle,
-and rust-analyzer initialize and Call Hierarchy requests. A standalone CLI,
-real-server release profiles, sustained fuzzing, and four-platform release
-gates remain later tasks in the same Phase 2 delivery.
+The first implementation cycle covers the provider, project-model, and profile
+contracts; strict snapshot URI and range mapping; bounded JSON-RPC transport;
+managed process lifecycle; and rust-analyzer initialize and Call Hierarchy
+requests. A standalone CLI, profile/artifact distribution, sustained fuzzing,
+and four-platform real-server release gates remain later tasks in the same
+Phase 2 delivery.
 
 ## Context
 
@@ -86,7 +90,7 @@ on every failure path.
 - Automatic dependency installation, Cargo fetching, project generation,
   builds, tests, build scripts, or procedural macro execution.
 - Automatic execution during ordinary review, Fast Mode, or `index build`.
-- Persistent semantic graph storage in the first delivery.
+- Persistent semantic graph storage in the first implementation cycle.
 - SCIP, clangd, gopls, Joern, or cross-language call support.
 - Expanding `ImpactContext.changed_symbols` to include unchanged related
   symbols.
@@ -97,13 +101,13 @@ on every failure path.
 ```text
 Trusted Control Plane
   |
-  | BoundCandidateSnapshot + ProviderRequest
+  | &CandidateSnapshot + BoundProjectModel + AuthorizedProfile + ProviderRequest
   v
 Repository Context Provider
   +-- request and binding validation
   +-- snapshot verifier
   +-- strict SnapshotUriMapper
-  +-- pinned executable/runtime preparation
+  +-- pinned profile/executable/runtime preparation
   +-- bounded LSP transport
   +-- rust-analyzer session state machine
   +-- deterministic 1-2 hop traversal
@@ -125,7 +129,7 @@ current `repository-context-cli collect` path.
 
 The module has five narrow components:
 
-1. `contract` validates requests and reports.
+1. `contract` validates requests, project models, profiles, and reports.
 2. `snapshot` owns binding verification, URI mapping, and source range
    conversion.
 3. `json_rpc` owns Content-Length framing and request correlation.
@@ -139,8 +143,11 @@ integrity-checking policies. It does not reuse the one-shot stdout capture API.
 
 ## Candidate Binding
 
-The provider accepts a `BoundCandidateSnapshot`, not a repository path and not
-an arbitrary directory string. The binding contains:
+The provider accepts an in-process `BoundCandidateSnapshot<'a>` that borrows an
+existing `&'a CandidateSnapshot`; it never reconstructs snapshot authority from
+JSON and never accepts a repository path or arbitrary directory string. The
+serialized request repeats these values only for exact comparison and report
+provenance:
 
 ```text
 source
@@ -150,7 +157,7 @@ snapshot_root
 snapshot_sha256
 snapshot_files
 snapshot_bytes
-project_model_fingerprint
+project_model_digest
 ```
 
 `scope_fingerprint`, `candidate_digest`, and `snapshot_sha256` are distinct
@@ -167,18 +174,24 @@ Before starting a process, the provider must:
 - require a canonical absolute snapshot root;
 - require the root to be a directory;
 - reject a `.git` file or directory anywhere in the snapshot root;
-- verify file count, byte count, modes, safe symlinks, read-only state, and
-  snapshot SHA256 with the existing snapshot rules;
-- validate every seed path with `RepoPath` and require it to exist inside the
-  snapshot;
-- validate the supplied project-model fingerprint;
+- reject every repository-controlled `rust-analyzer.toml`, at any depth, so
+  workspace configuration cannot override the authorized client settings;
+- verify file count, byte count, observed modes, directory entries, safe
+  symlinks, read-only state, and snapshot SHA256;
+- reject added, removed, or renamed empty directories and any `.git` entry;
+- validate every seed path through a provider-only `SnapshotFilePath` that
+  permits only normalized normal components and resolves to a regular file
+  strictly inside the snapshot;
+- validate the supplied project-model digest against the bound normalized
+  model;
 - require the provider executable and profile outside the snapshot.
 
-The project-model fingerprint is recomputed with a versioned provider
-algorithm over the snapshot-local Rust project-model inputs. A caller-supplied
-digest is never accepted on assertion alone. The algorithm id and resulting
-digest are recorded in the report so a later implementation change cannot
-silently reuse the old identity.
+`CandidateSnapshot::verify_unchanged` is hardened before provider work so it
+compares observed modes rather than hashing stored modes, includes directory
+entries in the digest, and detects `.git` mutations. A future CLI cannot rebuild
+`BoundCandidateSnapshot` from the summarized JSON fields; it must materialize a
+new authoritative `CandidateSnapshot` or carry a separately designed complete
+manifest.
 
 After shutdown or forced termination, the provider repeats snapshot, binary,
 and profile verification. A mismatch invalidates the entire report. No edge
@@ -186,6 +199,41 @@ collected before a binding failure is accepted.
 
 The adapter never receives the original repository path and never runs Git.
 The trusted caller owns materialization and authoritative scope revalidation.
+
+## Project Model And Toolchain Boundary
+
+The provider consumes a versioned `RustAnalyzerProjectModel`, separate from the
+existing heuristic `RustProjectModel`. It contains canonical snapshot-relative
+crate roots, editions, target triple, cfg values, environment values, and
+crate-to-crate dependencies. Its private constructor validates all roots
+against `BoundCandidateSnapshot`, validates dependency ids and deterministic
+ordering, and recomputes `project_model_digest` from the complete canonical
+model. The request's digest is never accepted without the typed model.
+
+The complete canonical model is supplied as the sole inline JSON object in
+rust-analyzer `linkedProjects`; no random private-runtime path participates in
+the stable configuration digest. Automatic Cargo workspace discovery is
+disabled. The first implementation cycle uses a profile with
+`toolchain_mode = none`: Cargo, rustc, build scripts, proc macros, sysroot
+discovery, check-on-save, and dependency fetching are disabled, and `PATH`
+points only at an empty private runtime directory. The target triple is fixed
+by the profile and model and is part of their digests. A future profile that
+authorizes Cargo, rustc, or a sysroot requires absolute paths, SHA256 bindings,
+and a separate design change.
+
+Index readiness is not observable through standard LSP or Call Hierarchy.
+The pinned rust-analyzer protocol does expose the operational
+`experimental/serverStatus` notification. The client advertises
+`experimental.serverStatusNotification = true` and, after `initialized`, waits
+within the global deadline for a status with `quiescent = true` before opening
+or querying seed files. Missing status, unhealthy status, or a deadline expiry
+produces no queries or facts; a missing status that consumes the global
+deadline is `timeout`, while an explicit unhealthy status is `unavailable`.
+This barrier prevents early `NO_RETRY` Call Hierarchy requests; it is not
+evidence that the semantic index is complete.
+First-cycle reports therefore always set index completeness to `unknown`.
+Query completeness describes only whether all explicitly requested RPCs
+completed; it never implies repository-wide semantic completeness.
 
 ## Provider Request
 
@@ -203,41 +251,78 @@ The version 1 request contains:
     "snapshot_sha256": "<64-lowercase-hex>",
     "snapshot_files": 123,
     "snapshot_bytes": 456789,
-    "project_model_fingerprint": "<64-lowercase-hex>"
+    "project_model_digest": "<64-lowercase-hex>"
   },
   "provider": {
     "kind": "rust-analyzer",
     "version": "<pinned-version>",
+    "profile_path": "/absolute/trusted/profile.json",
+    "profile_sha256": "<64-lowercase-hex>",
     "executable_path": "/absolute/trusted/rust-analyzer",
     "executable_sha256": "<64-lowercase-hex>",
-    "configuration_sha256": "<64-lowercase-hex>"
+    "configuration_sha256": "<64-lowercase-hex>",
+    "target_triple": "<pinned-target-triple>",
+    "toolchain_mode": "none"
   },
-  "seeds": [],
+  "seeds": [{
+    "changed_symbol_id": "<existing-id>",
+    "path": "src/lib.rs",
+    "kind": "function",
+    "name": "entry",
+    "symbol_range": {},
+    "selection_range": {},
+    "query_byte": 123
+  }],
   "directions": ["incoming", "outgoing"],
   "limits": {}
 }
 ```
 
-The request is evaluated together with an `AuthorizedProviderProfile` supplied
-by the trusted control plane. The profile is not selected from snapshot
-content. It contains the canonical hardened configuration and executable
-authorization; the request's version and digests must match it exactly.
+The profile is loaded from the absolute path with the expected profile SHA256
+before parsing. Its schema, canonical digest, executable authorization,
+target, toolchain mode, hardened configuration, arguments, and immutable
+maximum limits are Delivery 1 requirements. The request's duplicated values
+must match it exactly. Profile registry/distribution and a user-facing selector
+remain Delivery 4 work; profile authorization itself does not.
 
-Each seed contains an existing changed-symbol id, a `RepoPath`, symbol kind and
-name, and a validated one-based `SourceRange`. Version 1 accepts Rust function,
-method, and test-function seeds only.
+Each seed contains an existing changed-symbol id, normalized snapshot file
+path, name, versioned end-exclusive symbol and selection ranges, and a query
+byte inside the selection range. Version 1 accepts the existing Rust kinds
+`function`, `method`, `associated-function`, `function-declaration`,
+`method-declaration`, and `associated-function-declaration`. A `#[test]`
+attribute does not invent a separate kind.
+
+The selection range must be contained in the symbol range, and `query_byte`
+must be a UTF-8 boundary inside the selection range. A prepared item belongs to
+the seed only when its URI maps to the same path, its name and LSP kind are
+compatible, its selection range is contained in its full range, and its
+selection range contains the query position. Zero matches produce a partial
+`provider-seed-unresolved` result; multiple matches produce partial
+`provider-seed-ambiguous` and no guessed association. The report preserves the
+explicit `changed_symbol_id -> provider symbol_id` mapping.
 
 Limits may lower built-in maxima but cannot raise them. They include:
 
 - total session deadline;
 - maximum depth, restricted to 1 or 2;
 - maximum seeds;
-- maximum LSP requests and pending requests;
-- maximum notifications;
+- maximum LSP requests and pending requests, with version 1 fixed to one
+  pending client request;
+- maximum total messages, notifications, server requests, invalid messages,
+  and call ranges;
 - maximum header and frame bytes;
 - maximum cumulative protocol bytes and stderr bytes;
 - maximum source file bytes opened through LSP;
 - maximum nodes, edges, and encoded report bytes.
+
+Seeds and directions must be non-empty, sorted, and unique. Every numeric limit
+must be positive and cannot exceed these immutable maxima: 30 seconds, depth
+2, 64 seeds, 512 client requests, 1 pending request, 2,048 total messages, 512
+notifications, 128 server requests, 32 invalid messages, 1,000 call ranges per
+response, 16 KiB headers, 4 MiB frames, 64 MiB cumulative protocol bytes, 1 MiB
+stderr, 65 MiB combined process output, 4 MiB per source file, 64 MiB source
+bytes, 5,000 nodes, 10,000 edges, and 16 MiB encoded report bytes. Counters are
+inclusive: consuming the maximum succeeds; the next unit exhausts the budget.
 
 ## Provider Report
 
@@ -249,10 +334,11 @@ must not be mislabeled as changed.
 The report contains:
 
 - the complete candidate binding, excluding the local snapshot path;
-- provider id, version, executable digest, configuration digest, and negotiated
-  position encoding;
+- provider id, version, profile digest, executable digest, configuration digest,
+  target triple, and negotiated position encoding;
 - overall provider status;
-- index and query completeness;
+- `index_completeness = unknown` for this implementation cycle and query
+  completeness for the explicitly requested RPCs;
 - `seed_symbols`;
 - `related_symbols`;
 - semantic call edges;
@@ -260,21 +346,25 @@ The report contains:
 - session, protocol, traversal, byte, and elapsed-time metrics;
 - an isolation record stating that network prevention is best-effort.
 
-Symbols use snapshot-local deterministic ids derived from:
+Symbols use deterministic ids derived from a length-prefixed full binding digest
+and these fields:
 
 ```text
-provider id and version
-provider configuration digest
-project-model fingerprint
+scope fingerprint
 candidate digest
+snapshot SHA256
+project-model algorithm and digest
+profile SHA256
+provider id and version
+executable SHA256 and configuration digest
 repository-relative path
 kind and name
-validated source range
+validated source range and selection range
 ```
 
-The same binding and input yields the same id and ordering. No stability is
-promised after a provider version, configuration, project model, candidate, or
-range change.
+The same complete binding and input yields the same id and ordering. IDs are
+valid only for a report with that full binding; no consumer may use them as
+cross-report identity after any binding component changes.
 
 Edges use the existing call-edge semantics:
 
@@ -283,6 +373,10 @@ Edges use the existing call-edge semantics:
 - `confidence = high` for a concrete server-returned item;
 - provider id and version remain explicit;
 - call-site path and range refer to the caller's snapshot file.
+
+Each returned call-site range produces one edge. Identical caller, callee, path,
+and range tuples deduplicate; distinct ranges remain distinct edges and each
+consumes one edge budget unit.
 
 Provider edges do not overwrite or deduplicate away Tree-sitter syntactic or
 repository-index heuristic edges. A later consumer may correlate facts while
@@ -294,7 +388,8 @@ stable ids, or persisted.
 
 ## Strict URI Mapping
 
-`SnapshotUriMapper` is the only path from an LSP URI to a `RepoPath`.
+`SnapshotUriMapper` is the only path from an LSP URI to a provider
+`SnapshotFilePath` and then to a `RepoPath`.
 
 It must:
 
@@ -307,7 +402,8 @@ It must:
 - reject the snapshot root itself;
 - reject missing files, directories, unsupported file types, and symlink
   escapes;
-- convert the relative path through `RepoPath::new`;
+- reject `.`, `..`, repeated separators, empty components, and trailing
+  separators in the provider file path before converting through `RepoPath::new`;
 - return an explicit limitation for non-UTF-8 paths that LSP cannot represent
   losslessly.
 
@@ -328,30 +424,38 @@ budget and invalidate the session.
 
 ## Position And Range Mapping
 
-LSP positions are zero-based and use a negotiated encoding. Repository
-`SourceRange` is one-based and also records byte offsets.
+LSP positions are zero-based and use a negotiated encoding. Provider ranges are
+versioned, end-exclusive, and use one-based UTF-8 byte columns plus byte
+offsets: `provider-source-range-v1/utf8-byte-columns/end-exclusive`. They are
+not the untyped legacy `SourceRange` representation.
 
 The client advertises UTF-8 and UTF-16. It uses the server's returned
-`positionEncoding`; absent negotiation defaults to UTF-16 as required by LSP.
-For every returned range, the adapter reads the corresponding snapshot file
-within the source-byte budget and converts positions against the exact bytes.
-Before `prepareCallHierarchy`, it also validates each seed's one-based range
-and byte offsets against those bytes and converts the selected seed position
-into the negotiated LSP encoding. Both directions use the same checked line
-index and reject non-boundary offsets.
+`positionEncoding`; a returned value not present in that offer is invalid
+output, while absent negotiation defaults to UTF-16 as required by LSP.
+For every returned item, the adapter reads the corresponding snapshot file
+within the source-byte budget, validates the full range and `selectionRange`
+containment, and converts positions against the exact bytes. Before
+`prepareCallHierarchy`, it validates each seed's symbol/selection range and
+`query_byte`, then converts that byte into the negotiated LSP encoding. Both
+directions use the same checked line index.
 
 Conversion rejects:
 
 - a line beyond end of file;
-- a character beyond the line;
+- invalid UTF-8 Rust source;
 - a UTF-16 offset inside a surrogate pair;
 - a UTF-8 offset inside a code point;
 - an end position before the start;
-- invalid UTF-8 Rust source;
 - integer or byte-count overflow.
 
-Invalid positions omit the affected fact and record `provider-range-invalid`.
-The provider never guesses byte offsets or silently clamps a range.
+LSP permits a character beyond the line to normalize to the line end. The
+adapter performs that normalization only with an explicit
+`provider-position-normalized` limitation; it never silently clamps a range.
+LF, CRLF, and bare CR line endings are treated as end-exclusive boundaries: a
+range crossing a terminator ends at the next line's character zero. Empty
+lines, EOF, and a final line without a terminator follow the same checked line
+index. Invalid positions omit the affected fact and record
+`provider-range-invalid`.
 
 ## Bounded JSON-RPC Transport
 
@@ -364,17 +468,23 @@ and parses one JSON value per frame. It rejects duplicate lengths, conflicting
 lengths, unsupported transfer framing, malformed JSON, and frames beyond the
 remaining cumulative byte budget.
 
-Every outbound request uses a monotonically increasing integer id. The session
-tracks a bounded pending-id set and accepts responses in any order. Unknown,
-duplicate, or already-completed ids count as invalid output. Notifications and
-server requests share separate count limits.
+Every outbound request uses a monotonically increasing integer id. The generic
+transport tracks a bounded pending-id set and accepts responses in any order;
+the version-1 provider adapter deliberately uses single-flight dispatch (one
+pending client request) so shared node/edge/byte/deadline budgets cannot depend
+on response arrival order. Unknown, duplicate, or already-completed ids count
+as invalid output. Notifications and server requests share separate count
+limits.
 
 The server-request policy is fixed:
 
-- `workspace/configuration`: return only the hardened configuration;
+- `workspace/configuration`: return an array exactly as long and in the same
+  order as `items`; each unavailable slot is `null` and each available slot is
+  the hardened configuration;
 - `window/workDoneProgress/create`: acknowledge without granting new behavior;
-- `client/registerCapability`: acknowledge only bounded non-execution
-  registrations and never use them to bypass the initial capability gate;
+- `client/registerCapability`: accept the entire request only when every
+  registration is a bounded non-execution registration; otherwise return one
+  error for the whole request and do not adopt any registration;
 - `workspace/applyEdit`: return `applied: false`;
 - unknown requests: return JSON-RPC MethodNotFound;
 - unknown notifications: ignore within the notification budget.
@@ -391,8 +501,9 @@ The state machine is linear except for bounded query correlation:
 Preflight
   -> Spawn
   -> Initialize
-  -> CapabilityGate
   -> Initialized
+  -> CapabilityGate
+  -> ReadinessGate
   -> OpenSeeds
   -> PrepareHierarchy
   -> TraverseIncomingOutgoing
@@ -406,8 +517,8 @@ Preflight
 
 The provider copies the authorized binary into a private runtime and verifies
 the copy. The process uses the snapshot as its working directory, no shell,
-cleared environment, private `HOME` and temporary directories, a minimal system
-`PATH`, and the existing cross-platform process-group abstraction.
+cleared environment, private `HOME`, temporary, target, and empty `PATH`
+directories, and the existing cross-platform process-group abstraction.
 
 The environment sets:
 
@@ -416,6 +527,9 @@ The environment sets:
 - `RUSTUP_AUTO_INSTALL=0`;
 - invalid loopback HTTP, HTTPS, and all-proxy endpoints;
 - an empty `NO_PROXY`;
+- `PATH` set only to the empty private runtime directory; Windows retains
+  `SystemRoot` and `WINDIR` for process startup;
+- no Cargo, rustc, or sysroot executable path;
 - the bound scope and source for diagnostics.
 
 This is recorded as best-effort offline. It is not described as an OS network
@@ -423,36 +537,82 @@ sandbox.
 
 ### Initialize And Capability Gate
 
-Initialization uses only the snapshot `file:` URI and a fixed client
-capability set. Hardened rust-analyzer settings include:
+Initialization uses only the snapshot `file:` URI, the canonical inline
+`linkedProjects` model, and a fixed client capability set. Workspace discovery
+is disabled. The relevant payload shape is exact and nested, not a map of
+dotted setting names:
+
+```json
+{
+  "capabilities": {
+    "general": { "positionEncodings": ["utf-8", "utf-16"] },
+    "textDocument": { "callHierarchy": { "dynamicRegistration": false } },
+    "workspace": { "configuration": true },
+    "experimental": { "serverStatusNotification": true }
+  },
+  "initializationOptions": {
+    "linkedProjects": [{ "sysroot_src": null, "crates": [] }],
+    "cargo": {
+      "buildScripts": { "enable": false },
+      "noDeps": true,
+      "sysroot": null,
+      "sysrootSrc": null,
+      "target": "<bound-target-triple>"
+    },
+    "procMacro": { "enable": false },
+    "checkOnSave": false
+  }
+}
+```
+
+The shown linked project is a shape placeholder for the request's complete
+canonical `RustAnalyzerProjectModel`, not an empty production model. The
+configuration digest covers the typed capability, hardening, server-request,
+and readiness policy; the separate project-model digest covers the complete
+inline `linkedProjects` object. Hardened rust-analyzer settings include:
 
 - `cargo.buildScripts.enable = false`;
 - `cargo.noDeps = true`;
 - `procMacro.enable = false`;
 - check-on-save disabled;
 - no automatic workspace edits;
-- no dependency fetching or project preparation by this provider.
+- no dependency fetching, Cargo/rustc invocation, sysroot discovery, or project
+  preparation by this provider.
 
-The configuration JSON is canonicalized and bound by SHA256. If the server does
-not advertise Call Hierarchy support, the result is `unavailable`; no hierarchy
-requests are sent.
+The configuration JSON, linked-project model digest, target triple, and profile
+are canonicalized and bound by SHA256. The client always sends `initialized`
+after a successful `initialize` response, even when the capability gate then
+returns `unavailable`; no hierarchy requests are sent in that case. A returned
+position encoding must be one of the two offered encodings. A server JSON-RPC
+error during initialize is `failed`.
+
+After a successful capability gate, the client waits for the pinned
+rust-analyzer `experimental/serverStatus` notification. `quiescent = false`
+continues waiting. `health = error` is unavailable, no notification before the
+remaining global deadline is timeout, and malformed status is invalid output;
+all three produce no facts. `health = warning` with `quiescent = true` permits
+the query but records a stable limitation and makes the result partial. Only
+`health = ok` with `quiescent = true` opens seed files without that limitation.
 
 ### Open, Prepare, And Traverse
 
 The adapter reads each seed file from the snapshot within budget and sends one
 bounded `textDocument/didOpen`. It sends
 `textDocument/prepareCallHierarchy` at the seed position and retains only items
-whose URI and range validate.
+whose URI, range, selection range, kind, name, and query ownership validate.
 
 Traversal is deterministic breadth-first search. It sorts prepared and returned
-items by snapshot-local stable id, deduplicates nodes and edges, and queries each
-item at most once per requested direction and depth. Cycles terminate through
-the visited set. All one-hop and two-hop work shares the same request, message,
-node, edge, source-byte, protocol-byte, report-byte, and deadline budgets.
+items by full-binding stable id, deduplicates nodes and edges, and queries each
+item at most once per requested direction and depth. Version 1 sends requests
+single-flight in stable frontier order. Cycles terminate through the visited
+set. All one-hop and two-hop work shares the same request, message, node, edge,
+source-byte, protocol-byte, report-byte, and deadline budgets.
 
-Incoming call ranges are interpreted in the caller item. Outgoing call ranges
-are interpreted in the current caller item. Empty or null results are valid and
-do not imply repository-wide completeness.
+Incoming call ranges are interpreted in the incoming caller item. Outgoing call
+ranges are interpreted in the current caller item. Empty call lists are valid
+completed responses. Null or empty prepare results are valid protocol responses
+but make the affected seed unresolved and the report partial. Neither outcome
+implies repository-wide completeness.
 
 ### Shutdown
 
@@ -467,24 +627,27 @@ error cannot leave a language server or descendant running.
 
 ## Status And Failure Semantics
 
-The report uses these provider states:
+The report uses a new `RepositoryContextProviderStatus` enum; the existing
+`impact_context::contracts::ProviderStatus` is not reused:
 
-- `completed`: every accepted seed and requested hop completed within budget;
-- `partial`: at least one trustworthy fact exists, but a seed returned null, a
-  URI or range was omitted, the project model was degraded, or a budget cut off
-  remaining work;
-- `unavailable`: Call Hierarchy is unsupported or hardened configuration cannot
-  establish a usable project model;
-- `timeout`: the global deadline expired;
-- `invalid-output`: framing, JSON-RPC correlation, URI/range error volume, or
-  response structure made the session untrustworthy;
-- `failed`: rust-analyzer crashed or could not complete a required lifecycle
-  transition.
+| Status | Trigger | Facts retained | Completeness |
+| --- | --- | --- | --- |
+| `completed` | Every accepted seed and requested hop completed within budget | All fully validated facts | Query complete; index unknown |
+| `partial` | A seed is unresolved/ambiguous, a valid URI/range is omitted, the bound model is degraded, or a finite budget stops later work | Fully validated facts committed before the stop | Query partial; index unknown |
+| `unavailable` | Capability absent, linked project model unusable, readiness is explicitly unhealthy, or profile cannot establish the fixed no-toolchain configuration | None | Query unavailable; index unknown |
+| `timeout` | Global deadline expires before graceful completion | None | Query unavailable; index unknown |
+| `invalid-output` | Framing/JSON-RPC correlation, message structure, or invalid URI/range count exceeds the fixed threshold | None | Query unavailable; index unknown |
+| `failed` | Server crash, cancellation, stdin failure, initialize/shutdown error, or required lifecycle transition failure | None | Query unavailable; index unknown |
 
-Timeout, invalid output, crash, and post-execution binding mismatch accept no
-partial response still in flight. Previously completed facts may be returned
-only when their messages were fully validated and the final snapshot, binary,
-and profile checks succeed; otherwise the entire fact set is discarded.
+The precedence for simultaneous terminal observations is binding error,
+cancellation, invalid-output, timeout, failed, unavailable, partial, then
+completed. A post-execution scope/snapshot/profile/model mismatch is a caller
+error and rejects the entire report rather than returning a stale status.
+Cancellation always kills/reaps, performs final verification, discards facts,
+and returns `ProviderError::Cancelled`; it is not a seventh report status.
+Only facts already fully normalized and committed before a `partial` transition
+are retained. No in-flight response, timeout, invalid output, crash, or failed
+binding fact is ever retained.
 
 Invalid request JSON, untrusted paths, digest mismatches, writable or mutated
 snapshots, and invalid authorization are caller errors. The provider rejects
@@ -511,25 +674,34 @@ URI, range, size, and binding checks pass.
 The snapshot may contain repository-controlled Cargo metadata and Rust source.
 The provider permits rust-analyzer to read those files but does not authorize
 repository code execution. Disabled build scripts, procedural macros, and
-check-on-save plus offline Cargo settings are mandatory. A profile that cannot
-meet those settings is rejected.
+check-on-save plus offline Cargo settings are mandatory. Every
+`rust-analyzer.toml` is rejected before spawn because workspace configuration
+could override those client settings. A profile that cannot meet the settings
+is rejected.
 
-The first delivery does not claim to prevent every possible direct network
-system call by a compromised authorized rust-analyzer binary. Binary pinning,
-process isolation, offline configuration, proxy denial, and process-tree
-termination are the enforced cross-platform controls. A future stronger
-sandbox may add OS network denial without changing the provider contract.
+The first implementation cycle does not claim to prevent every possible direct
+network system call by a compromised authorized rust-analyzer binary. Binary
+pinning, process isolation, offline configuration, proxy denial, an empty child
+`PATH`, and process-tree termination are the enforced cross-platform controls.
+A future stronger sandbox may add OS network denial without changing the
+provider contract.
 
 ## Testing Strategy
 
 ### Contract And Snapshot Tests
 
 - reject unknown fields and unsupported schema versions;
+- validate the profile and normalized linked-project model schemas, canonical
+  digests, target/toolchain policy, and absolute external executable binding;
 - reject scope, candidate, source, snapshot, project-model, binary, and config
   binding mismatches;
-- reject writable, changed, oversized, or VCS-bearing snapshots;
+- reject writable, changed, oversized, mode-only, empty-directory, or VCS-bearing
+  snapshots;
+- reject a root or nested repository-controlled `rust-analyzer.toml` before
+  spawn;
 - preserve safe relative symlinks and reject escaping or looping symlinks;
-- reject invalid seeds and unsupported seed kinds;
+- reject invalid seeds, unsupported seed kinds, missing query points, and
+  ambiguous prepare ownership;
 - verify deterministic report ordering and ids.
 
 ### URI And Range Tests
@@ -540,7 +712,12 @@ sandbox may add OS network denial without changing the provider contract.
   files, and stale symlinks;
 - report non-UTF-8 paths without lossy conversion;
 - convert ASCII, multi-byte UTF-8, and surrogate-pair UTF-16 positions;
-- reject mid-code-point, mid-surrogate, reversed, and out-of-file ranges.
+- normalize an overlong LSP character only with an explicit limitation;
+- cover LF, CRLF, bare CR, empty lines, EOF with and without a final terminator,
+  and end-exclusive line transitions;
+- reject mid-code-point, mid-surrogate, reversed, and out-of-file ranges;
+- require full/selection range containment and a seed query byte inside the
+  selection range.
 
 ### JSON-RPC Transport Tests
 
@@ -561,20 +738,24 @@ message sequences, and request-id correlation.
 ### Session And Traversal Tests
 
 - missing Call Hierarchy capability;
-- initialize, prepare, incoming, outgoing, shutdown, and exit ordering;
+- exact nested initialization payload, unoffered position encodings, and
+  initialize, readiness, prepare, incoming, outgoing, shutdown, and exit
+  ordering;
+- quiescent ok/warning/error, missing status, and early-query prevention;
 - null or empty prepare results;
 - one-hop and two-hop incoming and outgoing traversal;
-- cycles, self-calls, fan-out, duplicate items, and duplicate call ranges;
+- cycles, self-calls, fan-out, duplicate items, one-edge-per-call-range, and
+  duplicate call ranges;
 - every request, message, byte, node, edge, source, report, and deadline budget;
 - server crash before and after initialization;
 - total timeout and shutdown timeout;
 - snapshot, profile, or binary mutation before and after execution;
 - child and descendant process termination on every early return;
-- deterministic output despite response reordering.
+- deterministic output from single-flight frontier order.
 
-### Rust-Analyzer Integration Tests
+### Later Real Rust-Analyzer Integration Tests
 
-An opt-in, pinned rust-analyzer fixture verifies:
+Delivery 5's opt-in, pinned rust-analyzer fixture verifies:
 
 - capability negotiation and position encoding;
 - a known direct function call in a local Rust project;
@@ -585,16 +766,16 @@ An opt-in, pinned rust-analyzer fixture verifies:
 - offline execution does not fetch dependencies;
 - stale and external URIs are rejected by the adapter.
 
-The fake server remains the required deterministic CI gate. Real-server tests
-become required release gates only after a pinned four-platform profile and
-artifact trust chain are committed.
+The fake server remains the required deterministic Delivery 1-3 CI gate. These
+real-server tests are not claimed by the first implementation cycle.
 
 ## Delivery Sequence
 
 ### Delivery 1: Contract And Snapshot Boundary
 
 - add request/report contracts and JSON schemas;
-- add `BoundCandidateSnapshot` verification;
+- add profile, project-model, request/report schemas and exact authorization;
+- harden `CandidateSnapshot` verification and add `BoundCandidateSnapshot`;
 - add strict URI mapping and position conversion;
 - add contract, path, snapshot, and range tests.
 
@@ -611,8 +792,10 @@ artifact trust chain are committed.
 
 - add hardened initialization configuration;
 - add capability gating and server-request responses;
+- add the pinned rust-analyzer quiescent readiness gate;
 - add prepare, incoming, and outgoing request models;
-- add deterministic one-hop and two-hop traversal;
+- add linked-project initialization and deterministic single-flight one-hop and
+  two-hop traversal;
 - normalize symbols, semantic edges, limitations, and metrics;
 - verify all bindings after shutdown.
 
@@ -621,7 +804,8 @@ The first implementation cycle ends after Delivery 3 is locally verified.
 ### Delivery 4: Explicit User Surface
 
 - add a standalone provider CLI or an equivalently isolated explicit command;
-- add pinned profile authorization and report rendering;
+- add profile registry/distribution, normalized project-model construction,
+  and report rendering;
 - update capability documentation without enabling ordinary review execution;
 - add schema, shell, installer, and workflow gates;
 - add release binaries only after profile and artifact policy approval.
@@ -640,19 +824,23 @@ The first implementation cycle ends after Delivery 3 is locally verified.
 The first implementation cycle is complete when:
 
 - requests cannot be accepted without exact scope, candidate, snapshot,
-  project-model, binary, and configuration bindings;
+  project-model, profile, binary, target, and configuration bindings;
 - URI and range mapping never emits an unvalidated or lossy repository path;
 - the fake server proves bounded initialize, capability, prepare, incoming,
   outgoing, shutdown, and exit behavior;
-- one-hop and two-hop traversal is deterministic and respects every budget;
+- one-hop and two-hop single-flight traversal is deterministic and respects
+  every budget;
 - timeout, crash, malformed output, stale URI, and snapshot mutation have
   explicit tested outcomes;
-- build scripts, proc macros, check-on-save, and dependency fetching remain
-  disabled in the fixed configuration;
+- the typed linked-project configuration serializes build scripts, proc macros,
+  check-on-save, Cargo/rustc/sysroot discovery, and dependency fetching as
+  disabled;
+- repository-controlled `rust-analyzer.toml` files are rejected and no
+  hierarchy query is sent before the bounded quiescent readiness gate;
 - no provider code is reachable from ordinary review or Fast Mode;
 - no semantic result is persisted or used to overwrite heuristic evidence;
-- all affected formatting, Clippy, unit, integration, fuzz smoke, schema, and
-  cross-platform process tests pass.
+- all affected Rust 1.95 `--locked` formatting/Clippy/unit/integration,
+  fuzz-smoke, schema, and fake-process platform tests pass.
 
 Full Phase 2 release readiness additionally requires Delivery 4 and Delivery 5,
 including a pinned real rust-analyzer trust chain and four-platform evidence.
@@ -667,7 +855,7 @@ validation across two trust boundaries.
 
 ### General Async LSP Client Stack
 
-Rejected for the first delivery. A generic async JSON-RPC client and runtime
+Rejected for the first implementation cycle. A generic async JSON-RPC client and runtime
 would enlarge the dependency and concurrency surface beyond the small set of
 requests required by this adapter.
 
@@ -679,7 +867,7 @@ provider contract is proven would couple Phase 2 to the default review path.
 
 ### Persistent Semantic Graph
 
-Rejected for the first delivery. LSP does not define cross-session stable ids,
+Rejected for the first implementation cycle. LSP does not define cross-session stable ids,
 and opaque provider data is session-local. Persistence requires a separate
 identity and invalidation design after the adapter is validated.
 
@@ -687,6 +875,8 @@ identity and invalidation design after the adapter is validated.
 
 The implementation plan must preserve Rust 1.95 support, four-platform process
 behavior, ASCII protocol framing, deterministic JSON ordering, and the existing
-Subproject B public contracts. Documentation must describe the provider as
-opt-in and best-effort offline, and must not call LSP results a complete runtime
-call graph.
+Subproject B public contracts. New dependencies must be checked with
+`cargo +1.95.0 ... --locked`, included in the release SBOM component assertion,
+and have their license notices closed when introduced. Documentation must
+describe the provider as opt-in and best-effort offline, and must not call LSP
+results a complete runtime call graph.
