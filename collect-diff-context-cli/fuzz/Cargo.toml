@@ -55,3 +55,17 @@ path = "fuzz_targets/repository_traversal.rs"
 test = false
 doc = false
 bench = false
+
+[[bin]]
+name = "repository_context_frame"
+path = "fuzz_targets/repository_context_frame.rs"
+test = false
+doc = false
+bench = false
+
+[[bin]]
+name = "repository_context_messages"
+path = "fuzz_targets/repository_context_messages.rs"
+test = false
+doc = false
+bench = false
