@@ -27,7 +27,7 @@ pub struct SessionError {
 }
 
 impl SessionError {
-    fn new(code: &'static str, message: &'static str) -> Self {
+    pub(crate) fn new(code: &'static str, message: &'static str) -> Self {
         Self {
             code,
             message: message.to_string(),

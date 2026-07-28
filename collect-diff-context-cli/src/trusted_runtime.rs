@@ -108,6 +108,10 @@ impl PrivateRuntime {
         &self.temporary
     }
 
+    pub(crate) fn target(&self) -> &Path {
+        &self.target
+    }
+
     #[allow(dead_code)]
     pub(crate) fn empty_path(&self) -> &Path {
         &self.empty_path

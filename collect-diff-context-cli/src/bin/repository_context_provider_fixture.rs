@@ -18,6 +18,16 @@ fn main() {
         "lifecycle" => lifecycle(log_path.as_deref(), false),
         "config-requests" => lifecycle(log_path.as_deref(), true),
         "split-frame" => split_frame(),
+        "readiness-ok" => handshake(log_path.as_deref(), "ok", Some("utf-8")),
+        "readiness-warning" => handshake(log_path.as_deref(), "warning", Some("utf-8")),
+        "readiness-error" => handshake(log_path.as_deref(), "error", Some("utf-8")),
+        "readiness-default-encoding" => handshake(log_path.as_deref(), "ok", None),
+        "readiness-config-requests" => handshake_config_requests(log_path.as_deref()),
+        "registration-disallowed" => handshake_registration(log_path.as_deref()),
+        "readiness-hang" => handshake_hang(log_path.as_deref()),
+        "missing-capability" => handshake_missing_capability(log_path.as_deref()),
+        "initialize-error" => handshake_initialize_error(log_path.as_deref()),
+        "unknown-encoding" => handshake(log_path.as_deref(), "ok", Some("utf-32")),
         "stderr-flood" => stderr_flood(),
         "hang" => hang(),
         "malformed-frame" => malformed_frame(),
@@ -93,6 +103,221 @@ fn split_frame() -> io::Result<()> {
         &mut output,
         &json!({"jsonrpc":"2.0","id":message.get("id").cloned().unwrap_or(Value::Null),"result":{}}),
     )
+}
+
+fn handshake(log_path: Option<&str>, health: &str, encoding: Option<&str>) -> io::Result<()> {
+    let mut input = io::stdin().lock();
+    let mut output = io::stdout().lock();
+    let initialize = read_json_frame(&mut input)?;
+    log_method(log_path, initialize.get("method").and_then(Value::as_str))?;
+    validate_initialize_request(&initialize)?;
+    let mut capabilities = json!({"callHierarchyProvider": true});
+    if let Some(encoding) = encoding {
+        capabilities["positionEncoding"] = Value::String(encoding.to_string());
+    }
+    write_frame(
+        &mut output,
+        &json!({"jsonrpc":"2.0","id":initialize.get("id").cloned().unwrap_or(Value::Null),"result":{"capabilities":capabilities}}),
+    )?;
+    let initialized = read_json_frame(&mut input)?;
+    log_method(log_path, initialized.get("method").and_then(Value::as_str))?;
+    write_frame(
+        &mut output,
+        &json!({"jsonrpc":"2.0","method":"experimental/serverStatus","params":{"health":health,"quiescent":true}}),
+    )?;
+    finish_lifecycle(&mut input, &mut output, log_path)
+}
+
+fn handshake_config_requests(log_path: Option<&str>) -> io::Result<()> {
+    let mut input = io::stdin().lock();
+    let mut output = io::stdout().lock();
+    let initialize = read_json_frame(&mut input)?;
+    log_method(log_path, initialize.get("method").and_then(Value::as_str))?;
+    validate_initialize_request(&initialize)?;
+    write_frame(
+        &mut output,
+        &json!({"jsonrpc":"2.0","id":42,"method":"workspace/configuration","params":{"items":[{"section":"one"},{"section":"two"}]}}),
+    )?;
+    let configuration_response = read_json_frame(&mut input)?;
+    let values = configuration_response
+        .get("result")
+        .and_then(Value::as_array)
+        .ok_or_else(|| {
+            io::Error::new(io::ErrorKind::InvalidData, "configuration response invalid")
+        })?;
+    if values != &[Value::Null, Value::Null] {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "configuration response not positional",
+        ));
+    }
+    write_frame(
+        &mut output,
+        &json!({"jsonrpc":"2.0","id":initialize.get("id").cloned().unwrap_or(Value::Null),"result":{"capabilities":{"callHierarchyProvider":true,"positionEncoding":"utf-8"}}}),
+    )?;
+    let initialized = read_json_frame(&mut input)?;
+    log_method(log_path, initialized.get("method").and_then(Value::as_str))?;
+    write_frame(
+        &mut output,
+        &json!({"jsonrpc":"2.0","method":"experimental/serverStatus","params":{"health":"ok","quiescent":true}}),
+    )?;
+    finish_lifecycle(&mut input, &mut output, log_path)
+}
+
+fn handshake_registration(log_path: Option<&str>) -> io::Result<()> {
+    let mut input = io::stdin().lock();
+    let mut output = io::stdout().lock();
+    let initialize = read_json_frame(&mut input)?;
+    log_method(log_path, initialize.get("method").and_then(Value::as_str))?;
+    validate_initialize_request(&initialize)?;
+    write_frame(
+        &mut output,
+        &json!({"jsonrpc":"2.0","id":42,"method":"client/registerCapability","params":{"registrations":[{"id":"ok","method":"workspace/didChangeConfiguration"},{"id":"bad","method":"workspace/executeCommand"}]}}),
+    )?;
+    let registration_response = read_json_frame(&mut input)?;
+    if registration_response.get("error").is_none() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "disallowed registration accepted",
+        ));
+    }
+    write_frame(
+        &mut output,
+        &json!({"jsonrpc":"2.0","id":initialize.get("id").cloned().unwrap_or(Value::Null),"result":{"capabilities":{"callHierarchyProvider":true,"positionEncoding":"utf-8"}}}),
+    )?;
+    let initialized = read_json_frame(&mut input)?;
+    log_method(log_path, initialized.get("method").and_then(Value::as_str))?;
+    write_frame(
+        &mut output,
+        &json!({"jsonrpc":"2.0","method":"experimental/serverStatus","params":{"health":"ok","quiescent":true}}),
+    )?;
+    finish_lifecycle(&mut input, &mut output, log_path)
+}
+
+fn handshake_missing_capability(log_path: Option<&str>) -> io::Result<()> {
+    let mut input = io::stdin().lock();
+    let mut output = io::stdout().lock();
+    let initialize = read_json_frame(&mut input)?;
+    log_method(log_path, initialize.get("method").and_then(Value::as_str))?;
+    write_frame(
+        &mut output,
+        &json!({"jsonrpc":"2.0","id":initialize.get("id").cloned().unwrap_or(Value::Null),"result":{"capabilities":{}}}),
+    )?;
+    finish_lifecycle(&mut input, &mut output, log_path)
+}
+
+fn handshake_initialize_error(log_path: Option<&str>) -> io::Result<()> {
+    let mut input = io::stdin().lock();
+    let mut output = io::stdout().lock();
+    let initialize = read_json_frame(&mut input)?;
+    log_method(log_path, initialize.get("method").and_then(Value::as_str))?;
+    write_frame(
+        &mut output,
+        &json!({"jsonrpc":"2.0","id":initialize.get("id").cloned().unwrap_or(Value::Null),"error":{"code":-32603,"message":"fixture initialize failure"}}),
+    )
+}
+
+fn handshake_hang(log_path: Option<&str>) -> io::Result<()> {
+    let mut input = io::stdin().lock();
+    let initialize = read_json_frame(&mut input)?;
+    log_method(log_path, initialize.get("method").and_then(Value::as_str))?;
+    thread::sleep(Duration::from_secs(30));
+    Ok(())
+}
+
+fn finish_lifecycle(
+    input: &mut impl Read,
+    output: &mut impl Write,
+    log_path: Option<&str>,
+) -> io::Result<()> {
+    loop {
+        let message = read_json_frame(input)?;
+        let method = message.get("method").and_then(Value::as_str);
+        log_method(log_path, method)?;
+        match method {
+            Some("shutdown") => write_frame(
+                output,
+                &json!({"jsonrpc":"2.0","id":message.get("id").cloned().unwrap_or(Value::Null),"result":null}),
+            )?,
+            Some("exit") => return Ok(()),
+            _ => {}
+        }
+    }
+}
+
+fn read_json_frame(reader: &mut impl Read) -> io::Result<Value> {
+    let body = read_frame(reader)?;
+    serde_json::from_slice(&body).map_err(|error| io::Error::new(io::ErrorKind::InvalidData, error))
+}
+
+fn validate_initialize_request(value: &Value) -> io::Result<()> {
+    let value = value.get("params").unwrap_or(value);
+    let capabilities = value.get("capabilities").ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidData,
+            "initialize capabilities missing",
+        )
+    })?;
+    let encodings = capabilities
+        .get("general")
+        .and_then(|value| value.get("positionEncodings"))
+        .and_then(Value::as_array)
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "position encodings missing"))?;
+    if encodings != &[json!("utf-8"), json!("utf-16")] {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "position encodings invalid",
+        ));
+    }
+    if capabilities
+        .get("workspace")
+        .and_then(|value| value.get("configuration"))
+        != Some(&Value::Bool(true))
+        || capabilities
+            .get("textDocument")
+            .and_then(|value| value.get("callHierarchy"))
+            .and_then(|value| value.get("dynamicRegistration"))
+            != Some(&Value::Bool(false))
+        || capabilities
+            .get("experimental")
+            .and_then(|value| value.get("serverStatusNotification"))
+            != Some(&Value::Bool(true))
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "initialize capabilities invalid",
+        ));
+    }
+    let linked_projects = value
+        .get("initializationOptions")
+        .and_then(|value| value.get("linkedProjects"))
+        .and_then(Value::as_array)
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "linked projects missing"))?;
+    if linked_projects.len() != 1 {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "linked projects must be single",
+        ));
+    }
+    let options = value.get("initializationOptions").unwrap();
+    if options
+        .get("cargo")
+        .and_then(|value| value.get("buildScripts"))
+        .and_then(|value| value.get("enable"))
+        != Some(&Value::Bool(false))
+        || options.get("cargo").and_then(|value| value.get("noDeps")) != Some(&Value::Bool(true))
+        || options
+            .get("procMacro")
+            .and_then(|value| value.get("enable"))
+            != Some(&Value::Bool(false))
+        || options.get("checkOnSave") != Some(&Value::Bool(false))
+    {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "initialize hardening invalid",
+        ));
+    }
+    Ok(())
 }
 
 fn hang() -> io::Result<()> {
