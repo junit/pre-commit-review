@@ -393,6 +393,12 @@ pub struct ProviderBinding {
 impl ProviderBinding {
     fn validate(&self, snapshot_root: &Path) -> Result<(), ContractError> {
         validate_text(&self.kind, MAX_KIND_BYTES, "provider kind")?;
+        if self.kind != "rust-analyzer" {
+            return contract_error(
+                "provider-kind-invalid",
+                "provider kind must equal rust-analyzer",
+            );
+        }
         validate_text(&self.version, MAX_VERSION_BYTES, "provider version")?;
         validate_absolute_path(&self.profile_path, "profile path")?;
         validate_absolute_path(&self.executable_path, "executable path")?;
@@ -873,6 +879,12 @@ pub struct ProviderExecutionRecord {
 impl ProviderExecutionRecord {
     fn validate(&self) -> Result<(), ContractError> {
         validate_text(&self.kind, MAX_KIND_BYTES, "provider kind")?;
+        if self.kind != "rust-analyzer" {
+            return contract_error(
+                "provider-report-provider-invalid",
+                "reported provider kind must equal rust-analyzer",
+            );
+        }
         validate_text(&self.version, MAX_VERSION_BYTES, "provider version")?;
         validate_sha256(&self.profile_sha256, "profile digest")?;
         validate_sha256(&self.executable_sha256, "executable digest")?;
