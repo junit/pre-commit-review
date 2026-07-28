@@ -354,7 +354,7 @@ pub struct CandidateBinding {
 }
 
 impl CandidateBinding {
-    fn validate(&self) -> Result<(), ContractError> {
+    pub(crate) fn validate(&self) -> Result<(), ContractError> {
         validate_sha256(&self.scope_fingerprint, "scope fingerprint")?;
         validate_sha256(&self.candidate_digest, "candidate digest")?;
         validate_sha256(&self.snapshot_sha256, "snapshot digest")?;
@@ -817,6 +817,46 @@ impl RustAnalyzerProjectModel {
             env: &self.env,
             limitations: &self.limitations,
         })
+    }
+
+    pub fn linked_project_value(&self) -> Result<serde_json::Value, ProjectModelError> {
+        self.validate()?;
+        let crate_indices = self
+            .crates
+            .iter()
+            .enumerate()
+            .map(|(index, item)| (item.crate_id.as_str(), index))
+            .collect::<BTreeMap<_, _>>();
+        let mut crates = Vec::with_capacity(self.crates.len());
+        for item in &self.crates {
+            let mut dependencies = Vec::with_capacity(item.dependencies.len());
+            for dependency in &item.dependencies {
+                let Some(crate_index) = crate_indices.get(dependency.crate_id.as_str()) else {
+                    return project_model_error(
+                        "provider-model-dependency-invalid",
+                        "project model dependency is missing from the canonical crate order",
+                    );
+                };
+                dependencies.push(serde_json::json!({
+                    "crate": crate_index,
+                    "name": dependency.name,
+                }));
+            }
+            crates.push(serde_json::json!({
+                "root_module": item.root_module,
+                "edition": item.edition,
+                "deps": dependencies,
+                "cfg": self.cfg,
+                "env": self.env,
+                "target": self.target_triple,
+                "is_workspace_member": true,
+                "source": null,
+            }));
+        }
+        Ok(serde_json::json!({
+            "sysroot_src": null,
+            "crates": crates,
+        }))
     }
 }
 

@@ -18,6 +18,7 @@ pub struct SnapshotLimits {
 #[derive(Debug)]
 pub struct CandidateSnapshot {
     root: TempDir,
+    source: ReviewSource,
     pub snapshot_id: String,
     pub sha256: String,
     pub files: usize,
@@ -90,11 +91,18 @@ impl CandidateSnapshot {
                 materialize_unstaged(&repository, root.path(), &paths, limits)?;
             }
         }
-        let info = snapshot_info(root.path(), limits, None)?;
         make_snapshot_read_only(root.path())?;
+        let info = match snapshot_info(root.path(), limits) {
+            Ok(info) => info,
+            Err(error) => {
+                make_snapshot_writable(root.path());
+                return Err(error);
+            }
+        };
         let snapshot_id = info.sha256[..16].to_string();
         Ok(Self {
             root,
+            source,
             snapshot_id,
             sha256: info.sha256,
             files: info.files,
@@ -108,12 +116,17 @@ impl CandidateSnapshot {
         self.root.path()
     }
 
+    pub fn source(&self) -> ReviewSource {
+        self.source
+    }
+
     pub fn verify_unchanged(&self) -> Result<(), SnapshotError> {
         verify_read_only(self.path())?;
-        let observed = snapshot_info(self.path(), self.limits, Some(&self.digest_modes))?;
+        let observed = snapshot_info(self.path(), self.limits)?;
         if observed.sha256 != self.sha256
             || observed.files != self.files
             || observed.bytes != self.bytes
+            || observed.modes != self.digest_modes
         {
             return Err(SnapshotError::new(
                 "analysis snapshot changed after materialization",
@@ -607,19 +620,16 @@ fn create_symlink(_target: &Path, _destination: &Path) -> Result<(), SnapshotErr
     ))
 }
 
-fn snapshot_info(
-    root: &Path,
-    limits: SnapshotLimits,
-    expected_modes: Option<&HashMap<Vec<u8>, u32>>,
-) -> Result<SnapshotInfo, SnapshotError> {
+fn snapshot_info(root: &Path, limits: SnapshotLimits) -> Result<SnapshotInfo, SnapshotError> {
     let mut state = HashState {
         digest: Sha256::new(),
         files: 0,
         bytes: 0,
         modes: HashMap::new(),
         limits,
-        expected_modes,
     };
+    state.digest.update(b"analysis-snapshot-v2\0");
+    hash_directory_entry(root, root, &mut state)?;
     hash_directory(root, root, &mut state)?;
     Ok(SnapshotInfo {
         sha256: format!("{:x}", state.digest.finalize()),
@@ -629,47 +639,48 @@ fn snapshot_info(
     })
 }
 
-struct HashState<'a> {
+struct HashState {
     digest: Sha256,
     files: usize,
     bytes: u64,
     modes: HashMap<Vec<u8>, u32>,
     limits: SnapshotLimits,
-    expected_modes: Option<&'a HashMap<Vec<u8>, u32>>,
 }
 
 fn hash_directory(
     root: &Path,
     directory: &Path,
-    state: &mut HashState<'_>,
+    state: &mut HashState,
 ) -> Result<(), SnapshotError> {
-    let mut directories = Vec::new();
-    let mut symlink_directories = Vec::new();
-    let mut files = Vec::new();
-    let entries = fs::read_dir(directory)
+    let mut entries = Vec::new();
+    let read_entries = fs::read_dir(directory)
         .map_err(|error| SnapshotError::new(format!("cannot inspect snapshot: {error}")))?;
-    for entry in entries {
+    for entry in read_entries {
         let entry = entry
             .map_err(|error| SnapshotError::new(format!("cannot inspect snapshot: {error}")))?;
+        if entry
+            .file_name()
+            .to_str()
+            .is_some_and(|name| name.eq_ignore_ascii_case(".git"))
+        {
+            return Err(SnapshotError::new(
+                "analysis snapshot contains version-control metadata",
+            ));
+        }
+        entries.push(entry);
+    }
+    sort_entries(&mut entries);
+    for entry in entries {
+        let path = entry.path();
         let file_type = entry
             .file_type()
             .map_err(|error| SnapshotError::new(format!("cannot inspect snapshot: {error}")))?;
-        if file_type.is_symlink() && entry.path().is_dir() {
-            symlink_directories.push(entry);
-        } else if file_type.is_dir() {
-            directories.push(entry);
+        if file_type.is_dir() {
+            hash_directory_entry(root, &path, state)?;
+            hash_directory(root, &path, state)?;
         } else {
-            files.push(entry);
+            hash_entry(root, &path, state)?;
         }
-    }
-    sort_entries(&mut directories);
-    sort_entries(&mut symlink_directories);
-    sort_entries(&mut files);
-    for entry in symlink_directories.into_iter().chain(files) {
-        hash_entry(root, &entry.path(), state)?;
-    }
-    for entry in directories {
-        hash_directory(root, &entry.path(), state)?;
     }
     Ok(())
 }
@@ -678,7 +689,34 @@ fn sort_entries(entries: &mut [fs::DirEntry]) {
     entries.sort_by_key(fs::DirEntry::file_name);
 }
 
-fn hash_entry(root: &Path, path: &Path, state: &mut HashState<'_>) -> Result<(), SnapshotError> {
+fn hash_directory_entry(
+    root: &Path,
+    path: &Path,
+    state: &mut HashState,
+) -> Result<(), SnapshotError> {
+    let relative = path
+        .strip_prefix(root)
+        .map_err(|_| SnapshotError::new("snapshot path escaped its root"))?;
+    let relative_bytes = digest_path_bytes(relative);
+    let metadata = fs::symlink_metadata(path)
+        .map_err(|error| SnapshotError::new(format!("cannot inspect snapshot entry: {error}")))?;
+    if !metadata.file_type().is_dir() {
+        return Err(SnapshotError::new(
+            "analysis snapshot directory changed type during verification",
+        ));
+    }
+    let observed_mode = metadata_mode(&metadata);
+    state.modes.insert(relative_bytes.clone(), observed_mode);
+    hash_entry_header(
+        &mut state.digest,
+        &relative_bytes,
+        observed_mode,
+        b"directory",
+    );
+    Ok(())
+}
+
+fn hash_entry(root: &Path, path: &Path, state: &mut HashState) -> Result<(), SnapshotError> {
     let relative = path
         .strip_prefix(root)
         .map_err(|_| SnapshotError::new("snapshot path escaped its root"))?;
@@ -693,23 +731,19 @@ fn hash_entry(root: &Path, path: &Path, state: &mut HashState<'_>) -> Result<(),
     let metadata = fs::symlink_metadata(path)
         .map_err(|error| SnapshotError::new(format!("cannot inspect snapshot entry: {error}")))?;
     let observed_mode = metadata_mode(&metadata);
-    let digest_mode = state
-        .expected_modes
-        .and_then(|modes| modes.get(&relative_bytes))
-        .copied()
-        .unwrap_or(observed_mode);
     state.modes.insert(relative_bytes.clone(), observed_mode);
-    state.digest.update(&relative_bytes);
-    state.digest.update([0]);
-    state.digest.update(digest_mode.to_string().as_bytes());
-    state.digest.update([0]);
     if metadata.file_type().is_symlink() {
+        hash_entry_header(
+            &mut state.digest,
+            &relative_bytes,
+            observed_mode,
+            b"symlink",
+        );
         let target_bytes = validate_symlink(path, root)?;
         state.bytes = checked_snapshot_bytes(state.bytes, target_bytes.len() as u64, state.limits)?;
-        state.digest.update(b"symlink\0");
         state.digest.update(&target_bytes);
     } else if metadata.file_type().is_file() {
-        state.digest.update(b"file\0");
+        hash_entry_header(&mut state.digest, &relative_bytes, observed_mode, b"file");
         let mut input = File::open(path)
             .map_err(|error| SnapshotError::new(format!("cannot hash snapshot file: {error}")))?;
         let mut buffer = [0_u8; 1024 * 1024];
@@ -730,6 +764,14 @@ fn hash_entry(root: &Path, path: &Path, state: &mut HashState<'_>) -> Result<(),
     }
     state.digest.update([0]);
     Ok(())
+}
+
+fn hash_entry_header(digest: &mut Sha256, path: &[u8], mode: u32, kind: &[u8]) {
+    digest.update((path.len() as u64).to_be_bytes());
+    digest.update(path);
+    digest.update(mode.to_be_bytes());
+    digest.update((kind.len() as u64).to_be_bytes());
+    digest.update(kind);
 }
 
 fn validate_symlink(path: &Path, root: &Path) -> Result<Vec<u8>, SnapshotError> {
@@ -1098,6 +1140,37 @@ fn set_directory_writable(_path: &Path) -> Result<(), SnapshotError> {
 mod tests {
     use super::*;
 
+    fn fixture_snapshot() -> CandidateSnapshot {
+        let root = tempfile::tempdir().unwrap();
+        fs::create_dir_all(root.path().join("src")).unwrap();
+        fs::create_dir(root.path().join("empty")).unwrap();
+        fs::write(root.path().join("src/lib.rs"), b"pub fn seed() {}\n").unwrap();
+        #[cfg(unix)]
+        std::os::unix::fs::symlink("lib.rs", root.path().join("src/link.rs")).unwrap();
+        let limits = SnapshotLimits {
+            max_files: 100,
+            max_bytes: 1_000_000,
+        };
+        make_snapshot_read_only(root.path()).unwrap();
+        let info = snapshot_info(root.path(), limits).unwrap();
+        CandidateSnapshot {
+            root,
+            source: ReviewSource::Staged,
+            snapshot_id: info.sha256[..16].to_string(),
+            sha256: info.sha256,
+            files: info.files,
+            bytes: info.bytes,
+            limits,
+            digest_modes: info.modes,
+        }
+    }
+
+    fn mutate_snapshot(snapshot: &CandidateSnapshot, mutate: impl FnOnce(&Path)) {
+        make_snapshot_writable(snapshot.path());
+        mutate(snapshot.path());
+        make_snapshot_read_only(snapshot.path()).unwrap();
+    }
+
     #[test]
     fn snapshot_rejects_unsafe_relative_paths() {
         assert_eq!(
@@ -1106,5 +1179,82 @@ mod tests {
         );
         assert!(safe_relative_path(b"../escape").is_err());
         assert!(safe_relative_path(b"/absolute").is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn verify_unchanged_rejects_mode_only_mutation() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let snapshot = fixture_snapshot();
+        let source = snapshot.path().join("src/lib.rs");
+        fs::set_permissions(&source, fs::Permissions::from_mode(0o400)).unwrap();
+
+        assert!(snapshot.verify_unchanged().is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn verify_unchanged_rejects_root_mode_only_mutation() {
+        use std::os::unix::fs::PermissionsExt;
+
+        let snapshot = fixture_snapshot();
+        fs::set_permissions(snapshot.path(), fs::Permissions::from_mode(0o500)).unwrap();
+
+        assert!(snapshot.verify_unchanged().is_err());
+    }
+
+    #[test]
+    fn verify_unchanged_rejects_added_and_removed_empty_directories() {
+        let added = fixture_snapshot();
+        mutate_snapshot(&added, |root| fs::create_dir(root.join("added")).unwrap());
+        assert!(added.verify_unchanged().is_err());
+
+        let removed = fixture_snapshot();
+        mutate_snapshot(&removed, |root| fs::remove_dir(root.join("empty")).unwrap());
+        assert!(removed.verify_unchanged().is_err());
+    }
+
+    #[test]
+    fn verify_unchanged_rejects_git_file_and_directory() {
+        let file = fixture_snapshot();
+        mutate_snapshot(&file, |root| {
+            fs::write(root.join(".git"), b"gitdir: elsewhere\n").unwrap()
+        });
+        let error = file.verify_unchanged().unwrap_err();
+        assert!(error.to_string().contains("version-control metadata"));
+
+        let directory = fixture_snapshot();
+        mutate_snapshot(&directory, |root| {
+            fs::create_dir(root.join(".git")).unwrap()
+        });
+        let error = directory.verify_unchanged().unwrap_err();
+        assert!(error.to_string().contains("version-control metadata"));
+    }
+
+    #[test]
+    fn verify_unchanged_rejects_writable_and_changed_content() {
+        let writable = fixture_snapshot();
+        make_snapshot_writable(writable.path());
+        assert!(writable.verify_unchanged().is_err());
+
+        let changed = fixture_snapshot();
+        mutate_snapshot(&changed, |root| {
+            fs::write(root.join("src/lib.rs"), b"pub fn changed() {}\n").unwrap()
+        });
+        assert!(changed.verify_unchanged().is_err());
+    }
+
+    #[cfg(unix)]
+    #[test]
+    fn verify_unchanged_rejects_symlink_that_becomes_unsafe() {
+        let snapshot = fixture_snapshot();
+        mutate_snapshot(&snapshot, |root| {
+            let link = root.join("src/link.rs");
+            fs::remove_file(&link).unwrap();
+            std::os::unix::fs::symlink("../../escape.rs", link).unwrap();
+        });
+
+        assert!(snapshot.verify_unchanged().is_err());
     }
 }

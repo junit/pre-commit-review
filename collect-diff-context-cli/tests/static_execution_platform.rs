@@ -184,3 +184,50 @@ fn candidate_snapshot_rejects_mutation_on_this_platform() {
         .open(snapshot.path().join("created.txt"))
         .is_err());
 }
+
+#[cfg(unix)]
+#[test]
+fn candidate_snapshot_detects_mode_only_mutation_on_this_platform() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let repository = repository();
+    let snapshot = CandidateSnapshot::materialize(
+        repository.path(),
+        ReviewSource::Staged,
+        SnapshotLimits {
+            max_files: 1000,
+            max_bytes: 10_485_760,
+        },
+    )
+    .unwrap();
+    let candidate = snapshot.path().join("candidate.txt");
+    fs::set_permissions(&candidate, fs::Permissions::from_mode(0o400)).unwrap();
+
+    assert!(snapshot.verify_unchanged().is_err());
+}
+
+#[cfg(unix)]
+#[test]
+fn candidate_snapshot_detects_empty_and_git_directories_on_this_platform() {
+    use std::os::unix::fs::PermissionsExt;
+
+    for name in ["empty", ".git"] {
+        let repository = repository();
+        let snapshot = CandidateSnapshot::materialize(
+            repository.path(),
+            ReviewSource::Staged,
+            SnapshotLimits {
+                max_files: 1000,
+                max_bytes: 10_485_760,
+            },
+        )
+        .unwrap();
+        fs::set_permissions(snapshot.path(), fs::Permissions::from_mode(0o755)).unwrap();
+        let added = snapshot.path().join(name);
+        fs::create_dir(&added).unwrap();
+        fs::set_permissions(&added, fs::Permissions::from_mode(0o555)).unwrap();
+        fs::set_permissions(snapshot.path(), fs::Permissions::from_mode(0o555)).unwrap();
+
+        assert!(snapshot.verify_unchanged().is_err(), "{name}");
+    }
+}
