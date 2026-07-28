@@ -9,7 +9,8 @@ tmp_output="$(mktemp)"
 tmp_error="$(mktemp)"
 tmp_sanitized="$(mktemp)"
 tmp_report="$(mktemp)"
-trap 'rm -f "$tmp_output" "$tmp_error" "$tmp_sanitized" "$tmp_report"' EXIT
+tmp_sanitizer_error="$(mktemp)"
+trap 'rm -f "$tmp_output" "$tmp_error" "$tmp_sanitized" "$tmp_report" "$tmp_sanitizer_error"' EXIT
 
 extract_argument() {
   local wanted="$1"
@@ -130,11 +131,6 @@ fi
 
 command_exit=0
 "$repository_context_bin" index "$@" >"$tmp_output" 2>"$tmp_error" || command_exit=$?
-if [ "$command_exit" -ne 0 ] && [ "$command_exit" -ne 3 ]; then
-  cat "$tmp_error" >&2
-  emit_unavailable "$action" "$scope" 'operation-failed'
-  exit 0
-fi
 
 if [ "$SECRET_SCAN_MODE" != 'off' ]; then
   sanitizer_bin="${PRE_COMMIT_REVIEW_SANITIZER_BIN:-}"
@@ -142,17 +138,34 @@ if [ "$SECRET_SCAN_MODE" != 'off' ]; then
     sanitizer_bin="$SCRIPT_DIR/../collect-diff-context-cli/target/release/collect-diff-context-cli"
   fi
   if [ -n "$sanitizer_bin" ] && [ -x "$sanitizer_bin" ]; then
-    sanitize_exit=0
-    PRE_COMMIT_REVIEW_SANITIZE_REPORT="$tmp_report" \
-    PRE_COMMIT_REVIEW_SANITIZE_STREAM='repository-index-stdout' \
-      "$sanitizer_bin" --sanitize-stdin <"$tmp_output" >"$tmp_sanitized" 2>>"$tmp_error" \
-      || sanitize_exit=$?
-    if [ "$sanitize_exit" -eq 0 ] \
-      && grep -Fq 'protocol: pcr-sanitizer-v1' "$tmp_report" \
-      && grep -Eq '^status: (clean|redacted)$' "$tmp_report"; then
-      mv "$tmp_sanitized" "$tmp_output"
-    fi
+    sanitize_file_in_place() {
+      local input_file="$1"
+      local stream_name="$2"
+      local sanitize_exit=0
+      [ -s "$input_file" ] || return 0
+      : >"$tmp_sanitized"
+      : >"$tmp_report"
+      : >"$tmp_sanitizer_error"
+      PRE_COMMIT_REVIEW_SANITIZE_REPORT="$tmp_report" \
+      PRE_COMMIT_REVIEW_SANITIZE_STREAM="$stream_name" \
+        "$sanitizer_bin" --sanitize-stdin \
+          <"$input_file" >"$tmp_sanitized" 2>"$tmp_sanitizer_error" \
+        || sanitize_exit=$?
+      if [ "$sanitize_exit" -eq 0 ] \
+        && grep -Fq 'protocol: pcr-sanitizer-v1' "$tmp_report" \
+        && grep -Eq '^status: (clean|redacted)$' "$tmp_report"; then
+        mv "$tmp_sanitized" "$input_file"
+      fi
+    }
+    sanitize_file_in_place "$tmp_output" 'repository-index-stdout'
+    sanitize_file_in_place "$tmp_error" 'repository-index-stderr'
   fi
+fi
+
+if [ "$command_exit" -ne 0 ] && [ "$command_exit" -ne 3 ]; then
+  [ -s "$tmp_error" ] && cat "$tmp_error" >&2
+  emit_unavailable "$action" "$scope" 'operation-failed'
+  exit 0
 fi
 
 cat "$tmp_output"

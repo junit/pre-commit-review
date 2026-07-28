@@ -122,6 +122,70 @@ PCR_FAKE_LOG="$fake_log" PRE_COMMIT_REVIEW_SECRET_SCAN=off \
 grep -Fq 'index clean --execute --max-bytes 1 --retain-generations 0' "$fake_log" \
   || fail 'explicit clean execute arguments were not forwarded'
 
+stderr_secret="glpat-$(printf '%s%s' '1234567890' 'abcdefghij')"
+stderr_private_path="$tmp_dir/private/index.sqlite"
+stderr_sanitizer="$tmp_dir/stderr-sanitizer"
+stderr_sanitizer_log="$tmp_dir/stderr-sanitizer.log"
+cat >"$stderr_sanitizer" <<'EOF_SANITIZER'
+#!/usr/bin/env bash
+sed -e "s|$PCR_STDERR_SECRET|[redacted:index-secret]|g" \
+  -e "s|$PCR_STDERR_PRIVATE_PATH|[redacted:index-path]|g"
+printf '%s\n' "$PRE_COMMIT_REVIEW_SANITIZE_STREAM" >>"$PCR_SANITIZER_LOG"
+cat >"$PRE_COMMIT_REVIEW_SANITIZE_REPORT" <<'EOF_REPORT'
+protocol: pcr-sanitizer-v1
+status: redacted
+EOF_REPORT
+EOF_SANITIZER
+chmod +x "$stderr_sanitizer"
+stderr_leaky_bin="$tmp_dir/stderr-leaky-repository-context-cli"
+cat >"$stderr_leaky_bin" <<'EOF_STDERR_LEAK'
+#!/usr/bin/env bash
+printf '%s' '{"schema_version":1,"kind":"repository_index_report","action":"doctor","status":"partial","scope_fingerprint":null,"repository_id":"bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb","generation_key":null,"metrics":{"elapsed_ms":0,"manifest_files":0,"manifest_bytes":0,"file_fact_hits":0,"file_fact_misses":0,"file_fact_writes":0,"parsed_files":0,"parsed_bytes":0,"symbols":0,"edges":0,"query_rows":0,"generation_bytes":0,"output_bytes":0},"limitations":[]}'
+printf 'repository index failed at %s with token %s\n' \
+  "$PCR_STDERR_PRIVATE_PATH" "$PCR_STDERR_SECRET" >&2
+exit "${PCR_STDERR_EXIT:-3}"
+EOF_STDERR_LEAK
+chmod +x "$stderr_leaky_bin"
+stderr_exit=0
+PCR_STDERR_SECRET="$stderr_secret" \
+PCR_STDERR_PRIVATE_PATH="$stderr_private_path" \
+PCR_SANITIZER_LOG="$stderr_sanitizer_log" \
+PRE_COMMIT_REVIEW_REPOSITORY_CONTEXT_BIN="$stderr_leaky_bin" \
+PRE_COMMIT_REVIEW_SANITIZER_BIN="$stderr_sanitizer" \
+  "$wrapper" index doctor >"$tmp_dir/stderr-sanitized.out" \
+    2>"$tmp_dir/stderr-sanitized.err" || stderr_exit=$?
+[ "$stderr_exit" -eq 3 ] || fail 'index wrapper did not preserve partial exit status'
+if grep -Fq "$stderr_secret" "$tmp_dir/stderr-sanitized.out" "$tmp_dir/stderr-sanitized.err"; then
+  fail 'index wrapper released a secret from repository context stderr'
+fi
+if grep -Fq "$stderr_private_path" "$tmp_dir/stderr-sanitized.out" "$tmp_dir/stderr-sanitized.err"; then
+  fail 'index wrapper released a private path from repository context stderr'
+fi
+grep -Fq '[redacted:index-secret]' "$tmp_dir/stderr-sanitized.err" \
+  || fail 'index wrapper did not publish sanitized stderr secret output'
+grep -Fq '[redacted:index-path]' "$tmp_dir/stderr-sanitized.err" \
+  || fail 'index wrapper did not publish sanitized stderr path output'
+grep -Fqx 'repository-index-stderr' "$stderr_sanitizer_log" \
+  || fail 'index wrapper did not invoke the stderr sanitizer stream'
+stderr_failure_exit=0
+PCR_STDERR_SECRET="$stderr_secret" \
+PCR_STDERR_PRIVATE_PATH="$stderr_private_path" \
+PCR_STDERR_EXIT=1 \
+PCR_SANITIZER_LOG="$stderr_sanitizer_log" \
+PRE_COMMIT_REVIEW_REPOSITORY_CONTEXT_BIN="$stderr_leaky_bin" \
+PRE_COMMIT_REVIEW_SANITIZER_BIN="$stderr_sanitizer" \
+  "$wrapper" index doctor >"$tmp_dir/stderr-failure.out" \
+    2>"$tmp_dir/stderr-failure.err" || stderr_failure_exit=$?
+[ "$stderr_failure_exit" -eq 0 ] || fail 'index wrapper did not degrade operation failure safely'
+grep -Fq '"status":"unavailable"' "$tmp_dir/stderr-failure.out" \
+  || fail 'index wrapper did not emit unavailable report after operation failure'
+if grep -Fq "$stderr_secret" "$tmp_dir/stderr-failure.out" "$tmp_dir/stderr-failure.err" \
+  || grep -Fq "$stderr_private_path" "$tmp_dir/stderr-failure.out" "$tmp_dir/stderr-failure.err"; then
+  fail 'index wrapper released raw stderr before operation failure degradation'
+fi
+grep -Fq '[redacted:index-secret]' "$tmp_dir/stderr-failure.err" \
+  || fail 'index wrapper did not sanitize ordinary failure stderr'
+
 isolated_root="$tmp_dir/isolated"
 mkdir -p "$isolated_root/scripts/lib" "$isolated_root/scripts/bin"
 cp "$resolver" "$isolated_root/scripts/lib/repository_context_cli.sh"
