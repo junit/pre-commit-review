@@ -1,16 +1,20 @@
 use collect_diff_context_cli::candidate::snapshot::{CandidateSnapshot, SnapshotLimits};
 use collect_diff_context_cli::repository_context_provider::contract::{
-    CandidateBinding, RustAnalyzerCrate, RustAnalyzerDependency, RustAnalyzerProjectModel,
+    CandidateBinding, PositionEncoding, ProviderRange, RustAnalyzerCrate, RustAnalyzerDependency,
+    RustAnalyzerProjectModel,
 };
 use collect_diff_context_cli::repository_context_provider::snapshot::{
-    BoundCandidateSnapshot, SnapshotFilePath, SnapshotSourceBudget,
+    BoundCandidateSnapshot, LspPosition, LspRange, SnapshotFilePath, SnapshotSourceBudget,
+    SnapshotUriMapper, SourceDocument,
 };
 use collect_diff_context_cli::review_scope::ReviewSource;
 use std::collections::BTreeMap;
 use std::fs;
 use std::path::Path;
 use std::process::Command;
+use std::sync::Arc;
 use tempfile::TempDir;
+use url::Url;
 
 fn digest(character: char) -> String {
     std::iter::repeat_n(character, 64).collect()
@@ -261,4 +265,206 @@ fn linked_project_json_is_canonical_and_digest_bound() {
             "{field}"
         );
     }
+}
+
+#[test]
+fn file_uri_mapper_accepts_only_contained_regular_snapshot_files() {
+    let fixture = ProviderFixture::new();
+    let mapper = SnapshotUriMapper::new(fixture.snapshot.path()).unwrap();
+    let path = SnapshotFilePath::new("src/lib.rs").unwrap();
+    let uri = mapper.to_file_uri(&path).unwrap();
+    assert_eq!(mapper.to_file_path(&uri).unwrap(), path);
+
+    let root_uri = Url::from_file_path(fixture.snapshot.path()).unwrap();
+    let error = mapper.to_file_path(&root_uri).unwrap_err();
+    assert_eq!(error.code, "provider-uri-outside-snapshot");
+
+    let directory_uri = Url::from_file_path(fixture.snapshot.path().join("src")).unwrap();
+    assert_eq!(
+        mapper.to_file_path(&directory_uri).unwrap_err().code,
+        "provider-uri-invalid"
+    );
+
+    let missing_uri = Url::from_file_path(fixture.snapshot.path().join("src/missing.rs")).unwrap();
+    assert_eq!(
+        mapper.to_file_path(&missing_uri).unwrap_err().code,
+        "provider-uri-stale"
+    );
+
+    let mut query = uri.clone();
+    query.set_query(Some("query"));
+    assert_eq!(
+        mapper.to_file_path(&query).unwrap_err().code,
+        "provider-uri-invalid"
+    );
+    let mut fragment = uri.clone();
+    fragment.set_fragment(Some("fragment"));
+    assert_eq!(
+        mapper.to_file_path(&fragment).unwrap_err().code,
+        "provider-uri-invalid"
+    );
+
+    let credentials = Url::parse("https://user:pass@example.test/src/lib.rs").unwrap();
+    assert_eq!(
+        mapper.to_file_path(&credentials).unwrap_err().code,
+        "provider-uri-invalid"
+    );
+    let authority = Url::parse(&format!("file://example.test{}", uri.path())).unwrap();
+    assert_eq!(
+        mapper.to_file_path(&authority).unwrap_err().code,
+        "provider-uri-invalid"
+    );
+    let non_file = Url::parse("https://example.test/src/lib.rs").unwrap();
+    assert_eq!(
+        mapper.to_file_path(&non_file).unwrap_err().code,
+        "provider-uri-invalid"
+    );
+
+    let outside =
+        Url::from_file_path(fixture.snapshot.path().parent().unwrap().join("escape.rs")).unwrap();
+    assert_eq!(
+        mapper.to_file_path(&outside).unwrap_err().code,
+        "provider-uri-outside-snapshot"
+    );
+
+    let duplicate = Url::parse(&format!(
+        "file://{}//src/lib.rs",
+        uri.path().trim_end_matches("/src/lib.rs")
+    ))
+    .unwrap();
+    assert_eq!(
+        mapper.to_file_path(&duplicate).unwrap_err().code,
+        "provider-uri-invalid"
+    );
+
+    let dot = Url::parse(&format!(
+        "file://{}/%2e%2e/escape.rs",
+        uri.path().trim_end_matches("/src/lib.rs")
+    ))
+    .unwrap();
+    assert_eq!(
+        mapper.to_file_path(&dot).unwrap_err().code,
+        "provider-uri-outside-snapshot"
+    );
+
+    let trailing = Url::parse(&format!("{}/", uri.as_str())).unwrap();
+    assert_eq!(
+        mapper.to_file_path(&trailing).unwrap_err().code,
+        "provider-uri-invalid"
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn file_uri_mapper_rejects_stale_symlinks_and_non_utf8_paths() {
+    use std::os::unix::fs::symlink;
+
+    let directory = TempDir::new().unwrap();
+    fs::create_dir(directory.path().join("root")).unwrap();
+    fs::write(directory.path().join("root/target.rs"), b"fn target() {}\n").unwrap();
+    symlink("target.rs", directory.path().join("root/link.rs")).unwrap();
+    let mapper = SnapshotUriMapper::new(&directory.path().join("root")).unwrap();
+    fs::remove_file(directory.path().join("root/target.rs")).unwrap();
+    let stale = Url::from_file_path(directory.path().join("root/link.rs")).unwrap();
+    assert_eq!(
+        mapper.to_file_path(&stale).unwrap_err().code,
+        "provider-uri-stale"
+    );
+
+    let root_uri = Url::from_file_path(directory.path().join("root")).unwrap();
+    let invalid_uri = Url::parse(&format!(
+        "file://{}/invalid%FF.rs",
+        root_uri.path().trim_end_matches('/')
+    ))
+    .unwrap();
+    assert_eq!(
+        mapper.to_file_path(&invalid_uri).unwrap_err().code,
+        "provider-uri-non-utf8"
+    );
+}
+
+#[cfg(windows)]
+#[test]
+fn file_uri_mapper_accepts_windows_file_uri_round_trip() {
+    let fixture = ProviderFixture::new();
+    let mapper = SnapshotUriMapper::new(fixture.snapshot.path()).unwrap();
+    let path = SnapshotFilePath::new("src/lib.rs").unwrap();
+    let uri = mapper.to_file_uri(&path).unwrap();
+    assert_eq!(uri.scheme(), "file");
+    assert_eq!(mapper.to_file_path(&uri).unwrap(), path);
+}
+
+#[test]
+fn utf8_and_utf16_map_to_the_same_provider_bytes() {
+    let document = SourceDocument::new(Arc::from("a😀z\r\nβ\n".as_bytes())).unwrap();
+    let utf8 = document
+        .lsp_range_to_provider(LspRange::new(0, 1, 0, 5), PositionEncoding::Utf8)
+        .unwrap();
+    let utf16 = document
+        .lsp_range_to_provider(LspRange::new(0, 1, 0, 3), PositionEncoding::Utf16)
+        .unwrap();
+    assert_eq!(utf8, utf16);
+    assert_eq!((utf8.start_byte, utf8.end_byte), (1, 5));
+    assert!(
+        document
+            .lsp_to_byte(LspPosition::new(0, 99), PositionEncoding::Utf8)
+            .unwrap()
+            .1
+    );
+}
+
+#[test]
+fn source_document_handles_line_endings_eof_and_round_trip_ranges() {
+    let document = SourceDocument::new(Arc::from("a\r\nb\rc\n".as_bytes())).unwrap();
+    let range = document
+        .lsp_range_to_provider(LspRange::new(0, 0, 1, 0), PositionEncoding::Utf8)
+        .unwrap();
+    assert_eq!((range.start_byte, range.end_byte), (0, 3));
+    assert_eq!(range.start_line, 1);
+    assert_eq!(range.end_line, 2);
+    assert_eq!(range.end_column, 1);
+    let round_trip = document
+        .provider_range_to_lsp(&range, PositionEncoding::Utf16)
+        .unwrap();
+    assert_eq!(round_trip, LspRange::new(0, 0, 1, 0));
+
+    let final_line = document
+        .lsp_to_byte(LspPosition::new(3, 0), PositionEncoding::Utf8)
+        .unwrap();
+    assert_eq!(final_line, (7, false));
+}
+
+#[test]
+fn source_document_rejects_mid_codepoint_reversed_invalid_and_normalized_ranges() {
+    let document = SourceDocument::new(Arc::from("a😀z\n".as_bytes())).unwrap();
+    assert!(document
+        .lsp_to_byte(LspPosition::new(0, 2), PositionEncoding::Utf8)
+        .is_err());
+    assert!(document
+        .lsp_to_byte(LspPosition::new(0, 2), PositionEncoding::Utf16)
+        .is_err());
+    assert!(document
+        .lsp_to_byte(LspPosition::new(4, 0), PositionEncoding::Utf8)
+        .is_err());
+    assert!(document
+        .lsp_range_to_provider(LspRange::new(0, 3, 0, 1), PositionEncoding::Utf8,)
+        .is_err());
+    let normalized = document
+        .lsp_range_to_provider(LspRange::new(0, 0, 0, 99), PositionEncoding::Utf8)
+        .unwrap_err();
+    assert_eq!(normalized.code, "provider-position-normalized");
+    assert!(SourceDocument::new(Arc::from([0xff_u8].as_slice())).is_err());
+
+    let invalid_provider = ProviderRange {
+        format: collect_diff_context_cli::repository_context_provider::contract::ProviderRangeFormat::Utf8ByteColumnsEndExclusiveV1,
+        start_line: 1,
+        start_column: 1,
+        end_line: 1,
+        end_column: 99,
+        start_byte: 0,
+        end_byte: 1,
+    };
+    assert!(document
+        .provider_range_to_lsp(&invalid_provider, PositionEncoding::Utf8)
+        .is_err());
 }

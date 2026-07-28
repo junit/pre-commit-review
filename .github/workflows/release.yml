@@ -193,6 +193,7 @@ jobs:
               'toml_parser@1.1.2+spec-1.1.0',
               'toml_writer@1.1.2+spec-1.1.0',
               'winnow@1.0.4',
+              'url@2.5.7',
           }
           missing = required - components
           if missing:
@@ -205,6 +206,8 @@ jobs:
           mkdir -p dist/pre-commit-review
           test -f THIRD_PARTY_LICENSES/rusqlite-LICENSE
           test -f THIRD_PARTY_LICENSES/sqlite-PUBLIC-DOMAIN.md
+          test -f THIRD_PARTY_LICENSES/url-LICENSE-APACHE
+          test -f THIRD_PARTY_LICENSES/url-LICENSE-MIT
           cp SKILL.md LICENSE dist/pre-commit-review/
           cp dist/pre-commit-review.cdx.json dist/pre-commit-review/
           cp -R agents references scripts THIRD_PARTY_LICENSES dist/pre-commit-review/

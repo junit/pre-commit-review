@@ -1,9 +1,15 @@
-use super::contract::{CandidateBinding, ReportedCandidateBinding, RustAnalyzerProjectModel};
+use super::contract::{
+    CandidateBinding, ProviderRange, ProviderRangeFormat, ReportedCandidateBinding,
+    RustAnalyzerProjectModel,
+};
 use crate::candidate::snapshot::CandidateSnapshot;
 use std::fs::{self, File};
 use std::io::{Read, Take};
 use std::path::{Component, Path, PathBuf};
 use std::sync::Arc;
+use url::Url;
+
+pub use super::contract::PositionEncoding;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct SnapshotBoundaryError {
@@ -67,6 +73,452 @@ impl SnapshotFilePath {
     fn as_path(&self) -> &Path {
         &self.0
     }
+}
+
+#[derive(Debug, Clone)]
+pub struct SnapshotUriMapper {
+    canonical_root: PathBuf,
+}
+
+impl SnapshotUriMapper {
+    pub fn new(root: &Path) -> Result<Self, SnapshotBoundaryError> {
+        let canonical_root = fs::canonicalize(root).map_err(|_| {
+            SnapshotBoundaryError::new("provider-uri-stale", "snapshot URI root is not available")
+        })?;
+        if !fs::metadata(&canonical_root)
+            .map(|metadata| metadata.is_dir())
+            .unwrap_or(false)
+        {
+            return Err(SnapshotBoundaryError::new(
+                "provider-uri-invalid",
+                "snapshot URI root is not a directory",
+            ));
+        }
+        Ok(Self { canonical_root })
+    }
+
+    pub fn to_file_path(&self, uri: &Url) -> Result<SnapshotFilePath, SnapshotBoundaryError> {
+        validate_file_uri(uri)?;
+        let path = uri.to_file_path().map_err(|_| {
+            SnapshotBoundaryError::new(
+                "provider-uri-invalid",
+                "file URI cannot be converted to a local path",
+            )
+        })?;
+        validate_absolute_uri_path(&path)?;
+        let parent = path.parent().ok_or_else(|| {
+            SnapshotBoundaryError::new(
+                "provider-uri-invalid",
+                "file URI target has no parent directory",
+            )
+        })?;
+        let canonical_parent = fs::canonicalize(parent).map_err(|_| {
+            SnapshotBoundaryError::new(
+                "provider-uri-stale",
+                "file URI target parent is no longer available",
+            )
+        })?;
+        ensure_uri_parent_contained(&self.canonical_root, &canonical_parent)?;
+        let canonical = fs::canonicalize(&path).map_err(|_| {
+            SnapshotBoundaryError::new(
+                "provider-uri-stale",
+                "file URI target is no longer available",
+            )
+        })?;
+        ensure_uri_contained(&self.canonical_root, &canonical)?;
+        let metadata = fs::metadata(&canonical).map_err(|_| {
+            SnapshotBoundaryError::new(
+                "provider-uri-stale",
+                "file URI target is no longer available",
+            )
+        })?;
+        if !metadata.is_file() {
+            return Err(SnapshotBoundaryError::new(
+                "provider-uri-invalid",
+                "file URI target is not a regular file",
+            ));
+        }
+        let relative = canonical.strip_prefix(&self.canonical_root).map_err(|_| {
+            SnapshotBoundaryError::new(
+                "provider-uri-outside-snapshot",
+                "file URI target is outside the snapshot",
+            )
+        })?;
+        let relative = relative.to_str().ok_or_else(|| {
+            SnapshotBoundaryError::new(
+                "provider-uri-non-utf8",
+                "snapshot file path is not valid UTF-8",
+            )
+        })?;
+        SnapshotFilePath::new(relative).map_err(|_| {
+            SnapshotBoundaryError::new(
+                "provider-uri-invalid",
+                "file URI target path is not normalized",
+            )
+        })
+    }
+
+    pub fn to_file_uri(&self, path: &SnapshotFilePath) -> Result<Url, SnapshotBoundaryError> {
+        let local = self.canonical_root.join(path.as_path());
+        let canonical = fs::canonicalize(&local).map_err(|_| {
+            SnapshotBoundaryError::new(
+                "provider-uri-stale",
+                "snapshot file path is no longer available",
+            )
+        })?;
+        ensure_uri_contained(&self.canonical_root, &canonical)?;
+        if !fs::metadata(&canonical)
+            .map(|metadata| metadata.is_file())
+            .unwrap_or(false)
+        {
+            return Err(SnapshotBoundaryError::new(
+                "provider-uri-invalid",
+                "snapshot file path is not a regular file",
+            ));
+        }
+        Url::from_file_path(&local).map_err(|_| {
+            SnapshotBoundaryError::new(
+                "provider-uri-invalid",
+                "snapshot file path cannot be represented as a file URI",
+            )
+        })
+    }
+}
+
+fn validate_file_uri(uri: &Url) -> Result<(), SnapshotBoundaryError> {
+    if uri.scheme() != "file"
+        || !uri.username().is_empty()
+        || uri.password().is_some()
+        || uri.host_str().is_some()
+        || uri.query().is_some()
+        || uri.fragment().is_some()
+    {
+        return Err(SnapshotBoundaryError::new(
+            "provider-uri-invalid",
+            "file URI contains unsupported metadata",
+        ));
+    }
+    let serialized = uri.as_str().to_ascii_lowercase();
+    if serialized.contains("%2e") || serialized.contains("%2f") || serialized.contains("%5c") {
+        return Err(SnapshotBoundaryError::new(
+            "provider-uri-invalid",
+            "file URI contains an encoded path separator or dot segment",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_absolute_uri_path(path: &Path) -> Result<(), SnapshotBoundaryError> {
+    let value = path.to_str().ok_or_else(|| {
+        SnapshotBoundaryError::new("provider-uri-non-utf8", "file URI path is not valid UTF-8")
+    })?;
+    if value.is_empty()
+        || value.chars().any(char::is_control)
+        || value.ends_with('/')
+        || value.ends_with('\\')
+        || value.contains("//")
+        || value.contains("\\\\")
+        || path
+            .components()
+            .any(|component| matches!(component, Component::CurDir | Component::ParentDir))
+    {
+        return Err(SnapshotBoundaryError::new(
+            "provider-uri-invalid",
+            "file URI path is not normalized",
+        ));
+    }
+    Ok(())
+}
+
+fn ensure_uri_contained(root: &Path, path: &Path) -> Result<(), SnapshotBoundaryError> {
+    if path == root || !path.starts_with(root) {
+        return Err(SnapshotBoundaryError::new(
+            "provider-uri-outside-snapshot",
+            "file URI target is outside the snapshot",
+        ));
+    }
+    Ok(())
+}
+
+fn ensure_uri_parent_contained(root: &Path, path: &Path) -> Result<(), SnapshotBoundaryError> {
+    if !path.starts_with(root) {
+        return Err(SnapshotBoundaryError::new(
+            "provider-uri-outside-snapshot",
+            "file URI target is outside the snapshot",
+        ));
+    }
+    Ok(())
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub struct LspPosition {
+    pub line: u32,
+    pub character: u32,
+}
+
+impl LspPosition {
+    pub const fn new(line: u32, character: u32) -> Self {
+        Self { line, character }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
+pub struct LspRange {
+    pub start: LspPosition,
+    pub end: LspPosition,
+}
+
+impl LspRange {
+    pub const fn new(
+        start_line: u32,
+        start_character: u32,
+        end_line: u32,
+        end_character: u32,
+    ) -> Self {
+        Self {
+            start: LspPosition::new(start_line, start_character),
+            end: LspPosition::new(end_line, end_character),
+        }
+    }
+}
+
+#[derive(Debug, Clone)]
+pub struct SourceDocument {
+    bytes: Arc<[u8]>,
+    line_starts: Vec<usize>,
+    line_ends: Vec<usize>,
+}
+
+impl SourceDocument {
+    pub fn new(bytes: Arc<[u8]>) -> Result<Self, SnapshotBoundaryError> {
+        if bytes.len() > 4 * 1024 * 1024 || std::str::from_utf8(&bytes).is_err() {
+            return Err(SnapshotBoundaryError::new(
+                "provider-source-invalid",
+                "source document is invalid or exceeds the source-file limit",
+            ));
+        }
+        let mut line_starts = vec![0];
+        let mut line_ends = Vec::new();
+        let mut index = 0;
+        while index < bytes.len() {
+            match bytes[index] {
+                b'\r' => {
+                    line_ends.push(index);
+                    index += usize::from(index + 1 < bytes.len() && bytes[index + 1] == b'\n') + 1;
+                    line_starts.push(index);
+                }
+                b'\n' => {
+                    line_ends.push(index);
+                    index += 1;
+                    line_starts.push(index);
+                }
+                _ => index += 1,
+            }
+        }
+        if line_ends.len() < line_starts.len() {
+            line_ends.push(bytes.len());
+        }
+        Ok(Self {
+            bytes,
+            line_starts,
+            line_ends,
+        })
+    }
+
+    pub fn lsp_to_byte(
+        &self,
+        position: LspPosition,
+        encoding: PositionEncoding,
+    ) -> Result<(usize, bool), SnapshotBoundaryError> {
+        let line = usize::try_from(position.line).map_err(|_| position_error())?;
+        let character = usize::try_from(position.character).map_err(|_| position_error())?;
+        let Some(&start) = self.line_starts.get(line) else {
+            return Err(position_error());
+        };
+        let end = self.line_ends[line];
+        let text = std::str::from_utf8(&self.bytes[start..end]).map_err(|_| source_error())?;
+        let units = text_units(text, encoding);
+        if character > units {
+            return Ok((end, true));
+        }
+        let offset = units_to_byte(text, character, encoding)?;
+        Ok((start + offset, false))
+    }
+
+    pub fn byte_to_lsp(
+        &self,
+        byte: usize,
+        encoding: PositionEncoding,
+    ) -> Result<LspPosition, SnapshotBoundaryError> {
+        let (line, offset) = self.byte_to_line_offset(byte)?;
+        let prefix = &self.bytes[self.line_starts[line]..self.line_starts[line] + offset];
+        let prefix = std::str::from_utf8(prefix).map_err(|_| position_error())?;
+        Ok(LspPosition::new(
+            u32::try_from(line).map_err(|_| position_error())?,
+            u32::try_from(text_units(prefix, encoding)).map_err(|_| position_error())?,
+        ))
+    }
+
+    pub fn lsp_range_to_provider(
+        &self,
+        range: LspRange,
+        encoding: PositionEncoding,
+    ) -> Result<ProviderRange, SnapshotBoundaryError> {
+        let (start_byte, start_normalized) = self.lsp_to_byte(range.start, encoding)?;
+        let (end_byte, end_normalized) = self.lsp_to_byte(range.end, encoding)?;
+        if start_normalized || end_normalized {
+            return Err(SnapshotBoundaryError::new(
+                "provider-position-normalized",
+                "LSP position exceeded the source line",
+            ));
+        }
+        if start_byte >= end_byte {
+            return Err(range_error());
+        }
+        self.provider_range_from_bytes(start_byte, end_byte)
+    }
+
+    pub fn provider_range_to_lsp(
+        &self,
+        range: &ProviderRange,
+        encoding: PositionEncoding,
+    ) -> Result<LspRange, SnapshotBoundaryError> {
+        range.validate().map_err(|_| range_error())?;
+        let expected = self.provider_range_from_bytes(range.start_byte, range.end_byte)?;
+        if expected.start_line != range.start_line
+            || expected.start_column != range.start_column
+            || expected.end_line != range.end_line
+            || expected.end_column != range.end_column
+        {
+            return Err(SnapshotBoundaryError::new(
+                "provider-range-mismatch",
+                "provider range coordinates do not match source bytes",
+            ));
+        }
+        Ok(LspRange {
+            start: self.byte_to_lsp(range.start_byte, encoding)?,
+            end: self.byte_to_lsp(range.end_byte, encoding)?,
+        })
+    }
+
+    fn provider_range_from_bytes(
+        &self,
+        start_byte: usize,
+        end_byte: usize,
+    ) -> Result<ProviderRange, SnapshotBoundaryError> {
+        if start_byte >= end_byte || end_byte > self.bytes.len() {
+            return Err(range_error());
+        }
+        let start = self.byte_to_provider_position(start_byte)?;
+        let end = self.byte_to_provider_position(end_byte)?;
+        let range = ProviderRange {
+            format: ProviderRangeFormat::Utf8ByteColumnsEndExclusiveV1,
+            start_line: start.0,
+            start_column: start.1,
+            end_line: end.0,
+            end_column: end.1,
+            start_byte,
+            end_byte,
+        };
+        range.validate().map_err(|_| range_error())?;
+        Ok(range)
+    }
+
+    fn byte_to_provider_position(&self, byte: usize) -> Result<(u32, u32), SnapshotBoundaryError> {
+        let (line, offset) = self.byte_to_line_offset(byte)?;
+        Ok((
+            u32::try_from(line + 1).map_err(|_| position_error())?,
+            u32::try_from(offset + 1).map_err(|_| position_error())?,
+        ))
+    }
+
+    fn byte_to_line_offset(&self, byte: usize) -> Result<(usize, usize), SnapshotBoundaryError> {
+        if byte > self.bytes.len() {
+            return Err(position_error());
+        }
+        for line in 0..self.line_starts.len() {
+            let start = self.line_starts[line];
+            let end = self.line_ends[line];
+            let next = self
+                .line_starts
+                .get(line + 1)
+                .copied()
+                .unwrap_or(self.bytes.len());
+            if byte >= start && byte <= end {
+                let offset = byte - start;
+                if std::str::from_utf8(&self.bytes[..byte]).is_err() {
+                    return Err(position_error());
+                }
+                return Ok((line, offset));
+            }
+            if byte > end && byte < next {
+                return Err(position_error());
+            }
+        }
+        Err(position_error())
+    }
+}
+
+fn text_units(text: &str, encoding: PositionEncoding) -> usize {
+    match encoding {
+        PositionEncoding::Utf8 => text.len(),
+        PositionEncoding::Utf16 => text.encode_utf16().count(),
+    }
+}
+
+fn units_to_byte(
+    text: &str,
+    units: usize,
+    encoding: PositionEncoding,
+) -> Result<usize, SnapshotBoundaryError> {
+    match encoding {
+        PositionEncoding::Utf8 => {
+            if units > text.len() || !text.is_char_boundary(units) {
+                return Err(position_error());
+            }
+            Ok(units)
+        }
+        PositionEncoding::Utf16 => {
+            let mut consumed = 0;
+            for (byte, character) in text.char_indices() {
+                if consumed == units {
+                    return Ok(byte);
+                }
+                let width = character.len_utf16();
+                if units < consumed + width {
+                    return Err(position_error());
+                }
+                consumed += width;
+            }
+            if consumed == units {
+                Ok(text.len())
+            } else {
+                Err(position_error())
+            }
+        }
+    }
+}
+
+fn position_error() -> SnapshotBoundaryError {
+    SnapshotBoundaryError::new(
+        "provider-position-invalid",
+        "LSP position is outside a valid source boundary",
+    )
+}
+
+fn source_error() -> SnapshotBoundaryError {
+    SnapshotBoundaryError::new(
+        "provider-source-invalid",
+        "source document is not valid UTF-8",
+    )
+}
+
+fn range_error() -> SnapshotBoundaryError {
+    SnapshotBoundaryError::new(
+        "provider-range-invalid",
+        "provider range is reversed, empty, or outside the source",
+    )
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
