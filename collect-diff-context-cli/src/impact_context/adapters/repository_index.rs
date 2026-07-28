@@ -500,6 +500,7 @@ impl RepositoryIndexAdapter {
             let candidate_graph = build_fast_candidate_graph(
                 &request,
                 opening_scope,
+                &self.layout,
                 &reader,
                 &reference.identity,
                 &mut tracker,
@@ -611,10 +612,17 @@ struct OverlayPathDelta {
     limitations: Vec<IndexLimitation>,
 }
 
+struct BasePathContext {
+    file: Option<GraphFile>,
+    symbols: Vec<GraphSymbol>,
+    edges: Vec<GraphEdge>,
+}
+
 #[allow(clippy::too_many_arguments)]
 fn build_fast_candidate_graph(
     request: &RepositoryIndexRequest<'_>,
     opening_scope: &str,
+    layout: &CacheLayout,
     base: &RepositoryGraphReader,
     base_identity: &GraphGenerationIdentity,
     tracker: &mut IndexBudgetTracker,
@@ -636,6 +644,14 @@ fn build_fast_candidate_graph(
     let mut symbols = Vec::new();
     let mut edges = Vec::new();
     let mut graph_limitations = Vec::new();
+    let authoritative_changed_paths = request
+        .candidate
+        .files()
+        .iter()
+        .map(|file| file.path.clone())
+        .collect::<BTreeSet<_>>();
+    let mut reverse_dependents = BTreeSet::new();
+    let mut symbol_replacements = BTreeMap::new();
     for changed in request
         .candidate
         .files()
@@ -681,75 +697,120 @@ fn build_fast_candidate_graph(
         metrics.parsed_bytes = metrics
             .parsed_bytes
             .saturating_add(content.bytes.len() as u64);
-        let base_file = base.file_for_path(&changed.path).map_err(map_graph_error)?;
-        let symbol_limit = base
-            .maximum_rows_per_query()
-            .min(tracker.amount(IndexResource::QueryRows).remaining);
-        let base_symbols = if symbol_limit == 0 {
-            graph_limitations.push(overlay_limitation(
-                "index-query-row-budget-exhausted",
-                changed.path.clone(),
-                "the overlay base-symbol query budget was exhausted",
-            ));
-            Vec::new()
-        } else {
-            let rows = base
-                .symbols_for_path(&changed.path, symbol_limit)
-                .map_err(map_graph_error)?;
-            tracker
-                .consume(IndexResource::QueryRows, rows.len())
-                .map_err(|error| RepositoryIndexError::new(error.code(), error.to_string()))?;
-            if rows.len() == symbol_limit {
-                graph_limitations.push(overlay_limitation(
-                    "index-query-row-budget-exhausted",
-                    changed.path.clone(),
-                    "the overlay base-symbol query reached its exact row limit",
-                ));
-            }
-            rows
-        };
-        let edge_limit = base
-            .maximum_rows_per_query()
-            .min(tracker.amount(IndexResource::QueryRows).remaining);
-        let base_edges = if edge_limit == 0 {
-            graph_limitations.push(overlay_limitation(
-                "index-query-row-budget-exhausted",
-                changed.path.clone(),
-                "the overlay base-edge query budget was exhausted",
-            ));
-            Vec::new()
-        } else {
-            let rows = base
-                .edges_for_path(&changed.path, edge_limit)
-                .map_err(map_graph_error)?;
-            tracker
-                .consume(IndexResource::QueryRows, rows.len())
-                .map_err(|error| RepositoryIndexError::new(error.code(), error.to_string()))?;
-            if rows.len() == edge_limit {
-                graph_limitations.push(overlay_limitation(
-                    "index-query-row-budget-exhausted",
-                    changed.path.clone(),
-                    "the overlay base-edge query reached its exact row limit",
-                ));
-            }
-            rows
-        };
+        let base_context =
+            read_base_path_context(base, &changed.path, tracker, &mut graph_limitations)?;
         let delta = resolve_overlay_path(
             changed,
             &content.sha256,
             key,
             &facts,
-            base_file,
-            &base_symbols,
-            &base_edges,
+            base_context.file,
+            &base_context.symbols,
+            &base_context.edges,
             base,
             tracker,
+            &symbol_replacements,
+        )?;
+        record_symbol_replacements(
+            &base_context.symbols,
+            &delta.symbols,
+            &mut symbol_replacements,
+        );
+        collect_reverse_dependents(
+            base,
+            &base_context.symbols,
+            &authoritative_changed_paths,
+            tracker,
+            &mut graph_limitations,
+            &mut reverse_dependents,
         )?;
         files.extend(delta.files);
         symbols.extend(delta.symbols);
         edges.extend(delta.edges);
         graph_limitations.extend(delta.limitations);
     }
+
+    let store = FileFactsStore::new(layout.clone(), MAXIMUM_FILE_FACT_OBJECT_BYTES)
+        .map_err(map_cache_error)?;
+    for path in reverse_dependents {
+        tracker
+            .check_deadline()
+            .map_err(|error| RepositoryIndexError::new(error.code(), error.to_string()))?;
+        let base_context = read_base_path_context(base, &path, tracker, &mut graph_limitations)?;
+        let Some(base_file) = base_context.file else {
+            graph_limitations.push(overlay_limitation(
+                "repository-overlay-dependent-base-file-missing",
+                path,
+                "the known reverse dependent has no readable base file row",
+            ));
+            continue;
+        };
+        let Some(key) = base_file.file_fact_key.clone() else {
+            graph_limitations.push(overlay_limitation(
+                "repository-overlay-dependent-file-facts-key-missing",
+                path,
+                "the known reverse dependent has no reusable FileFacts key",
+            ));
+            continue;
+        };
+        let facts = match store.lookup(&key).map_err(map_cache_error)? {
+            CacheLookup::Hit(facts) => {
+                metrics.file_fact_hits = metrics.file_fact_hits.saturating_add(1);
+                facts
+            }
+            CacheLookup::Miss | CacheLookup::Stale { .. } | CacheLookup::Corrupt { .. } => {
+                metrics.file_fact_misses = metrics.file_fact_misses.saturating_add(1);
+                let content = read_manifest_bytes(
+                    request,
+                    opening_scope,
+                    &path,
+                    &key.content_sha256,
+                    started,
+                    &[],
+                )?;
+                metrics.parsed_files = metrics.parsed_files.saturating_add(1);
+                metrics.parsed_bytes = metrics
+                    .parsed_bytes
+                    .saturating_add(content.bytes.len() as u64);
+                TreeSitterRustAdapter::analyze_index(&content.bytes, tracker).map_err(|error| {
+                    RepositoryIndexError::new(
+                        "repository-overlay-dependent-rust-parse-failed",
+                        error.to_string(),
+                    )
+                })?
+            }
+        };
+        let dependent = crate::candidate::CandidateFile {
+            path: path.clone(),
+            mode: base_file.mode.clone(),
+            content_identity: base_file.content_sha256.clone(),
+            presence: CandidatePresence::Present,
+            manifest_unit_id: Some(format!("overlay-dependent:{}", path.as_str())),
+            change_status: None,
+            changed_ranges: Vec::new(),
+        };
+        let content_sha256 = base_file
+            .content_sha256
+            .clone()
+            .unwrap_or_else(|| key.content_sha256.clone());
+        let delta = resolve_overlay_path(
+            &dependent,
+            &content_sha256,
+            key,
+            &facts,
+            Some(base_file),
+            &base_context.symbols,
+            &base_context.edges,
+            base,
+            tracker,
+            &symbol_replacements,
+        )?;
+        files.extend(delta.files);
+        symbols.extend(delta.symbols);
+        edges.extend(delta.edges);
+        graph_limitations.extend(delta.limitations);
+    }
+    rewrite_replaced_edge_targets(&mut edges, &symbol_replacements);
     graph_limitations.push(IndexLimitation {
         code: "repository-overlay-incremental-resolution".to_string(),
         path: request.candidate.files().first().map(|file| file.path.clone()),
@@ -787,6 +848,164 @@ fn build_fast_candidate_graph(
     })
 }
 
+fn read_base_path_context(
+    base: &RepositoryGraphReader,
+    path: &RepoPath,
+    tracker: &mut IndexBudgetTracker,
+    limitations: &mut Vec<IndexLimitation>,
+) -> Result<BasePathContext, RepositoryIndexError> {
+    let base_file = base.file_for_path(path).map_err(map_graph_error)?;
+    let symbol_limit = base
+        .maximum_rows_per_query()
+        .min(tracker.amount(IndexResource::QueryRows).remaining);
+    let base_symbols = if symbol_limit == 0 {
+        limitations.push(overlay_limitation(
+            "index-query-row-budget-exhausted",
+            path.clone(),
+            "the overlay base-symbol query budget was exhausted",
+        ));
+        Vec::new()
+    } else {
+        let rows = base
+            .symbols_for_path(path, symbol_limit)
+            .map_err(map_graph_error)?;
+        tracker
+            .consume(IndexResource::QueryRows, rows.len())
+            .map_err(|error| RepositoryIndexError::new(error.code(), error.to_string()))?;
+        if rows.len() == symbol_limit {
+            limitations.push(overlay_limitation(
+                "index-query-row-budget-exhausted",
+                path.clone(),
+                "the overlay base-symbol query reached its exact row limit",
+            ));
+        }
+        rows
+    };
+    let edge_limit = base
+        .maximum_rows_per_query()
+        .min(tracker.amount(IndexResource::QueryRows).remaining);
+    let base_edges = if edge_limit == 0 {
+        limitations.push(overlay_limitation(
+            "index-query-row-budget-exhausted",
+            path.clone(),
+            "the overlay base-edge query budget was exhausted",
+        ));
+        Vec::new()
+    } else {
+        let rows = base
+            .edges_for_path(path, edge_limit)
+            .map_err(map_graph_error)?;
+        tracker
+            .consume(IndexResource::QueryRows, rows.len())
+            .map_err(|error| RepositoryIndexError::new(error.code(), error.to_string()))?;
+        if rows.len() == edge_limit {
+            limitations.push(overlay_limitation(
+                "index-query-row-budget-exhausted",
+                path.clone(),
+                "the overlay base-edge query reached its exact row limit",
+            ));
+        }
+        rows
+    };
+    Ok(BasePathContext {
+        file: base_file,
+        symbols: base_symbols,
+        edges: base_edges,
+    })
+}
+
+fn collect_reverse_dependents(
+    base: &RepositoryGraphReader,
+    base_symbols: &[GraphSymbol],
+    authoritative_changed_paths: &BTreeSet<RepoPath>,
+    tracker: &mut IndexBudgetTracker,
+    limitations: &mut Vec<IndexLimitation>,
+    reverse_dependents: &mut BTreeSet<RepoPath>,
+) -> Result<(), RepositoryIndexError> {
+    for symbol in base_symbols {
+        let row_limit = base
+            .maximum_rows_per_query()
+            .min(tracker.amount(IndexResource::QueryRows).remaining);
+        if row_limit == 0 {
+            limitations.push(overlay_limitation(
+                "index-query-row-budget-exhausted",
+                symbol.path.clone(),
+                "the reverse-dependent query budget was exhausted",
+            ));
+            return Ok(());
+        }
+        let rows = base
+            .incoming(&symbol.symbol_id, row_limit)
+            .map_err(map_graph_error)?;
+        tracker
+            .consume(IndexResource::QueryRows, rows.len())
+            .map_err(|error| RepositoryIndexError::new(error.code(), error.to_string()))?;
+        if rows.len() == row_limit {
+            limitations.push(overlay_limitation(
+                "index-query-row-budget-exhausted",
+                symbol.path.clone(),
+                "the reverse-dependent query reached its exact row limit",
+            ));
+        }
+        reverse_dependents.extend(rows.into_iter().filter_map(|edge| {
+            matches!(
+                edge.kind,
+                EdgeKind::Calls | EdgeKind::Imports | EdgeKind::References | EdgeKind::Exports
+            )
+            .then_some(edge.path)
+            .filter(|path| !authoritative_changed_paths.contains(path))
+        }));
+    }
+    Ok(())
+}
+
+fn record_symbol_replacements(
+    base_symbols: &[GraphSymbol],
+    candidate_symbols: &[GraphSymbol],
+    replacements: &mut BTreeMap<String, String>,
+) {
+    for base_symbol in base_symbols {
+        let exact = candidate_symbols
+            .iter()
+            .find(|candidate| candidate.local_id == base_symbol.local_id);
+        let replacement = exact.or_else(|| {
+            let mut matches = candidate_symbols.iter().filter(|candidate| {
+                candidate.name == base_symbol.name && candidate.kind == base_symbol.kind
+            });
+            let first = matches.next()?;
+            matches.next().is_none().then_some(first)
+        });
+        if let Some(replacement) = replacement {
+            replacements.insert(base_symbol.symbol_id.clone(), replacement.symbol_id.clone());
+        }
+    }
+}
+
+fn rewrite_replaced_edge_targets(edges: &mut [GraphEdge], replacements: &BTreeMap<String, String>) {
+    for edge in edges {
+        let Some(current_target) = edge.to_symbol.as_deref() else {
+            continue;
+        };
+        let Some(replacement) = replacements.get(current_target) else {
+            continue;
+        };
+        if replacement == current_target {
+            continue;
+        }
+        *edge = make_overlay_edge(
+            edge.kind,
+            &edge.from_symbol,
+            Some(replacement.clone()),
+            edge.unresolved_target.clone(),
+            &edge.path,
+            &edge.range,
+            edge.resolution,
+            edge.confidence,
+            edge.limitation_code.clone(),
+        );
+    }
+}
+
 #[allow(clippy::too_many_arguments)]
 fn resolve_overlay_path(
     changed: &crate::candidate::CandidateFile,
@@ -798,6 +1017,7 @@ fn resolve_overlay_path(
     base_edges: &[GraphEdge],
     base: &RepositoryGraphReader,
     tracker: &mut IndexBudgetTracker,
+    symbol_replacements: &BTreeMap<String, String>,
 ) -> Result<OverlayPathDelta, RepositoryIndexError> {
     let mut limitations = Vec::new();
     let base_by_local = base_symbols
@@ -895,6 +1115,7 @@ fn resolve_overlay_path(
         let to_symbol = base_edge.to_symbol.as_ref().map(|target| {
             candidate_by_base_id
                 .get(target.as_str())
+                .or_else(|| symbol_replacements.get(target.as_str()))
                 .cloned()
                 .unwrap_or_else(|| target.clone())
         });

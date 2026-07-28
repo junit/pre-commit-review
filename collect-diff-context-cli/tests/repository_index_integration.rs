@@ -130,6 +130,15 @@ impl MemoryCandidate {
         candidate
     }
 
+    fn changed_auth_signature() -> Self {
+        let mut candidate = Self::changed_auth();
+        let path = repo_path("src/auth.rs");
+        let bytes = b"pub fn validate(token: &str) -> bool { !token.is_empty() }\n".to_vec();
+        candidate.bytes.insert(path, bytes.clone());
+        candidate.files[0].content_identity = Some(digest(&bytes));
+        candidate
+    }
+
     fn deleted_auth() -> Self {
         let mut candidate = Self::changed_auth();
         candidate.files[0].mode = "000000".to_string();
@@ -832,6 +841,52 @@ fn fast_overlay_preserves_replaced_symbol_callers_as_unresolved_impact() {
         edge.path == "src/api.rs"
             && edge.resolution == Resolution::Unresolved
             && edge.to_symbol.is_none()
+    }));
+}
+
+#[test]
+fn fast_overlay_reresolves_unchanged_reverse_dependents_to_replaced_symbols() {
+    let cache = tempfile::tempdir().unwrap();
+    let layout = cache_layout(cache.path());
+    let adapter = RepositoryIndexAdapter::new(layout);
+    let branch_candidate = MemoryCandidate::changed_auth().with_source(ReviewSource::Branch);
+    let branch_source = MemoryManifestSource::branch();
+    adapter
+        .analyze(deep_request(&branch_candidate, &branch_source))
+        .unwrap();
+    let baseline = adapter
+        .analyze(fast_request(
+            &branch_candidate,
+            &branch_source,
+            &[changed_symbol()],
+        ))
+        .unwrap();
+    let base_target = baseline
+        .edges
+        .iter()
+        .find(|edge| edge.path == "src/api.rs" && edge.resolution == Resolution::ResolvedReference)
+        .and_then(|edge| edge.to_symbol.clone())
+        .expect("base graph should contain the resolved api caller");
+
+    let staged_candidate = MemoryCandidate::changed_auth_signature();
+    let staged_source = MemoryManifestSource::stable();
+    let mut validate = changed_symbol();
+    validate.signature = Some("pub fn validate(token: &str) -> bool".to_string());
+    let output = adapter
+        .analyze(fast_request(&staged_candidate, &staged_source, &[validate]))
+        .unwrap();
+
+    assert!(output.edges.iter().any(|edge| {
+        edge.path == "src/api.rs"
+            && edge.resolution == Resolution::ResolvedReference
+            && edge
+                .to_symbol
+                .as_deref()
+                .is_some_and(|target| target != base_target)
+    }));
+    assert!(!output.limitations.iter().any(|limitation| {
+        limitation.code == "repository-overlay-dependent-refresh-unavailable"
+            && limitation.path.as_deref() == Some("src/api.rs")
     }));
 }
 

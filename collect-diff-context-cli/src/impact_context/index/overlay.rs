@@ -154,11 +154,14 @@ impl OverlayBuilder<'_> {
             for edge in self.query_incoming(&symbol.symbol_id, path)? {
                 if matches!(
                     edge.kind,
-                    EdgeKind::Imports | EdgeKind::References | EdgeKind::Exports
+                    EdgeKind::Calls | EdgeKind::Imports | EdgeKind::References | EdgeKind::Exports
                 ) {
                     self.enqueue_path(edge.path.clone());
                 }
-                if target_removed && !self.overlay.path_tombstones.contains(&edge.path) {
+                if target_removed
+                    && !self.overlay.path_tombstones.contains(&edge.path)
+                    && !self.candidate_retargets_edge(&edge, &symbol.symbol_id)
+                {
                     self.overlay
                         .suppressed_base_edge_ids
                         .insert(edge.edge_id.clone());
@@ -186,6 +189,18 @@ impl OverlayBuilder<'_> {
                 .iter()
                 .any(|symbol| symbol.path == *path)
             || self.candidate.edges.iter().any(|edge| edge.path == *path)
+    }
+
+    fn candidate_retargets_edge(&self, base_edge: &GraphEdge, removed_symbol: &str) -> bool {
+        self.candidate.edges.iter().any(|candidate| {
+            candidate.path == base_edge.path
+                && candidate.kind == base_edge.kind
+                && candidate.range == base_edge.range
+                && candidate
+                    .to_symbol
+                    .as_deref()
+                    .is_some_and(|target| target != removed_symbol)
+        })
     }
 
     fn insert_candidate_path(&mut self, path: &RepoPath) -> Result<(), OverlayError> {
