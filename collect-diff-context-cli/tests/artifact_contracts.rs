@@ -1,9 +1,9 @@
 use collect_diff_context_cli::artifacts::contract::{
     canonical_json, sha256_bytes, ArtifactBaseline, ArtifactFileBinding, ArtifactManifest,
     ArtifactOperation, ArtifactPackRecord, ArtifactReceipt, ArtifactReport, ArtifactReportEntry,
-    ArtifactReportStatus, ArtifactRole, ArtifactState, BaselineMeasurement, CorePackManifest,
-    PackFileRecord, PackFileRole, PackFormat, PackManifest, ProbeId, ProbeResult, RevocationEntry,
-    RevocationIndex, SourceAssetRecord, SourceLock,
+    ArtifactReportStatus, ArtifactRole, ArtifactState, BaselineMeasurement, CorePackFileBinding,
+    CorePackManifest, PackFileRecord, PackFileRole, PackFormat, PackManifest, ProbeId, ProbeResult,
+    RevocationEntry, RevocationIndex, SourceAssetRecord, SourceLock,
 };
 use serde_json::Value;
 use std::{fs, path::PathBuf};
@@ -559,18 +559,21 @@ fn core_inventory_is_platform_specific_and_manifest_bound() {
         distribution_manifest_sha256: digest('1'),
         revocation_index_sha256: digest('2'),
         members: vec![
-            ArtifactFileBinding {
+            CorePackFileBinding {
                 path: "runtime/distribution/manifest.json".to_string(),
+                mode: 0o644,
                 size: 512,
                 sha256: digest('1'),
             },
-            ArtifactFileBinding {
+            CorePackFileBinding {
                 path: "runtime/distribution/revocations.json".to_string(),
+                mode: 0o644,
                 size: 128,
                 sha256: digest('2'),
             },
-            ArtifactFileBinding {
+            CorePackFileBinding {
                 path: "scripts/bin/collect_diff_context-linux-amd64".to_string(),
+                mode: 0o755,
                 size: 1_024,
                 sha256: digest('3'),
             },
@@ -579,8 +582,9 @@ fn core_inventory_is_platform_specific_and_manifest_bound() {
     core.validate().unwrap();
 
     let mut other_platform = core;
-    other_platform.members.push(ArtifactFileBinding {
+    other_platform.members.push(CorePackFileBinding {
         path: "scripts/bin/collect_diff_context-darwin-arm64".to_string(),
+        mode: 0o755,
         size: 1_024,
         sha256: digest('4'),
     });

@@ -7,8 +7,8 @@ use artifact_fixture::{
 };
 use collect_diff_context_cli::{
     artifacts::contract::{
-        canonical_json, sha256_bytes, ArtifactFileBinding, ArtifactManifest, ArtifactReceipt,
-        ArtifactReport, ArtifactReportStatus, ArtifactRole, ArtifactState, CorePackManifest,
+        canonical_json, sha256_bytes, ArtifactManifest, ArtifactReceipt, ArtifactReport,
+        ArtifactReportStatus, ArtifactRole, ArtifactState, CorePackFileBinding, CorePackManifest,
         ProbeId, RevocationEntry, RevocationIndex,
     },
     repository_context_provider::cli_contract::{ProviderRegistry, ProviderRegistryEntry},
@@ -157,6 +157,9 @@ impl CliFixture {
         fs::write(distribution.join("manifest.json"), &manifest_bytes)?;
         fs::write(distribution.join("revocations.json"), &revocation_bytes)?;
         fs::write(&collector, collector_bytes)?;
+        set_mode(&distribution.join("manifest.json"), 0o644)?;
+        set_mode(&distribution.join("revocations.json"), 0o644)?;
+        set_mode(&collector, 0o755)?;
 
         let core = CorePackManifest {
             schema_version: 1,
@@ -167,9 +170,9 @@ impl CliFixture {
             distribution_manifest_sha256: sha256_bytes(&manifest_bytes),
             revocation_index_sha256: sha256_bytes(&revocation_bytes),
             members: vec![
-                binding("runtime/distribution/manifest.json", &manifest_bytes),
-                binding("runtime/distribution/revocations.json", &revocation_bytes),
-                binding(
+                core_binding("runtime/distribution/manifest.json", &manifest_bytes),
+                core_binding("runtime/distribution/revocations.json", &revocation_bytes),
+                core_binding(
                     "scripts/bin/collect_diff_context-linux-amd64",
                     collector_bytes,
                 ),
@@ -192,12 +195,30 @@ impl CliFixture {
     }
 }
 
-fn binding(path: &str, bytes: &[u8]) -> ArtifactFileBinding {
-    ArtifactFileBinding {
+fn core_binding(path: &str, bytes: &[u8]) -> CorePackFileBinding {
+    CorePackFileBinding {
         path: path.to_string(),
+        mode: if path.starts_with("scripts/bin/") {
+            0o755
+        } else {
+            0o644
+        },
         size: bytes.len() as u64,
         sha256: sha256_bytes(bytes),
     }
+}
+
+fn set_mode(path: &Path, mode: u32) -> Result<(), Box<dyn Error>> {
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        let mut permissions = fs::metadata(path)?.permissions();
+        permissions.set_mode(mode);
+        fs::set_permissions(path, permissions)?;
+    }
+    #[cfg(not(unix))]
+    let _ = (path, mode);
+    Ok(())
 }
 
 fn path_text(path: &Path) -> Result<&str, Box<dyn Error>> {
@@ -569,8 +590,10 @@ fn doctor_rejects_a_revoked_receipt_before_an_active_replacement() -> Result<(),
     let mut core: CorePackManifest = serde_json::from_slice(&fs::read(&core_path)?)?;
     core.distribution_manifest_sha256 = sha256_bytes(&manifest_bytes);
     core.revocation_index_sha256 = sha256_bytes(&revocation_bytes);
-    core.members[0] = binding("runtime/distribution/manifest.json", &manifest_bytes);
-    core.members[1] = binding("runtime/distribution/revocations.json", &revocation_bytes);
+    core.members[0] = core_binding("runtime/distribution/manifest.json", &manifest_bytes);
+    core.members[1] = core_binding("runtime/distribution/revocations.json", &revocation_bytes);
+    set_mode(&distribution.join("manifest.json"), 0o644)?;
+    set_mode(&distribution.join("revocations.json"), 0o644)?;
     fs::write(&core_path, canonical_json(&core)?)?;
 
     let executable = fixture
@@ -601,7 +624,8 @@ fn doctor_requires_a_registry_for_a_provider_receipt() -> Result<(), Box<dyn Err
     let core_path = distribution.join("core-pack-manifest.json");
     let mut core: CorePackManifest = serde_json::from_slice(&fs::read(&core_path)?)?;
     core.distribution_manifest_sha256 = sha256_bytes(&manifest_bytes);
-    core.members[0] = binding("runtime/distribution/manifest.json", &manifest_bytes);
+    core.members[0] = core_binding("runtime/distribution/manifest.json", &manifest_bytes);
+    set_mode(&distribution.join("manifest.json"), 0o644)?;
     fs::write(&core_path, canonical_json(&core)?)?;
 
     let receipt_path = fixture
@@ -637,7 +661,8 @@ fn doctor_requires_provider_registry_to_bind_the_installed_executable() -> Resul
     let core_path = distribution.join("core-pack-manifest.json");
     let mut core: CorePackManifest = serde_json::from_slice(&fs::read(&core_path)?)?;
     core.distribution_manifest_sha256 = sha256_bytes(&manifest_bytes);
-    core.members[0] = binding("runtime/distribution/manifest.json", &manifest_bytes);
+    core.members[0] = core_binding("runtime/distribution/manifest.json", &manifest_bytes);
+    set_mode(&distribution.join("manifest.json"), 0o644)?;
     fs::write(&core_path, canonical_json(&core)?)?;
 
     let receipt_path = fixture
@@ -755,7 +780,8 @@ fn doctor_detects_revoked_state_and_stale_provider_paths() -> Result<(), Box<dyn
         .join("runtime/distribution/core-pack-manifest.json");
     let mut core: CorePackManifest = serde_json::from_slice(&fs::read(&core_path)?)?;
     core.distribution_manifest_sha256 = sha256_bytes(&manifest_bytes);
-    core.members[0] = binding("runtime/distribution/manifest.json", &manifest_bytes);
+    core.members[0] = core_binding("runtime/distribution/manifest.json", &manifest_bytes);
+    set_mode(&manifest_path, 0o644)?;
     fs::write(&core_path, canonical_json(&core)?)?;
     failed_report(&revoked.doctor()?, 1, "artifact-revoked")?;
 
@@ -809,7 +835,8 @@ fn doctor_binds_the_receipt_to_the_core_platform() -> Result<(), Box<dyn Error>>
     fs::write(&darwin_collector, &collector_bytes)?;
     core.platform_id = "darwin-arm64".to_string();
     core.target_triple = "aarch64-apple-darwin".to_string();
-    core.members[2] = binding(
+    set_mode(&darwin_collector, 0o755)?;
+    core.members[2] = core_binding(
         "scripts/bin/collect_diff_context-darwin-arm64",
         &collector_bytes,
     );

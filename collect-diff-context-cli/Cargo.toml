@@ -25,6 +25,10 @@ name = "repository-context-provider-cli"
 path = "src/bin/repository_context_provider.rs"
 
 [[bin]]
+name = "artifact-pack-writer"
+path = "src/bin/artifact_pack_writer.rs"
+
+[[bin]]
 name = "static-analysis-fixture"
 path = "src/bin/static_analysis_fixture.rs"
 required-features = ["test-fixture"]

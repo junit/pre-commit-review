@@ -42,7 +42,8 @@ static_analysis_name="$(static_analysis_platform)"
 repository_context_name="$(repository_context_platform)"
 repository_context_provider_name="$(repository_context_provider_platform)"
 python_suffix='py'
-cargo build --release --manifest-path "$repo_root/collect-diff-context-cli/Cargo.toml" \
+cargo +1.95.0 build --release --locked \
+  --manifest-path "$repo_root/collect-diff-context-cli/Cargo.toml" \
   --bin static-analysis-cli --bin repository-context-cli \
   --bin repository-context-provider-cli >/dev/null
 
@@ -72,7 +73,7 @@ run_offline_install codex --copy --dir "$tmp_dir/codex-skills"
 [ -x "$tmp_dir/codex-skills/pre-commit-review/scripts/bin/$repository_context_provider_name" ]
 [ ! -e "$tmp_dir/codex-skills/pre-commit-review/README.md" ]
 [ ! -e "$tmp_dir/codex-skills/pre-commit-review/README.zh-CN.md" ]
-[ ! -e "$tmp_dir/codex-skills/pre-commit-review/install.sh" ]
+[ -x "$tmp_dir/codex-skills/pre-commit-review/install.sh" ]
 [ -f "$tmp_dir/codex-skills/pre-commit-review/references/decision/verdict-rules.md" ]
 [ -f "$tmp_dir/codex-skills/pre-commit-review/references/decision/risk-taxonomy.md" ]
 [ -f "$tmp_dir/codex-skills/pre-commit-review/references/decision/static-analysis-evidence.md" ]

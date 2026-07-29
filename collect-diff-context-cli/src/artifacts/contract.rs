@@ -913,7 +913,35 @@ pub struct CorePackManifest {
     pub target_triple: String,
     pub distribution_manifest_sha256: String,
     pub revocation_index_sha256: String,
-    pub members: Vec<ArtifactFileBinding>,
+    pub members: Vec<CorePackFileBinding>,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct CorePackFileBinding {
+    pub path: String,
+    pub mode: u32,
+    pub size: u64,
+    pub sha256: String,
+}
+
+impl CorePackFileBinding {
+    fn validate(&self) -> Result<(), ArtifactError> {
+        validate_relative_path(&self.path)?;
+        if !matches!(self.mode, 0o644 | 0o755) {
+            return Err(ArtifactError::new(
+                "core-member-mode",
+                "core pack member mode is not normalized",
+            ));
+        }
+        if self.size == 0 || self.size > MAX_EXPANDED_BYTES {
+            return Err(ArtifactError::new(
+                "core-member-size",
+                "core pack member size is outside the authorized range",
+            ));
+        }
+        validate_sha256(&self.sha256)
+    }
 }
 
 impl CorePackManifest {
@@ -986,7 +1014,17 @@ impl CorePackManifest {
                 "core pack contains a missing or foreign platform collector",
             ));
         }
-        validate_sorted_bindings(&self.members, "core-members")?;
+        let mut previous: Option<&str> = None;
+        for member in &self.members {
+            member.validate()?;
+            if previous.is_some_and(|path| path >= member.path.as_str()) {
+                return Err(ArtifactError::new(
+                    "core-members-not-sorted",
+                    "core pack members must be sorted and unique",
+                ));
+            }
+            previous = Some(&member.path);
+        }
         if canonical_json(self)?.len() > MAX_MANIFEST_BYTES {
             return Err(ArtifactError::new(
                 "core-pack-size-limit",

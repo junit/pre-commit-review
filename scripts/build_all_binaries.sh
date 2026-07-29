@@ -6,6 +6,9 @@ SCRIPT_DIR="$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd -P)"
 REPO_ROOT="$(CDPATH='' cd -- "${SCRIPT_DIR}/.." && pwd -P)"
 CLI_DIR="${REPO_ROOT}/collect-diff-context-cli"
 BIN_DIR="${REPO_ROOT}/scripts/bin"
+PACK_DIR="${REPO_ROOT}/dist"
+CORE_PACK_VERSION="${CORE_PACK_VERSION:-0.1.0}"
+GITLEAKS_PACK_VERSION="${GITLEAKS_PACK_VERSION:-8.30.1-pcr.1}"
 
 mkdir -p "${BIN_DIR}"
 
@@ -55,14 +58,14 @@ echo "======================================================"
 # 1. macOS ARM64 & AMD64 (Native Cargo)
 if [ "$(uname -s)" = "Darwin" ]; then
   echo "[1/4] Building macOS arm64 (aarch64-apple-darwin)..."
-  (cd "${CLI_DIR}" && cargo build --release --target aarch64-apple-darwin --bins >/dev/null)
+  (cd "${CLI_DIR}" && cargo +1.95.0 build --release --locked --target aarch64-apple-darwin --bins >/dev/null)
   cp "${CLI_DIR}/target/aarch64-apple-darwin/release/collect-diff-context-cli" "${BIN_DIR}/collect_diff_context-darwin-arm64"
   cp "${CLI_DIR}/target/aarch64-apple-darwin/release/static-analysis-cli" "${BIN_DIR}/static_analysis-darwin-arm64"
   cp "${CLI_DIR}/target/aarch64-apple-darwin/release/repository-context-cli" "${BIN_DIR}/repository_context-darwin-arm64"
   cp "${CLI_DIR}/target/aarch64-apple-darwin/release/repository-context-provider-cli" "${BIN_DIR}/repository_context_provider-darwin-arm64"
 
   echo "[2/4] Building macOS amd64 (x86_64-apple-darwin)..."
-  (cd "${CLI_DIR}" && cargo build --release --target x86_64-apple-darwin --bins >/dev/null)
+  (cd "${CLI_DIR}" && cargo +1.95.0 build --release --locked --target x86_64-apple-darwin --bins >/dev/null)
   cp "${CLI_DIR}/target/x86_64-apple-darwin/release/collect-diff-context-cli" "${BIN_DIR}/collect_diff_context-darwin-amd64"
   cp "${CLI_DIR}/target/x86_64-apple-darwin/release/static-analysis-cli" "${BIN_DIR}/static_analysis-darwin-amd64"
   cp "${CLI_DIR}/target/x86_64-apple-darwin/release/repository-context-cli" "${BIN_DIR}/repository_context-darwin-amd64"
@@ -75,7 +78,7 @@ fi
 echo "[3/4] Building Linux amd64 (x86_64-unknown-linux-musl static binary)..."
 if command -v cross >/dev/null 2>&1; then
   echo "      -> Using cross CLI"
-  (cd "${CLI_DIR}" && cross build --release --target x86_64-unknown-linux-musl --bins >/dev/null)
+  (cd "${CLI_DIR}" && cross +1.95.0 build --release --locked --target x86_64-unknown-linux-musl --bins >/dev/null)
   cp "${CLI_DIR}/target/x86_64-unknown-linux-musl/release/collect-diff-context-cli" "${BIN_DIR}/collect_diff_context-linux-amd64"
   cp "${CLI_DIR}/target/x86_64-unknown-linux-musl/release/static-analysis-cli" "${BIN_DIR}/static_analysis-linux-amd64"
   cp "${CLI_DIR}/target/x86_64-unknown-linux-musl/release/repository-context-cli" "${BIN_DIR}/repository_context-linux-amd64"
@@ -85,7 +88,7 @@ else
   docker run --rm --platform linux/amd64 \
     -v "${REPO_ROOT}:/volume" \
     -w /volume/collect-diff-context-cli \
-    rust:latest sh -c "rustup target add x86_64-unknown-linux-musl >/dev/null && apt-get update -qq && apt-get install -y --no-install-recommends musl-tools >/dev/null && cargo build --release --target x86_64-unknown-linux-musl --bins >/dev/null"
+    rust:latest sh -c "rustup toolchain install 1.95.0 >/dev/null && rustup target add --toolchain 1.95.0 x86_64-unknown-linux-musl >/dev/null && apt-get update -qq && apt-get install -y --no-install-recommends musl-tools >/dev/null && cargo +1.95.0 build --release --locked --target x86_64-unknown-linux-musl --bins >/dev/null"
   cp "${CLI_DIR}/target/x86_64-unknown-linux-musl/release/collect-diff-context-cli" "${BIN_DIR}/collect_diff_context-linux-amd64"
   cp "${CLI_DIR}/target/x86_64-unknown-linux-musl/release/static-analysis-cli" "${BIN_DIR}/static_analysis-linux-amd64"
   cp "${CLI_DIR}/target/x86_64-unknown-linux-musl/release/repository-context-cli" "${BIN_DIR}/repository_context-linux-amd64"
@@ -96,7 +99,7 @@ fi
 echo "[4/4] Building Windows amd64 (x86_64-pc-windows-gnu)..."
 if command -v x86_64-w64-mingw32-gcc >/dev/null 2>&1; then
   echo "      -> Using native mingw-w64 toolchain"
-  (cd "${CLI_DIR}" && cargo build --release --target x86_64-pc-windows-gnu --bins >/dev/null)
+  (cd "${CLI_DIR}" && cargo +1.95.0 build --release --locked --target x86_64-pc-windows-gnu --bins >/dev/null)
   cp "${CLI_DIR}/target/x86_64-pc-windows-gnu/release/collect-diff-context-cli.exe" "${BIN_DIR}/collect_diff_context-windows-amd64.exe"
   cp "${CLI_DIR}/target/x86_64-pc-windows-gnu/release/static-analysis-cli.exe" "${BIN_DIR}/static_analysis-windows-amd64.exe"
   cp "${CLI_DIR}/target/x86_64-pc-windows-gnu/release/repository-context-cli.exe" "${BIN_DIR}/repository_context-windows-amd64.exe"
@@ -106,7 +109,7 @@ else
   docker run --rm --platform linux/amd64 \
     -v "${REPO_ROOT}:/volume" \
     -w /volume/collect-diff-context-cli \
-    rust:latest sh -c "apt-get update -qq && apt-get install -y --no-install-recommends gcc-mingw-w64-x86-64 >/dev/null && rustup target add x86_64-pc-windows-gnu >/dev/null && cargo build --release --target x86_64-pc-windows-gnu --bins >/dev/null"
+    rust:latest sh -c "apt-get update -qq && apt-get install -y --no-install-recommends gcc-mingw-w64-x86-64 >/dev/null && rustup toolchain install 1.95.0 >/dev/null && rustup target add --toolchain 1.95.0 x86_64-pc-windows-gnu >/dev/null && cargo +1.95.0 build --release --locked --target x86_64-pc-windows-gnu --bins >/dev/null"
   cp "${CLI_DIR}/target/x86_64-pc-windows-gnu/release/collect-diff-context-cli.exe" "${BIN_DIR}/collect_diff_context-windows-amd64.exe"
   cp "${CLI_DIR}/target/x86_64-pc-windows-gnu/release/static-analysis-cli.exe" "${BIN_DIR}/static_analysis-windows-amd64.exe"
   cp "${CLI_DIR}/target/x86_64-pc-windows-gnu/release/repository-context-cli.exe" "${BIN_DIR}/repository_context-windows-amd64.exe"
@@ -122,8 +125,42 @@ fi
 echo "Fetching pinned Gitleaks release binaries..."
 "${SCRIPT_DIR}/fetch_gitleaks.sh" --all --dest "${BIN_DIR}"
 
+echo "Building normalized core and Gitleaks packs..."
+mkdir -p "${PACK_DIR}"
+for platform in darwin-amd64 darwin-arm64 linux-amd64 windows-amd64; do
+  suffix=''
+  if [ "${platform}" = 'windows-amd64' ]; then
+    suffix='.exe'
+  fi
+  gitleaks_pack="${PACK_DIR}/pre-commit-review-gitleaks-${GITLEAKS_PACK_VERSION}-${platform}.tar.gz"
+  gitleaks_record="${PACK_DIR}/gitleaks-${platform}.record.json"
+  platform_manifest="${PACK_DIR}/manifest-${platform}.json"
+  "${SCRIPT_DIR}/build_artifact_pack.sh" \
+    --kind gitleaks \
+    --platform-id "${platform}" \
+    --pack-version "${GITLEAKS_PACK_VERSION}" \
+    --source-root "${REPO_ROOT}" \
+    --manifest "${REPO_ROOT}/third_party_artifacts/manifest.json" \
+    --source-lock "${REPO_ROOT}/third_party_artifacts/sources/gitleaks-8.30.1.json" \
+    --binary "${BIN_DIR}/gitleaks-${platform}${suffix}" \
+    --output "${gitleaks_pack}" \
+    --record-output "${gitleaks_record}" \
+    --manifest-output "${platform_manifest}" >/dev/null
+  "${SCRIPT_DIR}/build_artifact_pack.sh" \
+    --kind core \
+    --platform-id "${platform}" \
+    --pack-version "${CORE_PACK_VERSION}" \
+    --source-root "${REPO_ROOT}" \
+    --manifest "${platform_manifest}" \
+    --revocations "${REPO_ROOT}/third_party_artifacts/revocations.json" \
+    --output "${PACK_DIR}/pre-commit-review-core-${CORE_PACK_VERSION}-${platform}.tar.gz" \
+    --record-output "${PACK_DIR}/core-${platform}.record.json" >/dev/null
+done
+
 echo "======================================================"
 echo " All platform binaries successfully built!"
 echo " Binaries updated in scripts/bin/ :"
 ls -lh "${BIN_DIR}"
+echo " Release packs written to dist/ :"
+ls -lh "${PACK_DIR}"/*.tar.gz "${PACK_DIR}"/*.record.json
 echo "======================================================"

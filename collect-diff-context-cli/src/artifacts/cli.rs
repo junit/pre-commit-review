@@ -4,9 +4,9 @@ use super::{
         verify_target_receipt, ArtifactCacheBoundaries, ArtifactCacheLayout,
     },
     contract::{
-        canonical_json, sha256_bytes, ArtifactError, ArtifactFileBinding, ArtifactManifest,
-        ArtifactOperation, ArtifactPackRecord, ArtifactReport, ArtifactReportEntry,
-        ArtifactReportStatus, ArtifactRole, ArtifactState, CorePackManifest, RevocationIndex,
+        canonical_json, sha256_bytes, ArtifactError, ArtifactManifest, ArtifactOperation,
+        ArtifactPackRecord, ArtifactReport, ArtifactReportEntry, ArtifactReportStatus,
+        ArtifactRole, ArtifactState, CorePackFileBinding, CorePackManifest, RevocationIndex,
         MAX_MANIFEST_BYTES, MAX_REVOCATION_BYTES,
     },
     pack::{verify_pack, VerifiedPack, VerifyLimits},
@@ -716,7 +716,7 @@ fn verify_provider_receipt_binding(
     Ok(())
 }
 
-fn verify_binding(root: &Path, binding: &ArtifactFileBinding) -> Result<(), ArtifactError> {
+fn verify_binding(root: &Path, binding: &CorePackFileBinding) -> Result<(), ArtifactError> {
     let path = root.join(&binding.path);
     let mut file = open_regular_file_no_follow(&path).map_err(|_| {
         error(
@@ -735,6 +735,16 @@ fn verify_binding(root: &Path, binding: &ArtifactFileBinding) -> Result<(), Arti
             "artifact-binding-size",
             "artifact-bound target file size is inconsistent",
         ));
+    }
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::PermissionsExt;
+        if metadata.permissions().mode() & 0o777 != binding.mode {
+            return Err(error(
+                "artifact-binding-mode",
+                "artifact-bound target file mode is inconsistent",
+            ));
+        }
     }
     let digest = hash_reader(&mut file, binding.size)?;
     if digest != binding.sha256 {

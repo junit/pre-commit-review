@@ -488,6 +488,28 @@ provision_gitleaks() {
   fi
 }
 
+copy_core_distribution() {
+  local staging_dir="$1"
+  local distribution="$source_dir/runtime/distribution"
+
+  if [ ! -d "$distribution" ]; then
+    return 0
+  fi
+  for required in \
+    manifest.json \
+    revocations.json \
+    core-pack-manifest.json \
+    core-sbom.cdx.json; do
+    [ -f "$distribution/$required" ] \
+      || die "core distribution is missing $required"
+  done
+  if [ -e "$source_dir/runtime/artifact-receipts" ]; then
+    die 'core payload must not contain generated target receipts'
+  fi
+  mkdir -p "$staging_dir/runtime"
+  cp -R "$distribution" "$staging_dir/runtime/"
+}
+
 copy_payload() {
   local target="$1"
   local platform="$2"
@@ -520,23 +542,20 @@ copy_payload() {
 
   cp "$source_dir/SKILL.md" "$staging_dir/"
   cp "$source_dir/LICENSE" "$staging_dir/"
+  cp "$source_dir/install.sh" "$staging_dir/"
   cp -R "$source_dir/agents" "$staging_dir/"
   cp -R "$source_dir/references" "$staging_dir/"
   cp -R "$source_dir/scripts" "$staging_dir/"
-  mkdir -p "$staging_dir/docs"
-  for documentation in \
-    rust-analyzer-context-provider.md \
-    helper-capabilities.md \
-    call-graph-open-source-options.md; do
-    if [ -f "$source_dir/docs/$documentation" ]; then
-      cp "$source_dir/docs/$documentation" "$staging_dir/docs/"
-    fi
-  done
+  if [ -d "$source_dir/docs" ]; then
+    cp -R "$source_dir/docs" "$staging_dir/"
+  fi
   mkdir -p "$staging_dir/collect-diff-context-cli"
   cp -R "$source_dir/collect-diff-context-cli/schemas" "$staging_dir/collect-diff-context-cli/"
   if [ -d "$source_dir/THIRD_PARTY_LICENSES" ]; then
     cp -R "$source_dir/THIRD_PARTY_LICENSES" "$staging_dir/"
   fi
+
+  copy_core_distribution "$staging_dir"
 
   provision_rust_binary "$staging_dir" "$static_binary_name" \
     'static-analysis-cli' 'Static analysis'

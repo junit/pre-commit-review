@@ -1,13 +1,14 @@
 use collect_diff_context_cli::artifacts::{
     contract::{
-        canonical_json, sha256_bytes, ArtifactFileBinding, ArtifactPackRecord, ArtifactRole,
-        ArtifactState, PackFileRecord, PackFileRole, PackFormat, PackManifest, ProbeId,
+        canonical_json, sha256_bytes, ArtifactFileBinding, ArtifactManifest, ArtifactPackRecord,
+        ArtifactRole, ArtifactState, PackFileRecord, PackFileRole, PackFormat, PackManifest,
+        ProbeId,
     },
     pack::{verify_pack, VerifyLimits},
 };
 use flate2::{write::GzEncoder, Compression, GzBuilder};
 use serde_json::json;
-use std::io::Write;
+use std::{fs, io::Write, path::Path, process::Command};
 
 const ZERO_SHA256: &str = "0000000000000000000000000000000000000000000000000000000000000000";
 
@@ -442,6 +443,127 @@ fn rejection(shape: ArchiveShape) -> &'static str {
     )
     .unwrap_err()
     .code
+}
+
+fn repository_root() -> &'static Path {
+    Path::new(env!("CARGO_MANIFEST_DIR"))
+        .parent()
+        .expect("crate must have a repository parent")
+}
+
+#[test]
+fn rust_writer_emits_a_complete_verifiable_gitleaks_record() {
+    let temporary = tempfile::tempdir().unwrap();
+    let source_root = temporary.path().join("payload");
+    fs::create_dir_all(source_root.join("THIRD_PARTY_LICENSES")).unwrap();
+    fs::create_dir_all(source_root.join("references/security")).unwrap();
+    fs::write(
+        source_root.join("THIRD_PARTY_LICENSES/gitleaks-LICENSE"),
+        b"fixture MIT license\n",
+    )
+    .unwrap();
+    fs::write(
+        source_root.join("references/security/gitleaks.toml"),
+        b"title = \"fixture\"\n",
+    )
+    .unwrap();
+    let executable = temporary.path().join("gitleaks");
+    fs::write(&executable, b"fixture-gitleaks-binary\n").unwrap();
+    let output = temporary
+        .path()
+        .join("pre-commit-review-gitleaks-8.30.1-pcr.1-linux-amd64.tar.gz");
+    let record_output = temporary.path().join("record.json");
+    let manifest_output = temporary.path().join("manifest.json");
+    let rebuilt = temporary.path().join("rebuilt.tar.gz");
+    let source_lock = repository_root().join("third_party_artifacts/sources/gitleaks-8.30.1.json");
+    let distribution_manifest = repository_root().join("third_party_artifacts/manifest.json");
+
+    let invoke = |destination: &Path, sidecar: Option<&Path>, updated_manifest: Option<&Path>| {
+        let mut command = Command::new(env!("CARGO_BIN_EXE_artifact-pack-writer"));
+        command
+            .arg("gitleaks")
+            .arg("--platform-id")
+            .arg("linux-amd64")
+            .arg("--pack-version")
+            .arg("8.30.1-pcr.1")
+            .arg("--source-root")
+            .arg(&source_root)
+            .arg("--manifest")
+            .arg(&distribution_manifest)
+            .arg("--source-lock")
+            .arg(&source_lock)
+            .arg("--binary")
+            .arg(&executable)
+            .arg("--output")
+            .arg(destination);
+        if let Some(sidecar) = sidecar {
+            command.arg("--record-output").arg(sidecar);
+        }
+        if let Some(updated_manifest) = updated_manifest {
+            command.arg("--manifest-output").arg(updated_manifest);
+        }
+        let result = command.output().unwrap();
+        assert!(
+            result.status.success(),
+            "writer failed: {}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+    };
+    invoke(&output, Some(&record_output), Some(&manifest_output));
+    invoke(&rebuilt, None, None);
+
+    let bytes = fs::read(&output).unwrap();
+    assert_eq!(bytes, fs::read(&rebuilt).unwrap());
+    let record_bytes = fs::read(&record_output).unwrap();
+    let record: ArtifactPackRecord = serde_json::from_slice(&record_bytes).unwrap();
+    assert_eq!(canonical_json(&record).unwrap(), record_bytes);
+    assert_eq!(record.artifact_id, "gitleaks");
+    assert_eq!(record.artifact_role, ArtifactRole::Sanitizer);
+    assert_eq!(record.upstream_repository, "gitleaks/gitleaks");
+    assert_eq!(record.upstream_tag, "v8.30.1");
+    assert_eq!(record.platform_id, "linux-amd64");
+    assert_eq!(record.pack_version, "8.30.1-pcr.1");
+    assert_eq!(
+        record.project_asset_name,
+        "pre-commit-review-gitleaks-8.30.1-pcr.1-linux-amd64.tar.gz"
+    );
+    assert_eq!(record.expected_compressed_size, bytes.len() as u64);
+    assert_eq!(record.pack_sha256, sha256_bytes(&bytes));
+    assert_eq!(record.executable.path, "bin/gitleaks");
+    assert_eq!(record.license_files.len(), 1);
+    assert_eq!(record.license_files[0].path, "licenses/GITLEAKS-LICENSE");
+    assert_eq!(record.pack_format, PackFormat::NormalizedTarGzipV1);
+    assert_eq!(record.state, ArtifactState::Active);
+    let updated_manifest_bytes = fs::read(&manifest_output).unwrap();
+    let updated_manifest: ArtifactManifest =
+        serde_json::from_slice(&updated_manifest_bytes).unwrap();
+    assert_eq!(
+        canonical_json(&updated_manifest).unwrap(),
+        updated_manifest_bytes
+    );
+    assert_eq!(updated_manifest.packs, vec![record.clone()]);
+    updated_manifest.validate().unwrap();
+
+    let verified = verify_pack(bytes.as_slice(), &record, &VerifyLimits::default()).unwrap();
+    assert_eq!(verified.files.len(), 3);
+    let sbom_bytes = fs::read(verified.root().join("sbom.cdx.json")).unwrap();
+    assert_eq!(record.sbom_sha256, sha256_bytes(&sbom_bytes));
+    let sbom: serde_json::Value = serde_json::from_slice(&sbom_bytes).unwrap();
+    assert_eq!(
+        sbom.pointer("/components/0/supplier/name")
+            .and_then(serde_json::Value::as_str),
+        Some("Gitleaks")
+    );
+    assert_eq!(
+        sbom.pointer("/components/0/properties/3/value")
+            .and_then(serde_json::Value::as_str),
+        Some("component-evidence")
+    );
+    assert_eq!(
+        sbom.pointer("/components/0/properties/4/value")
+            .and_then(serde_json::Value::as_str),
+        Some("unknown")
+    );
 }
 
 #[test]
