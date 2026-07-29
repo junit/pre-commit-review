@@ -51,17 +51,17 @@ PY
 [ -r "$provider_doc" ] || fail 'provider documentation is missing'
 [ -r "$capabilities_doc" ] || fail 'helper capability documentation is missing'
 [ -r "$options_doc" ] || fail 'call-graph options documentation is missing'
-grep -Fq '`repository-context-provider-cli model`' "$provider_doc" \
+grep -Fq "\`repository-context-provider-cli model\`" "$provider_doc" \
   || fail 'provider model command is not documented'
-grep -Fq '`repository-context-provider-cli run`' "$provider_doc" \
+grep -Fq "\`repository-context-provider-cli run\`" "$provider_doc" \
   || fail 'provider run command is not documented'
 grep -Fq 'collect-diff-context-cli/schemas/repository-context-provider-registry.schema.json' \
   "$provider_doc" || fail 'provider registry schema is not documented'
 grep -Fq 'collect-diff-context-cli/schemas/repository-context-provider-run-request.schema.json' \
   "$provider_doc" || fail 'provider request schema is not documented'
-grep -Fq 'Delivery 4 does not bundle or download a real `rust-analyzer` artifact.' \
+grep -Fq "Delivery 4 does not bundle or download a real \`rust-analyzer\` artifact." \
   "$provider_doc" || fail 'Delivery 4 artifact boundary is not documented'
-grep -Fq '`repository-context-provider-cli`' "$capabilities_doc" \
+grep -Fq "\`repository-context-provider-cli\`" "$capabilities_doc" \
   || fail 'explicit provider CLI is not listed in helper capabilities'
 grep -Fq 'Delivery 4 explicit CLI' "$options_doc" \
   || fail 'call-graph options do not record the Delivery 4 CLI boundary'

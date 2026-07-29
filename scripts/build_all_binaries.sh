@@ -95,26 +95,20 @@ else
   cp "${CLI_DIR}/target/x86_64-unknown-linux-musl/release/repository-context-provider-cli" "${BIN_DIR}/repository_context_provider-linux-amd64"
 fi
 
-# 4. Windows AMD64 (Native mingw if available, else Docker)
-echo "[4/4] Building Windows amd64 (x86_64-pc-windows-gnu)..."
-if command -v x86_64-w64-mingw32-gcc >/dev/null 2>&1; then
-  echo "      -> Using native mingw-w64 toolchain"
-  (cd "${CLI_DIR}" && cargo +1.95.0 build --release --locked --target x86_64-pc-windows-gnu --bins >/dev/null)
-  cp "${CLI_DIR}/target/x86_64-pc-windows-gnu/release/collect-diff-context-cli.exe" "${BIN_DIR}/collect_diff_context-windows-amd64.exe"
-  cp "${CLI_DIR}/target/x86_64-pc-windows-gnu/release/static-analysis-cli.exe" "${BIN_DIR}/static_analysis-windows-amd64.exe"
-  cp "${CLI_DIR}/target/x86_64-pc-windows-gnu/release/repository-context-cli.exe" "${BIN_DIR}/repository_context-windows-amd64.exe"
-  cp "${CLI_DIR}/target/x86_64-pc-windows-gnu/release/repository-context-provider-cli.exe" "${BIN_DIR}/repository_context_provider-windows-amd64.exe"
-else
-  echo "      -> Fallback to Docker mingw-w64 container"
-  docker run --rm --platform linux/amd64 \
-    -v "${REPO_ROOT}:/volume" \
-    -w /volume/collect-diff-context-cli \
-    rust:latest sh -c "apt-get update -qq && apt-get install -y --no-install-recommends gcc-mingw-w64-x86-64 >/dev/null && rustup toolchain install 1.95.0 >/dev/null && rustup target add --toolchain 1.95.0 x86_64-pc-windows-gnu >/dev/null && cargo +1.95.0 build --release --locked --target x86_64-pc-windows-gnu --bins >/dev/null"
-  cp "${CLI_DIR}/target/x86_64-pc-windows-gnu/release/collect-diff-context-cli.exe" "${BIN_DIR}/collect_diff_context-windows-amd64.exe"
-  cp "${CLI_DIR}/target/x86_64-pc-windows-gnu/release/static-analysis-cli.exe" "${BIN_DIR}/static_analysis-windows-amd64.exe"
-  cp "${CLI_DIR}/target/x86_64-pc-windows-gnu/release/repository-context-cli.exe" "${BIN_DIR}/repository_context-windows-amd64.exe"
-  cp "${CLI_DIR}/target/x86_64-pc-windows-gnu/release/repository-context-provider-cli.exe" "${BIN_DIR}/repository_context_provider-windows-amd64.exe"
-fi
+# 4. Windows AMD64 (MSVC; available on a Windows release runner)
+echo "[4/4] Building Windows amd64 (x86_64-pc-windows-msvc)..."
+case "$(uname -s | tr '[:upper:]' '[:lower:]')" in
+  msys*|mingw*|cygwin*)
+    (cd "${CLI_DIR}" && cargo +1.95.0 build --release --locked --target x86_64-pc-windows-msvc --bins >/dev/null)
+    cp "${CLI_DIR}/target/x86_64-pc-windows-msvc/release/collect-diff-context-cli.exe" "${BIN_DIR}/collect_diff_context-windows-amd64.exe"
+    cp "${CLI_DIR}/target/x86_64-pc-windows-msvc/release/static-analysis-cli.exe" "${BIN_DIR}/static_analysis-windows-amd64.exe"
+    cp "${CLI_DIR}/target/x86_64-pc-windows-msvc/release/repository-context-cli.exe" "${BIN_DIR}/repository_context-windows-amd64.exe"
+    cp "${CLI_DIR}/target/x86_64-pc-windows-msvc/release/repository-context-provider-cli.exe" "${BIN_DIR}/repository_context_provider-windows-amd64.exe"
+    ;;
+  *)
+    echo "Skipping Windows MSVC target; build it on the Windows release runner"
+    ;;
+esac
 
 smoke_host_repository_context
 
@@ -127,20 +121,28 @@ echo "Fetching pinned Gitleaks release binaries..."
 
 echo "Building normalized core and Gitleaks packs..."
 mkdir -p "${PACK_DIR}"
+platform_manifest="${PACK_DIR}/manifest.json"
+cp "${REPO_ROOT}/third_party_artifacts/manifest.json" "${platform_manifest}"
 for platform in darwin-amd64 darwin-arm64 linux-amd64 windows-amd64; do
   suffix=''
   if [ "${platform}" = 'windows-amd64' ]; then
     suffix='.exe'
   fi
+  if [ ! -x "${BIN_DIR}/collect_diff_context-${platform}${suffix}" ] \
+    || [ ! -x "${BIN_DIR}/static_analysis-${platform}${suffix}" ] \
+    || [ ! -x "${BIN_DIR}/repository_context-${platform}${suffix}" ] \
+    || [ ! -x "${BIN_DIR}/repository_context_provider-${platform}${suffix}" ]; then
+    echo "Skipping ${platform} packs; platform project binaries are unavailable"
+    continue
+  fi
   gitleaks_pack="${PACK_DIR}/pre-commit-review-gitleaks-${GITLEAKS_PACK_VERSION}-${platform}.tar.gz"
   gitleaks_record="${PACK_DIR}/gitleaks-${platform}.record.json"
-  platform_manifest="${PACK_DIR}/manifest-${platform}.json"
   "${SCRIPT_DIR}/build_artifact_pack.sh" \
     --kind gitleaks \
     --platform-id "${platform}" \
     --pack-version "${GITLEAKS_PACK_VERSION}" \
     --source-root "${REPO_ROOT}" \
-    --manifest "${REPO_ROOT}/third_party_artifacts/manifest.json" \
+    --manifest "${platform_manifest}" \
     --source-lock "${REPO_ROOT}/third_party_artifacts/sources/gitleaks-8.30.1.json" \
     --binary "${BIN_DIR}/gitleaks-${platform}${suffix}" \
     --output "${gitleaks_pack}" \

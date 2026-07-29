@@ -50,6 +50,8 @@ done
 manifest="$repo_root/third_party_artifacts/manifest.json"
 revocations="$repo_root/third_party_artifacts/revocations.json"
 source_lock="$repo_root/third_party_artifacts/sources/gitleaks-8.30.1.json"
+updated_manifest="$tmp_dir/manifest.json"
+cp "$manifest" "$updated_manifest"
 
 for platform in "${platforms[@]}"; do
   suffix=''
@@ -57,13 +59,33 @@ for platform in "${platforms[@]}"; do
   fake_binary="$tmp_dir/gitleaks-${platform}${suffix}"
   printf 'fixture gitleaks %s\n' "$platform" > "$fake_binary"
   chmod +x "$fake_binary"
+  platform_source_lock="$tmp_dir/source-lock-${platform}.json"
+  python3 - "$source_lock" "$platform_source_lock" "$platform" "$fake_binary" <<'PY'
+import hashlib
+import json
+from pathlib import Path
+import sys
+
+source, destination, platform, binary = sys.argv[1:]
+lock = json.loads(Path(source).read_text(encoding='utf-8'))
+payload = Path(binary).read_bytes()
+for asset in lock['assets']:
+    if asset['platform_id'] == platform:
+        asset['executable_size'] = len(payload)
+        asset['executable_sha256'] = hashlib.sha256(payload).hexdigest()
+        break
+else:
+    raise SystemExit(f'missing source-lock platform: {platform}')
+Path(destination).write_text(
+    json.dumps(lock, separators=(',', ':'), ensure_ascii=True), encoding='utf-8'
+)
+PY
   pack="$tmp_dir/pre-commit-review-gitleaks-8.30.1-pcr.1-${platform}.tar.gz"
   record="$tmp_dir/gitleaks-${platform}.record.json"
-  updated_manifest="$tmp_dir/manifest-${platform}.json"
   "$repo_root/scripts/build_artifact_pack.sh" \
     --kind gitleaks --platform-id "$platform" --pack-version 8.30.1-pcr.1 \
-    --source-root "$fixture_root" --manifest "$manifest" \
-    --source-lock "$source_lock" --binary "$fake_binary" \
+    --source-root "$fixture_root" --manifest "$updated_manifest" \
+    --source-lock "$platform_source_lock" --binary "$fake_binary" \
     --output "$pack" --record-output "$record" \
     --manifest-output "$updated_manifest" >/dev/null
 
@@ -74,7 +96,7 @@ for platform in "${platforms[@]}"; do
     --revocations "$revocations" --output "$core" >/dev/null
 
   python3 - "$pack" "$record" "$core" "$platform" "$suffix" \
-    "$updated_manifest" "$revocations" "$source_lock" <<'PY'
+    "$updated_manifest" "$revocations" "$platform_source_lock" <<'PY'
 import hashlib
 import json
 from pathlib import Path
@@ -142,8 +164,11 @@ if record['source_lock_sha256'] != sha256(Path(source_lock_path).read_bytes()):
 if record['license_files'][0]['sha256'] != sha256(files['licenses/GITLEAKS-LICENSE']):
     raise SystemExit(f'{platform}: record does not bind the copied license')
 updated_manifest = json.loads(Path(manifest_path).read_bytes())
-if updated_manifest['packs'] != [record] or record['state'] != 'active':
-    raise SystemExit(f'{platform}: generated manifest does not contain the active pack record')
+matching = [item for item in updated_manifest['packs']
+            if item['artifact_id'] == record['artifact_id']
+            and item['platform_id'] == record['platform_id']]
+if matching != [record] or record['state'] != 'active':
+    raise SystemExit(f'{platform}: generated manifest does not contain its active pack record')
 sbom = json.loads(files['sbom.cdx.json'])
 component = sbom['components'][0]
 properties = {item['name']: item['value'] for item in component['properties']}
@@ -214,11 +239,25 @@ if inventory['revocation_index_sha256'] != sha256(Path(revocations_path).read_by
 PY
 done
 
+python3 - "$updated_manifest" <<'PY'
+import json
+from pathlib import Path
+import sys
+
+manifest = json.loads(Path(sys.argv[1]).read_text(encoding='utf-8'))
+records = manifest['packs']
+if len(records) != 4 or [record['platform_id'] for record in records] != [
+    'darwin-amd64', 'darwin-arm64', 'linux-amd64', 'windows-amd64'
+]:
+    raise SystemExit('matrix did not produce one canonical four-platform manifest')
+PY
+
 original="$tmp_dir/pre-commit-review-gitleaks-8.30.1-pcr.1-darwin-arm64.tar.gz"
 rebuilt="$tmp_dir/gitleaks-darwin-arm64-rebuilt.tar.gz"
 "$repo_root/scripts/build_artifact_pack.sh" \
   --kind gitleaks --platform-id darwin-arm64 --pack-version 8.30.1-pcr.1 \
-  --source-root "$fixture_root" --manifest "$manifest" --source-lock "$source_lock" \
+  --source-root "$fixture_root" --manifest "$updated_manifest" \
+  --source-lock "$tmp_dir/source-lock-darwin-arm64.json" \
   --binary "$tmp_dir/gitleaks-darwin-arm64" --output "$rebuilt" >/dev/null
 cmp "$original" "$rebuilt" || fail 'identical inputs did not produce identical Gitleaks bytes'
 
@@ -251,11 +290,11 @@ grep -Fq 'pre-commit-review-gitleaks-' "$repo_root/scripts/build_all_binaries.sh
   || fail 'local multi-platform builder does not create Gitleaks packs'
 grep -Fq 'pre-commit-review-core-' "$repo_root/scripts/build_all_binaries.sh" \
   || fail 'local multi-platform builder does not create core packs'
-grep -Fq 'copy_core_distribution "$staging_dir"' "$repo_root/install.sh" \
+grep -Fq "copy_core_distribution \"\$staging_dir\"" "$repo_root/install.sh" \
   || fail 'installer does not stage immutable core distribution metadata before provisioning'
-grep -Fq 'cp "$source_dir/install.sh" "$staging_dir/"' "$repo_root/install.sh" \
+grep -Fq "cp \"\$source_dir/install.sh\" \"\$staging_dir/\"" "$repo_root/install.sh" \
   || fail 'installer does not preserve the core-bound installer member'
-grep -Fq 'cp -R "$source_dir/docs" "$staging_dir/"' "$repo_root/install.sh" \
+grep -Fq "cp -R \"\$source_dir/docs\" \"\$staging_dir/\"" "$repo_root/install.sh" \
   || fail 'installer does not preserve every core-bound documentation member'
 
 python3 - "$repo_root/install.sh" <<'PY'

@@ -60,6 +60,7 @@ for arguments in \
   'index build --source staged' \
   'index build --source invalid --expect-scope aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa' \
   'index build --source staged --expect-scope invalid'; do
+  # shellcheck disable=SC2086 # each case intentionally supplies a command and its arguments
   if PRE_COMMIT_REVIEW_REPOSITORY_CONTEXT_BIN="$fake_bin" \
     PCR_FAKE_LOG="$fake_log" PRE_COMMIT_REVIEW_SECRET_SCAN=off \
     "$wrapper" $arguments >"$tmp_dir/invalid.out" 2>"$tmp_dir/invalid.err"; then

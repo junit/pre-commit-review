@@ -21,7 +21,7 @@ git -C "$fixture" config user.name A
 printf 'base\n' >"$fixture/README.md"
 printf '*.dat diff=review-fixture\n' >"$fixture/.gitattributes"
 printf 'old binary-ish content\n' >"$fixture/sample.dat"
-printf '#!/bin/sh\nprintf "TEXTCONV_MARKER\\n"\ncat -- "$1"\n' >"$tmp_dir/textconv.sh"
+printf "#!/bin/sh\nprintf \"TEXTCONV_MARKER\\n\"\ncat -- \"\$1\"\n" >"$tmp_dir/textconv.sh"
 chmod +x "$tmp_dir/textconv.sh"
 git -C "$fixture" config diff.review-fixture.textconv "$tmp_dir/textconv.sh"
 git -C "$fixture" add README.md .gitattributes sample.dat

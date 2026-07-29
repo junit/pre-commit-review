@@ -144,9 +144,9 @@ for fuzz_target in file_facts_decode repository_graph_row repository_overlay rep
   grep -Fq "cargo +nightly fuzz run $fuzz_target" "$repo_root/.github/workflows/lint.yml"
 done
 grep -Fq './tests/static_analysis_orchestration_test.sh' "$repo_root/.github/workflows/lint.yml"
-grep -Fq '"${repository_binary}" collect --help' "$repo_root/scripts/build_all_binaries.sh"
-grep -Fq '"${repository_binary}" index --help' "$repo_root/scripts/build_all_binaries.sh"
-grep -Fq '"${provider_binary}" --help' "$repo_root/scripts/build_all_binaries.sh"
+grep -Fq "\"\${repository_binary}\" collect --help" "$repo_root/scripts/build_all_binaries.sh"
+grep -Fq "\"\${repository_binary}\" index --help" "$repo_root/scripts/build_all_binaries.sh"
+grep -Fq "\"\${provider_binary}\" --help" "$repo_root/scripts/build_all_binaries.sh"
 grep -Fq 'repository-context-provider-cli' "$repo_root/.github/workflows/lint.yml"
 grep -Fq './tests/repository_context_provider_cli_test.sh' "$repo_root/.github/workflows/lint.yml"
 grep -Fq 'repository_context_provider_cli_contracts' "$repo_root/.github/workflows/lint.yml"

@@ -71,6 +71,12 @@ pub fn write_gitleaks_pack(options: &GitleaksPackOptions<'_>) -> WriterResult<Ar
         .ok_or_else(|| format!("source lock has no asset for {}", options.platform_id))?;
 
     let executable_bytes = read_regular(options.binary_path)?;
+    let executable_sha256 = sha256_bytes(&executable_bytes);
+    if executable_bytes.len() as u64 != asset.executable_size
+        || executable_sha256 != asset.executable_sha256
+    {
+        return Err("Gitleaks executable does not match the locked source asset".to_string());
+    }
     let license_path = options
         .source_root
         .join("THIRD_PARTY_LICENSES/gitleaks-LICENSE");
@@ -86,7 +92,6 @@ pub fn write_gitleaks_pack(options: &GitleaksPackOptions<'_>) -> WriterResult<Ar
         "gitleaks"
     };
     let executable_path = format!("bin/{executable_name}");
-    let executable_sha256 = sha256_bytes(&executable_bytes);
     let source_lock_sha256 = sha256_bytes(&source_lock_bytes);
     let project_asset_name = format!(
         "pre-commit-review-gitleaks-{}-{}.tar.gz",

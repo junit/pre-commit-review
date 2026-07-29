@@ -40,7 +40,8 @@ grep -Fq 'scale/sqlite_generation' "$repository_bench" \
 grep -Fq '.integrity_check()' "$repository_bench" \
   || fail 'repository scale benchmark does not validate generation integrity'
 
-grep -Fq 'cargo build --release --target ${{ matrix.target }} --bins' "$release" \
+# shellcheck disable=SC2016,SC1003 # the assertion intentionally matches literal workflow variables and a trailing continuation
+grep -Fq 'cargo +1.95.0 build --release --locked --target ${{ matrix.target }} --bins' "$release" \
   || fail 'release workflow does not build the bundled product binaries'
 grep -Fq 'index build --source staged' "$release" \
   || fail 'release workflow does not build a production repository index'
@@ -48,6 +49,7 @@ grep -Fq 'index doctor --cache-dir' "$release" \
   || fail 'release workflow does not doctor the production repository index'
 grep -Fq 'index inspect --generation' "$release" \
   || fail 'release workflow does not run an immutable production query'
+# shellcheck disable=SC2016,SC1003 # the assertion intentionally matches literal workflow variables and a trailing continuation
 grep -Fq 'inspect_report="$(cd "$repository" && PRE_COMMIT_REVIEW_CACHE_DIR="$cache" \' "$release" \
   || fail 'release workflow does not bind inspect to the smoke cache through the supported environment override'
 if grep -Eq 'index inspect .*--cache-dir' "$release"; then

@@ -2,7 +2,7 @@ use collect_diff_context_cli::artifacts::{
     contract::{
         canonical_json, sha256_bytes, ArtifactFileBinding, ArtifactManifest, ArtifactPackRecord,
         ArtifactRole, ArtifactState, PackFileRecord, PackFileRole, PackFormat, PackManifest,
-        ProbeId,
+        ProbeId, SourceLock,
     },
     pack::{verify_pack, VerifyLimits},
 };
@@ -475,10 +475,26 @@ fn rust_writer_emits_a_complete_verifiable_gitleaks_record() {
     let record_output = temporary.path().join("record.json");
     let manifest_output = temporary.path().join("manifest.json");
     let rebuilt = temporary.path().join("rebuilt.tar.gz");
-    let source_lock = repository_root().join("third_party_artifacts/sources/gitleaks-8.30.1.json");
+    let reviewed_source_lock =
+        repository_root().join("third_party_artifacts/sources/gitleaks-8.30.1.json");
+    let source_lock = temporary.path().join("fixture-source-lock.json");
+    let executable_bytes = b"fixture-gitleaks-binary\n";
+    let mut source_lock_value: SourceLock =
+        serde_json::from_slice(&fs::read(&reviewed_source_lock).unwrap()).unwrap();
+    let asset = source_lock_value
+        .assets
+        .iter_mut()
+        .find(|asset| asset.platform_id == "linux-amd64")
+        .unwrap();
+    asset.executable_size = executable_bytes.len() as u64;
+    asset.executable_sha256 = sha256_bytes(executable_bytes);
+    fs::write(&source_lock, canonical_json(&source_lock_value).unwrap()).unwrap();
     let distribution_manifest = repository_root().join("third_party_artifacts/manifest.json");
 
-    let invoke = |destination: &Path, sidecar: Option<&Path>, updated_manifest: Option<&Path>| {
+    let invoke = |destination: &Path,
+                  sidecar: Option<&Path>,
+                  updated_manifest: Option<&Path>,
+                  source_lock_path: &Path| {
         let mut command = Command::new(env!("CARGO_BIN_EXE_artifact-pack-writer"));
         command
             .arg("gitleaks")
@@ -491,7 +507,7 @@ fn rust_writer_emits_a_complete_verifiable_gitleaks_record() {
             .arg("--manifest")
             .arg(&distribution_manifest)
             .arg("--source-lock")
-            .arg(&source_lock)
+            .arg(source_lock_path)
             .arg("--binary")
             .arg(&executable)
             .arg("--output")
@@ -509,8 +525,33 @@ fn rust_writer_emits_a_complete_verifiable_gitleaks_record() {
             String::from_utf8_lossy(&result.stderr)
         );
     };
-    invoke(&output, Some(&record_output), Some(&manifest_output));
-    invoke(&rebuilt, None, None);
+    invoke(
+        &output,
+        Some(&record_output),
+        Some(&manifest_output),
+        &source_lock,
+    );
+    invoke(&rebuilt, None, None, &source_lock);
+
+    let mismatched_output = temporary.path().join("mismatched.tar.gz");
+    let mut mismatched = Command::new(env!("CARGO_BIN_EXE_artifact-pack-writer"));
+    mismatched
+        .arg("gitleaks")
+        .arg("--platform-id")
+        .arg("linux-amd64")
+        .arg("--pack-version")
+        .arg("8.30.1-pcr.1")
+        .arg("--source-root")
+        .arg(&source_root)
+        .arg("--manifest")
+        .arg(&distribution_manifest)
+        .arg("--source-lock")
+        .arg(&reviewed_source_lock)
+        .arg("--binary")
+        .arg(&executable)
+        .arg("--output")
+        .arg(&mismatched_output);
+    assert!(!mismatched.output().unwrap().status.success());
 
     let bytes = fs::read(&output).unwrap();
     assert_eq!(bytes, fs::read(&rebuilt).unwrap());
