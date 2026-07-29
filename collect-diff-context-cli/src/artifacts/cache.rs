@@ -418,35 +418,8 @@ pub fn verify_target_receipt(
             "target artifact is not present in the distribution manifest",
         ));
     }
-    if !target_root.is_absolute() {
-        return Err(error(
-            "target-root-not-absolute",
-            "artifact target root must be absolute",
-        ));
-    }
-    let target_root = fs::canonicalize(target_root).map_err(|_| {
-        error(
-            "target-root-unavailable",
-            "artifact target root could not be opened",
-        )
-    })?;
-    let receipt_path = target_root
-        .join("runtime/artifact-receipts")
-        .join(format!("{artifact_id}.json"));
-    let receipt_bytes = read_bounded(&receipt_path, MAX_MANIFEST_BYTES)?;
-    let receipt: ArtifactReceipt = serde_json::from_slice(&receipt_bytes).map_err(|_| {
-        error(
-            "target-receipt-json",
-            "artifact target receipt is not valid strict JSON",
-        )
-    })?;
-    if canonical_json(&receipt)? != receipt_bytes {
-        return Err(error(
-            "target-receipt-canonical",
-            "artifact target receipt bytes are not canonical",
-        ));
-    }
-    receipt.validate()?;
+    let target_root = canonical_target_root(target_root)?;
+    let receipt = read_target_receipt_at(&target_root, artifact_id)?;
     let manifest_sha256 = sha256_bytes(&canonical_json(manifest)?);
     let record = manifest.select_active(&receipt.artifact_id, &receipt.platform_id)?;
     if receipt.artifact_id != artifact_id
@@ -529,6 +502,75 @@ pub fn verify_target_receipt(
         return Err(error(
             "target-pack-inventory",
             "artifact target pack inventory is inconsistent",
+        ));
+    }
+    Ok(receipt)
+}
+
+pub fn read_target_receipt(
+    target_root: &Path,
+    artifact_id: &str,
+) -> Result<ArtifactReceipt, ArtifactError> {
+    let target_root = canonical_target_root(target_root)?;
+    read_target_receipt_at(&target_root, artifact_id)
+}
+
+pub(crate) fn installed_executable_path(
+    target_root: &Path,
+    record: &ArtifactPackRecord,
+) -> Result<PathBuf, ArtifactError> {
+    record.validate()?;
+    if !target_root.is_absolute() {
+        return Err(error(
+            "target-root-not-absolute",
+            "artifact target root must be absolute",
+        ));
+    }
+    Ok(target_root
+        .join(target_pack_root(record)?)
+        .join(&record.executable.path))
+}
+
+fn canonical_target_root(target_root: &Path) -> Result<PathBuf, ArtifactError> {
+    if !target_root.is_absolute() {
+        return Err(error(
+            "target-root-not-absolute",
+            "artifact target root must be absolute",
+        ));
+    }
+    fs::canonicalize(target_root).map_err(|_| {
+        error(
+            "target-root-unavailable",
+            "artifact target root could not be opened",
+        )
+    })
+}
+
+fn read_target_receipt_at(
+    target_root: &Path,
+    artifact_id: &str,
+) -> Result<ArtifactReceipt, ArtifactError> {
+    let receipt_path = target_root
+        .join("runtime/artifact-receipts")
+        .join(format!("{artifact_id}.json"));
+    let receipt_bytes = read_bounded(&receipt_path, MAX_MANIFEST_BYTES)?;
+    let receipt: ArtifactReceipt = serde_json::from_slice(&receipt_bytes).map_err(|_| {
+        error(
+            "target-receipt-json",
+            "artifact target receipt is not valid strict JSON",
+        )
+    })?;
+    if canonical_json(&receipt)? != receipt_bytes {
+        return Err(error(
+            "target-receipt-canonical",
+            "artifact target receipt bytes are not canonical",
+        ));
+    }
+    receipt.validate()?;
+    if receipt.artifact_id != artifact_id {
+        return Err(error(
+            "target-receipt-binding",
+            "artifact target receipt identity does not match its filename",
         ));
     }
     Ok(receipt)

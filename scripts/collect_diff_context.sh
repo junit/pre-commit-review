@@ -11,29 +11,28 @@ WRAPPER_SCRIPT="${SCRIPT_DIR}/collect_diff_context.sh"
 IMPACT_CONTEXT_HELPER="${SCRIPT_DIR}/collect_impact_context.sh"
 export PRE_COMMIT_REVIEW_IMPACT_CONTEXT_HELPER_PATH="$IMPACT_CONTEXT_HELPER"
 
-OS="$(uname -s | tr '[:upper:]' '[:lower:]')"
-ARCH="$(uname -m)"
-
-# Normalize OS and ARCH
-case "$OS" in
-  darwin)  OS_NAME="darwin" ;;
-  linux)   OS_NAME="linux" ;;
-  msys*|mingw*|cygwin*) OS_NAME="windows" ;;
-  *)       OS_NAME="linux" ;;
-esac
-
-case "$ARCH" in
-  x86_64|amd64) ARCH_NAME="amd64" ;;
-  arm64|aarch64) ARCH_NAME="arm64" ;;
-  *)            ARCH_NAME="amd64" ;;
-esac
-
-BINARY_NAME="collect_diff_context-${OS_NAME}-${ARCH_NAME}"
-if [ "$OS_NAME" = "windows" ]; then
-  BINARY_NAME="${BINARY_NAME}.exe"
+if [ -r "$SCRIPT_DIR/lib/collect_diff_context_cli.sh" ]; then
+  # shellcheck source=/dev/null
+  . "$SCRIPT_DIR/lib/collect_diff_context_cli.sh"
+  BINARY_PATH="$(resolve_packaged_collect_diff_context_cli "$SCRIPT_DIR" 2>/dev/null || true)"
+else
+  OS="$(uname -s | tr '[:upper:]' '[:lower:]')"
+  ARCH="$(uname -m)"
+  case "$OS" in
+    darwin) OS_NAME="darwin" ;;
+    linux) OS_NAME="linux" ;;
+    msys*|mingw*|cygwin*) OS_NAME="windows" ;;
+    *) OS_NAME="linux" ;;
+  esac
+  case "$ARCH" in
+    x86_64|amd64) ARCH_NAME="amd64" ;;
+    arm64|aarch64) ARCH_NAME="arm64" ;;
+    *) ARCH_NAME="amd64" ;;
+  esac
+  BINARY_NAME="collect_diff_context-${OS_NAME}-${ARCH_NAME}"
+  [ "$OS_NAME" = "windows" ] && BINARY_NAME="${BINARY_NAME}.exe"
+  BINARY_PATH="${SCRIPT_DIR}/bin/${BINARY_NAME}"
 fi
-
-BINARY_PATH="${SCRIPT_DIR}/bin/${BINARY_NAME}"
 SECRET_SCAN_MODE="${PRE_COMMIT_REVIEW_SECRET_SCAN:-auto}"
 SANITIZER_BIN=''
 SCAN_REPORT_FILES=''

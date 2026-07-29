@@ -5,7 +5,7 @@
   "type": "object",
   "required": [
     "schema_version", "kind", "operation", "status", "artifact_id", "platform_id", "pack_version",
-    "pack_sha256", "executable_sha256", "sbom_sha256", "lifecycle_state", "code"
+    "pack_sha256", "executable_sha256", "sbom_sha256", "lifecycle_state", "artifacts", "code"
   ],
   "properties": {
     "schema_version": { "type": "integer", "const": 1 },
@@ -33,6 +33,11 @@
     "lifecycle_state": {
       "anyOf": [{ "$ref": "third-party-artifacts.schema.json#/$defs/artifactState" }, { "type": "null" }]
     },
+    "artifacts": {
+      "type": "array",
+      "maxItems": 256,
+      "items": { "$ref": "#/$defs/reportArtifact" }
+    },
     "code": {
       "anyOf": [{ "$ref": "third-party-artifacts.schema.json#/$defs/errorCode" }, { "type": "null" }]
     }
@@ -41,22 +46,65 @@
     {
       "if": { "properties": { "status": { "const": "completed" } } },
       "then": {
-        "properties": {
-          "artifact_id": { "$ref": "third-party-artifacts.schema.json#/$defs/identifier" },
-          "platform_id": { "$ref": "third-party-artifacts.schema.json#/$defs/platformId" },
-          "pack_version": { "$ref": "third-party-artifacts.schema.json#/$defs/text" },
-          "pack_sha256": { "$ref": "third-party-artifacts.schema.json#/$defs/sha256" },
-          "executable_sha256": { "$ref": "third-party-artifacts.schema.json#/$defs/sha256" },
-          "sbom_sha256": { "$ref": "third-party-artifacts.schema.json#/$defs/sha256" },
-          "lifecycle_state": { "$ref": "third-party-artifacts.schema.json#/$defs/artifactState" },
-          "code": { "type": "null" }
-        }
+        "oneOf": [
+          {
+            "properties": {
+              "artifact_id": { "$ref": "third-party-artifacts.schema.json#/$defs/identifier" },
+              "platform_id": { "$ref": "third-party-artifacts.schema.json#/$defs/platformId" },
+              "pack_version": { "$ref": "third-party-artifacts.schema.json#/$defs/text" },
+              "pack_sha256": { "$ref": "third-party-artifacts.schema.json#/$defs/sha256" },
+              "executable_sha256": { "$ref": "third-party-artifacts.schema.json#/$defs/sha256" },
+              "sbom_sha256": { "$ref": "third-party-artifacts.schema.json#/$defs/sha256" },
+              "lifecycle_state": { "$ref": "third-party-artifacts.schema.json#/$defs/artifactState" },
+              "artifacts": { "maxItems": 0 },
+              "code": { "type": "null" }
+            }
+          },
+          {
+            "properties": {
+              "operation": { "const": "doctor" },
+              "artifact_id": { "type": "null" },
+              "platform_id": { "type": "null" },
+              "pack_version": { "type": "null" },
+              "pack_sha256": { "type": "null" },
+              "executable_sha256": { "type": "null" },
+              "sbom_sha256": { "type": "null" },
+              "lifecycle_state": { "type": "null" },
+              "artifacts": { "minItems": 1 },
+              "code": { "type": "null" }
+            }
+          }
+        ]
       }
     },
     {
       "if": { "properties": { "status": { "const": "failed" } } },
-      "then": { "properties": { "code": { "$ref": "third-party-artifacts.schema.json#/$defs/errorCode" } } }
+      "then": {
+        "properties": {
+          "artifacts": { "maxItems": 0 },
+          "code": { "$ref": "third-party-artifacts.schema.json#/$defs/errorCode" }
+        }
+      }
     }
   ],
+  "$defs": {
+    "reportArtifact": {
+      "type": "object",
+      "required": [
+        "artifact_id", "platform_id", "pack_version", "pack_sha256", "executable_sha256",
+        "sbom_sha256", "lifecycle_state"
+      ],
+      "properties": {
+        "artifact_id": { "$ref": "third-party-artifacts.schema.json#/$defs/identifier" },
+        "platform_id": { "$ref": "third-party-artifacts.schema.json#/$defs/platformId" },
+        "pack_version": { "$ref": "third-party-artifacts.schema.json#/$defs/text" },
+        "pack_sha256": { "$ref": "third-party-artifacts.schema.json#/$defs/sha256" },
+        "executable_sha256": { "$ref": "third-party-artifacts.schema.json#/$defs/sha256" },
+        "sbom_sha256": { "$ref": "third-party-artifacts.schema.json#/$defs/sha256" },
+        "lifecycle_state": { "$ref": "third-party-artifacts.schema.json#/$defs/artifactState" }
+      },
+      "additionalProperties": false
+    }
+  },
   "additionalProperties": false
 }

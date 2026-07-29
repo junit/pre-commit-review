@@ -613,6 +613,41 @@ pub enum ArtifactReportStatus {
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
+pub struct ArtifactReportEntry {
+    pub artifact_id: String,
+    pub platform_id: String,
+    pub pack_version: String,
+    pub pack_sha256: String,
+    pub executable_sha256: String,
+    pub sbom_sha256: String,
+    pub lifecycle_state: ArtifactState,
+}
+
+impl ArtifactReportEntry {
+    pub fn from_record(record: &ArtifactPackRecord) -> Self {
+        Self {
+            artifact_id: record.artifact_id.clone(),
+            platform_id: record.platform_id.clone(),
+            pack_version: record.pack_version.clone(),
+            pack_sha256: record.pack_sha256.clone(),
+            executable_sha256: record.executable.sha256.clone(),
+            sbom_sha256: record.sbom_sha256.clone(),
+            lifecycle_state: record.state,
+        }
+    }
+
+    fn validate(&self) -> Result<(), ArtifactError> {
+        validate_identifier(&self.artifact_id)?;
+        platform_target(&self.platform_id)?;
+        validate_text(&self.pack_version)?;
+        validate_sha256(&self.pack_sha256)?;
+        validate_sha256(&self.executable_sha256)?;
+        validate_sha256(&self.sbom_sha256)
+    }
+}
+
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
 pub struct ArtifactReport {
     pub schema_version: u8,
     pub kind: String,
@@ -625,6 +660,7 @@ pub struct ArtifactReport {
     pub executable_sha256: Option<String>,
     pub sbom_sha256: Option<String>,
     pub lifecycle_state: Option<ArtifactState>,
+    pub artifacts: Vec<ArtifactReportEntry>,
     pub code: Option<String>,
 }
 
@@ -638,47 +674,51 @@ impl ArtifactReport {
         }
         match self.status {
             ArtifactReportStatus::Completed => {
-                validate_identifier(self.artifact_id.as_deref().ok_or_else(|| {
-                    ArtifactError::new(
-                        "report-completed-identity",
-                        "completed report must identify its artifact",
-                    )
-                })?)?;
-                platform_target(self.platform_id.as_deref().ok_or_else(|| {
-                    ArtifactError::new(
-                        "report-completed-identity",
-                        "completed report must identify its platform",
-                    )
-                })?)?;
-                validate_text(self.pack_version.as_deref().ok_or_else(|| {
-                    ArtifactError::new(
-                        "report-completed-identity",
-                        "completed report must identify its pack version",
-                    )
-                })?)?;
-                validate_sha256(self.pack_sha256.as_deref().ok_or_else(|| {
-                    ArtifactError::new(
-                        "report-completed-identity",
-                        "completed report must bind its pack digest",
-                    )
-                })?)?;
-                validate_sha256(self.executable_sha256.as_deref().ok_or_else(|| {
-                    ArtifactError::new(
-                        "report-completed-identity",
-                        "completed report must bind its executable digest",
-                    )
-                })?)?;
-                validate_sha256(self.sbom_sha256.as_deref().ok_or_else(|| {
-                    ArtifactError::new(
-                        "report-completed-identity",
-                        "completed report must bind its SBOM digest",
-                    )
-                })?)?;
-                if self.lifecycle_state.is_none() || self.code.is_some() {
+                if self.code.is_some() {
                     return Err(ArtifactError::new(
                         "report-completed-fields",
                         "completed report fields are inconsistent",
                     ));
+                }
+                if self.artifacts.is_empty() {
+                    self.validate_single_identity()?;
+                } else {
+                    if self.operation != ArtifactOperation::Doctor
+                        || self.artifact_id.is_some()
+                        || self.platform_id.is_some()
+                        || self.pack_version.is_some()
+                        || self.pack_sha256.is_some()
+                        || self.executable_sha256.is_some()
+                        || self.sbom_sha256.is_some()
+                        || self.lifecycle_state.is_some()
+                    {
+                        return Err(ArtifactError::new(
+                            "report-aggregate-fields",
+                            "aggregate doctor report fields are inconsistent",
+                        ));
+                    }
+                    if self.artifacts.len() > MAX_PACK_RECORDS {
+                        return Err(ArtifactError::new(
+                            "report-artifact-limit",
+                            "aggregate doctor report contains too many artifacts",
+                        ));
+                    }
+                    let mut previous: Option<(&str, &str, &str)> = None;
+                    for artifact in &self.artifacts {
+                        artifact.validate()?;
+                        let key = (
+                            artifact.artifact_id.as_str(),
+                            artifact.platform_id.as_str(),
+                            artifact.pack_version.as_str(),
+                        );
+                        if previous.is_some_and(|value| value >= key) {
+                            return Err(ArtifactError::new(
+                                "report-artifacts-not-sorted",
+                                "aggregate doctor artifacts must be sorted and unique",
+                            ));
+                        }
+                        previous = Some(key);
+                    }
                 }
             }
             ArtifactReportStatus::Failed => {
@@ -688,12 +728,64 @@ impl ArtifactReport {
                         "failed report must contain a bounded code",
                     )
                 })?)?;
+                if !self.artifacts.is_empty() {
+                    return Err(ArtifactError::new(
+                        "report-failure-artifacts",
+                        "failed report cannot contain successful artifact results",
+                    ));
+                }
             }
         }
         if canonical_json(self)?.len() > 64 * 1024 {
             return Err(ArtifactError::new(
                 "report-size-limit",
                 "artifact report exceeds its byte limit",
+            ));
+        }
+        Ok(())
+    }
+
+    fn validate_single_identity(&self) -> Result<(), ArtifactError> {
+        validate_identifier(self.artifact_id.as_deref().ok_or_else(|| {
+            ArtifactError::new(
+                "report-completed-identity",
+                "completed report must identify its artifact",
+            )
+        })?)?;
+        platform_target(self.platform_id.as_deref().ok_or_else(|| {
+            ArtifactError::new(
+                "report-completed-identity",
+                "completed report must identify its platform",
+            )
+        })?)?;
+        validate_text(self.pack_version.as_deref().ok_or_else(|| {
+            ArtifactError::new(
+                "report-completed-identity",
+                "completed report must identify its pack version",
+            )
+        })?)?;
+        validate_sha256(self.pack_sha256.as_deref().ok_or_else(|| {
+            ArtifactError::new(
+                "report-completed-identity",
+                "completed report must bind its pack digest",
+            )
+        })?)?;
+        validate_sha256(self.executable_sha256.as_deref().ok_or_else(|| {
+            ArtifactError::new(
+                "report-completed-identity",
+                "completed report must bind its executable digest",
+            )
+        })?)?;
+        validate_sha256(self.sbom_sha256.as_deref().ok_or_else(|| {
+            ArtifactError::new(
+                "report-completed-identity",
+                "completed report must bind its SBOM digest",
+            )
+        })?)?;
+        if self.lifecycle_state.is_none() {
+            return Err(ArtifactError::new(
+                "report-completed-fields",
+                "completed report fields are inconsistent",
             ));
         }
         Ok(())

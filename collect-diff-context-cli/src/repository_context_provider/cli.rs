@@ -33,8 +33,8 @@ const MODEL_HELP: &str = "Usage: repository-context-provider-cli model --source 
 const RUN_HELP: &str = "Usage: repository-context-provider-cli run --source <staged|unstaged|branch> --expect-scope <fingerprint> --registry <absolute-path> --expect-registry-sha256 <sha256> --provider-id <id> --model <absolute-path> --expect-model-sha256 <sha256> --request <absolute-path>\n\nOptions:\n  -h, --help\n";
 const SCOPE_DEADLINE: Duration = Duration::from_secs(30);
 const MAX_PROVIDER_ID_BYTES: usize = 256;
-const MAX_REGISTRY_BYTES: usize = 1024 * 1024;
-const MAX_PROFILE_BYTES: usize = 1024 * 1024;
+pub(crate) const MAX_REGISTRY_BYTES: usize = 1024 * 1024;
+pub(crate) const MAX_PROFILE_BYTES: usize = 1024 * 1024;
 const MAX_REQUEST_BYTES: usize = 1024 * 1024;
 const MAX_EXECUTABLE_BYTES: usize = 512 * 1024 * 1024;
 
@@ -95,6 +95,11 @@ enum ParseOutcome {
 struct RunFailure {
     error: CliError,
     exit_code: i32,
+}
+
+pub(crate) struct ValidatedProviderInstallation {
+    pub(crate) entry: ProviderRegistryEntry,
+    pub(crate) profile: AuthorizedProviderProfile,
 }
 
 pub fn main_entry() -> i32 {
@@ -476,47 +481,10 @@ fn run_provider(arguments: RunArgs) -> Result<String, RunFailure> {
                     "authorized provider profile cannot be loaded",
                 )
             })?;
-    profile.validate().map_err(|_| {
-        authorization_failure(
-            "provider-cli-profile-invalid",
-            "authorized provider profile contract validation failed",
-        )
-    })?;
-    if profile_file_sha256 != entry.profile_sha256 || profile_file_sha256 != profile.sha256() {
-        return Err(authorization_failure(
-            "provider-cli-profile-invalid",
-            "authorized provider profile digest does not match the registry",
-        ));
-    }
-    let profile_path = canonical_regular_file(&entry.profile_path).map_err(|_| {
-        authorization_failure(
-            "provider-cli-profile-invalid",
-            "authorized provider profile path is invalid",
-        )
-    })?;
-    let (executable_path, executable_sha256) =
-        read_file_sha256(&entry.executable_path, MAX_EXECUTABLE_BYTES).map_err(|_| {
-            authorization_failure(
-                "provider-cli-executable-invalid",
-                "authorized provider executable cannot be loaded",
-            )
-        })?;
-    if executable_sha256 != entry.executable_sha256
-        || executable_sha256 != profile.executable_sha256
-    {
-        return Err(authorization_failure(
-            "provider-cli-executable-invalid",
-            "authorized provider executable digest does not match the registry",
-        ));
-    }
-    ensure_executable(&executable_path).map_err(|_| {
-        authorization_failure(
-            "provider-cli-executable-invalid",
-            "authorized provider executable is not executable",
-        )
-    })?;
-    entry.profile_path = profile_path;
-    entry.executable_path = executable_path;
+    let validated = validate_provider_installation(&entry, profile, &profile_file_sha256)
+        .map_err(provider_installation_failure)?;
+    entry = validated.entry;
+    let profile = validated.profile;
 
     validate_entry_bindings(&entry, &profile, &model).map_err(|_| {
         authorization_failure(
@@ -670,6 +638,58 @@ pub fn read_json_once<T: DeserializeOwned>(
     Ok((value, digest))
 }
 
+pub(crate) fn validate_provider_installation(
+    entry: &ProviderRegistryEntry,
+    profile: AuthorizedProviderProfile,
+    profile_file_sha256: &str,
+) -> Result<ValidatedProviderInstallation, CliError> {
+    profile.validate().map_err(|_| {
+        CliError::new(
+            "provider-cli-profile-invalid",
+            "authorized provider profile contract validation failed",
+        )
+    })?;
+    if profile_file_sha256 != entry.profile_sha256 || profile_file_sha256 != profile.sha256() {
+        return Err(CliError::new(
+            "provider-cli-profile-invalid",
+            "authorized provider profile digest does not match the registry",
+        ));
+    }
+    let profile_path = canonical_regular_file(&entry.profile_path).map_err(|_| {
+        CliError::new(
+            "provider-cli-profile-invalid",
+            "authorized provider profile path is invalid",
+        )
+    })?;
+    let (executable_path, executable_sha256) =
+        read_file_sha256(&entry.executable_path, MAX_EXECUTABLE_BYTES).map_err(|_| {
+            CliError::new(
+                "provider-cli-executable-invalid",
+                "authorized provider executable cannot be loaded",
+            )
+        })?;
+    if executable_sha256 != entry.executable_sha256
+        || executable_sha256 != profile.executable_sha256
+    {
+        return Err(CliError::new(
+            "provider-cli-executable-invalid",
+            "authorized provider executable digest does not match the registry",
+        ));
+    }
+    ensure_executable(&executable_path).map_err(|_| {
+        CliError::new(
+            "provider-cli-executable-invalid",
+            "authorized provider executable is not executable",
+        )
+    })?;
+    validate_entry_profile_bindings(entry, &profile)?;
+
+    let mut entry = entry.clone();
+    entry.profile_path = profile_path;
+    entry.executable_path = executable_path;
+    Ok(ValidatedProviderInstallation { entry, profile })
+}
+
 fn build_provider_request(
     scope: &AuthoritativeScope,
     registry: &ProviderRegistry,
@@ -772,6 +792,20 @@ fn validate_entry_bindings(
     profile: &AuthorizedProviderProfile,
     model: &RustAnalyzerProjectModel,
 ) -> Result<(), CliError> {
+    validate_entry_profile_bindings(entry, profile)?;
+    if model.target_triple != profile.target_triple {
+        return Err(CliError::new(
+            "provider-cli-binding-invalid",
+            "registry entry does not match the profile and project model",
+        ));
+    }
+    Ok(())
+}
+
+fn validate_entry_profile_bindings(
+    entry: &ProviderRegistryEntry,
+    profile: &AuthorizedProviderProfile,
+) -> Result<(), CliError> {
     if entry.provider_kind != profile.provider_kind
         || entry.provider_version != profile.provider_version
         || entry.profile_sha256 != profile.sha256()
@@ -779,7 +813,6 @@ fn validate_entry_bindings(
         || entry.configuration_sha256 != profile.configuration_sha256
         || entry.target_triple != profile.target_triple
         || entry.toolchain_mode != profile.toolchain_mode
-        || model.target_triple != profile.target_triple
     {
         return Err(CliError::new(
             "provider-cli-binding-invalid",
@@ -965,6 +998,23 @@ fn provider_failure(error: ProviderError) -> RunFailure {
                 "provider execution failed before a safe report was available",
             )
         }
+    }
+}
+
+fn provider_installation_failure(error: CliError) -> RunFailure {
+    match error.code {
+        "provider-cli-profile-invalid" => authorization_failure(
+            "provider-cli-profile-invalid",
+            "authorized provider profile is invalid",
+        ),
+        "provider-cli-executable-invalid" => authorization_failure(
+            "provider-cli-executable-invalid",
+            "authorized provider executable is invalid",
+        ),
+        _ => authorization_failure(
+            "provider-cli-binding-invalid",
+            "registry, profile, and executable bindings do not match",
+        ),
     }
 }
 

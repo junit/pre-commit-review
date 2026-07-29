@@ -4097,6 +4097,13 @@ fn run_sanitize_stdin() -> Result<(), AppError> {
 }
 
 pub(crate) fn main_entry() -> i32 {
+    let artifact_args = env::args_os().collect::<Vec<_>>();
+    if artifact_args
+        .get(1)
+        .is_some_and(|argument| argument == "artifacts")
+    {
+        return crate::artifacts::cli::main_entry(&artifact_args[2..]);
+    }
     let args = env::args().collect::<Vec<_>>();
     let result = if args.len() == 2 && args[1] == "--sanitize-stdin" {
         run_sanitize_stdin()

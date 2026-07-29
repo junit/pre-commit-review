@@ -92,6 +92,10 @@ When helper output contains `## Secret Scan`:
 - a secret finding is a security signal, not a review-completion condition: do not select or render the final verdict until the normal review scope is complete, and continue enumerating independent authorization, data, compatibility, reliability, and test risks after any credential blocker is found
 - never cap, merge away, or omit an independently actionable finding merely because a secret already makes the verdict blocking; for coverage-accounted reviews, every manifest unit must still reach a terminal coverage state before finalization
 
+### Artifact Diagnostics
+
+Artifact diagnostics are explicit operator actions, never an ordinary review prerequisite. When asked to diagnose an installed payload, resolve `scripts/check_artifacts.sh` relative to the skill package and pass exactly one explicit absolute managed-skill target root. The target-owned `artifacts doctor` invocation must not infer a target from the repository or current directory, download, repair, migrate, or select a replacement.
+
 When structural, text-query, dependency, framework, or test-selection context could materially affect finding verification or verification planning, invoke the control plane command template at `command_templates.impact_context` with the same `scope_fingerprint`. Accept only `impact_context/v1` whose scope fingerprint and source match the authoritative control plane. Preserve `partial`, `failed`, `invalidated`, and `unavailable` status plus every emitted limitation; do not infer missing symbols, edges, or summaries as absent behavior. Impact context never marks a manifest unit reviewed and has no coverage credit.
 
 When the control plane provides a fingerprint-bound Fast repository-index command, the skill may consume its compatible read-only context. Never automatically run `repository-context-cli index build`, `collect --mode deep`, `index doctor`, `index clean`, rust-analyzer, or any other cache-writing operation during ordinary review.

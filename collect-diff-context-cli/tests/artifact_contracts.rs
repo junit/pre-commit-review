@@ -1,9 +1,9 @@
 use collect_diff_context_cli::artifacts::contract::{
     canonical_json, sha256_bytes, ArtifactBaseline, ArtifactFileBinding, ArtifactManifest,
-    ArtifactOperation, ArtifactPackRecord, ArtifactReceipt, ArtifactReport, ArtifactReportStatus,
-    ArtifactRole, ArtifactState, BaselineMeasurement, CorePackManifest, PackFileRecord,
-    PackFileRole, PackFormat, PackManifest, ProbeId, ProbeResult, RevocationEntry, RevocationIndex,
-    SourceAssetRecord, SourceLock,
+    ArtifactOperation, ArtifactPackRecord, ArtifactReceipt, ArtifactReport, ArtifactReportEntry,
+    ArtifactReportStatus, ArtifactRole, ArtifactState, BaselineMeasurement, CorePackManifest,
+    PackFileRecord, PackFileRole, PackFormat, PackManifest, ProbeId, ProbeResult, RevocationEntry,
+    RevocationIndex, SourceAssetRecord, SourceLock,
 };
 use serde_json::Value;
 use std::{fs, path::PathBuf};
@@ -479,6 +479,7 @@ fn report_status_controls_identity_and_error_fields() {
         executable_sha256: Some(digest('2')),
         sbom_sha256: Some(digest('3')),
         lifecycle_state: Some(ArtifactState::Active),
+        artifacts: Vec::new(),
         code: None,
     };
     report.validate().unwrap();
@@ -486,6 +487,35 @@ fn report_status_controls_identity_and_error_fields() {
     let mut invalid = report;
     invalid.status = ArtifactReportStatus::Failed;
     assert_eq!(invalid.validate().unwrap_err().code, "report-failure-code");
+}
+
+#[test]
+fn doctor_report_aggregates_sorted_artifact_results() {
+    let entry = ArtifactReportEntry {
+        artifact_id: "gitleaks".to_string(),
+        platform_id: "linux-amd64".to_string(),
+        pack_version: "8.30.1-pcr.1".to_string(),
+        pack_sha256: digest('1'),
+        executable_sha256: digest('2'),
+        sbom_sha256: digest('3'),
+        lifecycle_state: ArtifactState::Active,
+    };
+    let report = ArtifactReport {
+        schema_version: 1,
+        kind: "third_party_artifact_report".to_string(),
+        operation: ArtifactOperation::Doctor,
+        status: ArtifactReportStatus::Completed,
+        artifact_id: None,
+        platform_id: None,
+        pack_version: None,
+        pack_sha256: None,
+        executable_sha256: None,
+        sbom_sha256: None,
+        lifecycle_state: None,
+        artifacts: vec![entry],
+        code: None,
+    };
+    report.validate().unwrap();
 }
 
 #[test]
