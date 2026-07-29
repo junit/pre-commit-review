@@ -1,10 +1,20 @@
-use serde::Deserialize;
+use crate::artifacts::{
+    cache::{installed_executable_path, read_target_receipt, verify_target_receipt},
+    contract::{
+        canonical_json, sha256_bytes, ArtifactManifest, ArtifactRole, RevocationIndex,
+        MAX_MANIFEST_BYTES, MAX_REVOCATION_BYTES,
+    },
+};
+use crate::impact_context::cache::file_facts::open_regular_file_no_follow;
+use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::BTreeSet;
 use std::env;
 use std::fmt;
 use std::fs::{self, File};
 use std::io::{Read, Write};
+#[cfg(unix)]
+use std::os::unix::fs::PermissionsExt;
 use std::path::{Path, PathBuf};
 use std::process::{Command, ExitStatus, Stdio};
 use std::sync::OnceLock;
@@ -132,6 +142,9 @@ struct Scanner {
 struct ScannerCandidate {
     executable: PathBuf,
     bundled: bool,
+    expected_version: Option<String>,
+    expected_config_sha256: Option<String>,
+    target_owned: bool,
 }
 
 static SCANNER: OnceLock<Result<Scanner, SecretScanError>> = OnceLock::new();
@@ -146,14 +159,37 @@ impl Scanner {
             .ok_or(SecretScanError::ConfigUnavailable)?;
 
         let candidate = scanner_candidate()?;
-        let version_file = trusted_script_file("gitleaks.version")
-            .ok_or(SecretScanError::TrustMetadataUnavailable)?;
+        let version_file = if candidate.expected_version.is_none() {
+            Some(
+                trusted_script_file("gitleaks.version")
+                    .ok_or(SecretScanError::TrustMetadataUnavailable)?,
+            )
+        } else {
+            None
+        };
         if candidate.bundled {
             let manifest = trusted_script_file("gitleaks-binaries.sha256")
                 .ok_or(SecretScanError::TrustMetadataUnavailable)?;
             verify_bundled_hash(&candidate.executable, &manifest)?;
         }
-        verify_version(&candidate.executable, &version_file, timeout)?;
+        if let Some(expected_version) = candidate.expected_version.as_deref() {
+            verify_version_output(&candidate.executable, expected_version, timeout)?;
+        } else {
+            verify_version(
+                &candidate.executable,
+                version_file
+                    .as_deref()
+                    .expect("legacy version file is present"),
+                timeout,
+            )?;
+        }
+        if candidate.target_owned && env::var_os("PRE_COMMIT_REVIEW_GITLEAKS_CONFIG").is_none() {
+            let expected = candidate
+                .expected_config_sha256
+                .as_deref()
+                .ok_or(SecretScanError::ScannerIntegrity)?;
+            verify_file_hash(&config, expected)?;
+        }
 
         let scanner = Self {
             executable: candidate.executable,
@@ -501,8 +537,17 @@ fn scanner_candidate() -> Result<ScannerCandidate, SecretScanError> {
             .then_some(ScannerCandidate {
                 executable,
                 bundled: false,
+                expected_version: None,
+                expected_config_sha256: None,
+                target_owned: false,
             })
             .ok_or(SecretScanError::ScannerUnavailable);
+    }
+
+    for script_dir in script_dir_candidates() {
+        if let Some(candidate) = managed_scanner_candidate(&script_dir)? {
+            return Ok(candidate);
+        }
     }
 
     let binary_name = bundled_binary_name();
@@ -512,11 +557,122 @@ fn scanner_candidate() -> Result<ScannerCandidate, SecretScanError> {
             return Ok(ScannerCandidate {
                 executable,
                 bundled: true,
+                expected_version: None,
+                expected_config_sha256: None,
+                target_owned: false,
             });
         }
     }
 
     Err(SecretScanError::ScannerUnavailable)
+}
+
+fn managed_gitleaks_path(script_dir: &Path, pack_version: &str) -> PathBuf {
+    script_dir
+        .parent()
+        .unwrap_or(script_dir)
+        .join("runtime/third-party/gitleaks")
+        .join(pack_version)
+        .join("bin/gitleaks")
+}
+
+fn managed_scanner_candidate(
+    script_dir: &Path,
+) -> Result<Option<ScannerCandidate>, SecretScanError> {
+    let target_root = match script_dir.parent() {
+        Some(target_root) => target_root,
+        None => return Ok(None),
+    };
+    let distribution = target_root.join("runtime/distribution");
+    let manifest_path = distribution.join("manifest.json");
+    let receipt_path = target_root.join("runtime/artifact-receipts/gitleaks.json");
+    if !manifest_path.exists() && !receipt_path.exists() {
+        return Ok(None);
+    }
+
+    let manifest: ArtifactManifest = read_target_json(&manifest_path, MAX_MANIFEST_BYTES)?;
+    manifest
+        .validate()
+        .map_err(|_| SecretScanError::ScannerIntegrity)?;
+    let revocations_path = distribution.join("revocations.json");
+    let revocation_bytes = read_target_bytes(&revocations_path, MAX_REVOCATION_BYTES)?;
+    let revocations: RevocationIndex =
+        serde_json::from_slice(&revocation_bytes).map_err(|_| SecretScanError::ScannerIntegrity)?;
+    revocations
+        .validate()
+        .map_err(|_| SecretScanError::ScannerIntegrity)?;
+    if canonical_json(&revocations).map_err(|_| SecretScanError::ScannerIntegrity)?
+        != revocation_bytes
+    {
+        return Err(SecretScanError::ScannerIntegrity);
+    }
+    if manifest.revocation_index_sha256 != sha256_bytes(&revocation_bytes) {
+        return Err(SecretScanError::ScannerIntegrity);
+    }
+
+    let receipt = read_target_receipt(target_root, "gitleaks")
+        .map_err(|_| SecretScanError::ScannerIntegrity)?;
+    if revocations
+        .entries
+        .iter()
+        .any(|entry| entry.pack_sha256 == receipt.pack_sha256)
+    {
+        return Err(SecretScanError::ScannerIntegrity);
+    }
+    let record = manifest
+        .select_active("gitleaks", &receipt.platform_id)
+        .map_err(|_| SecretScanError::ScannerIntegrity)?;
+    if record.artifact_role != ArtifactRole::Sanitizer {
+        return Err(SecretScanError::ScannerIntegrity);
+    }
+    verify_target_receipt(target_root, "gitleaks", &manifest)
+        .map_err(|_| SecretScanError::ScannerIntegrity)?;
+    let executable = installed_executable_path(target_root, record)
+        .map_err(|_| SecretScanError::ScannerIntegrity)?;
+    let expected_executable =
+        fs::canonicalize(managed_gitleaks_path(script_dir, &record.pack_version))
+            .map_err(|_| SecretScanError::ScannerIntegrity)?;
+    if executable != expected_executable {
+        return Err(SecretScanError::ScannerIntegrity);
+    }
+    if !has_execute_permission(&executable) {
+        return Err(SecretScanError::ScannerIntegrity);
+    }
+    Ok(Some(ScannerCandidate {
+        executable,
+        bundled: false,
+        expected_version: Some(record.expected_version.clone()),
+        expected_config_sha256: record.default_configuration_sha256.clone(),
+        target_owned: true,
+    }))
+}
+
+fn read_target_bytes(path: &Path, maximum: usize) -> Result<Vec<u8>, SecretScanError> {
+    let mut file =
+        open_regular_file_no_follow(path).map_err(|_| SecretScanError::ScannerIntegrity)?;
+    let size = file
+        .metadata()
+        .map_err(|_| SecretScanError::ScannerIntegrity)?
+        .len();
+    if size > maximum as u64 {
+        return Err(SecretScanError::ScannerIntegrity);
+    }
+    let mut bytes = Vec::with_capacity(size as usize);
+    file.read_to_end(&mut bytes)
+        .map_err(|_| SecretScanError::ScannerIntegrity)?;
+    Ok(bytes)
+}
+
+fn read_target_json<T>(path: &Path, maximum: usize) -> Result<T, SecretScanError>
+where
+    T: DeserializeOwned + Serialize,
+{
+    let bytes = read_target_bytes(path, maximum)?;
+    let value = serde_json::from_slice(&bytes).map_err(|_| SecretScanError::ScannerIntegrity)?;
+    if canonical_json(&value).map_err(|_| SecretScanError::ScannerIntegrity)? != bytes {
+        return Err(SecretScanError::ScannerIntegrity);
+    }
+    Ok(value)
 }
 
 fn trusted_config_path() -> Option<PathBuf> {
@@ -579,6 +735,14 @@ fn verify_version(
 ) -> Result<(), SecretScanError> {
     let expected =
         fs::read_to_string(version_file).map_err(|_| SecretScanError::TrustMetadataUnavailable)?;
+    verify_version_output(executable, &expected, timeout)
+}
+
+fn verify_version_output(
+    executable: &Path,
+    expected: &str,
+    timeout: Duration,
+) -> Result<(), SecretScanError> {
     let (status, stdout) = run_scanner_process(executable, &["version"], None, &[], timeout)
         .map_err(|error| match error {
             SecretScanError::ScannerTimeout => SecretScanError::ScannerTimeout,
@@ -628,6 +792,40 @@ fn verify_bundled_hash(executable: &Path, manifest: &Path) -> Result<(), SecretS
     }
 }
 
+fn verify_file_hash(path: &Path, expected: &str) -> Result<(), SecretScanError> {
+    let mut file =
+        open_regular_file_no_follow(path).map_err(|_| SecretScanError::ScannerIntegrity)?;
+    let mut hasher = Sha256::new();
+    let mut buffer = [0_u8; 64 * 1024];
+    loop {
+        let read = file
+            .read(&mut buffer)
+            .map_err(|_| SecretScanError::ScannerIntegrity)?;
+        if read == 0 {
+            break;
+        }
+        hasher.update(&buffer[..read]);
+    }
+    let actual = format!("{:x}", hasher.finalize());
+    if actual == expected {
+        Ok(())
+    } else {
+        Err(SecretScanError::ScannerIntegrity)
+    }
+}
+
+#[cfg(unix)]
+fn has_execute_permission(path: &Path) -> bool {
+    fs::metadata(path)
+        .map(|metadata| metadata.permissions().mode() & 0o111 != 0)
+        .unwrap_or(false)
+}
+
+#[cfg(not(unix))]
+fn has_execute_permission(path: &Path) -> bool {
+    path.is_file()
+}
+
 fn bundled_binary_name() -> String {
     let os = match env::consts::OS {
         "macos" => "darwin",
@@ -651,6 +849,17 @@ fn bundled_binary_name() -> String {
 mod tests {
     use super::*;
     use std::time::{SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn managed_gitleaks_path_is_target_owned_and_pack_versioned() {
+        let script_dir = Path::new("/managed/pre-commit-review/scripts");
+        assert_eq!(
+            managed_gitleaks_path(script_dir, "8.30.1-pcr.1"),
+            PathBuf::from(
+                "/managed/pre-commit-review/runtime/third-party/gitleaks/8.30.1-pcr.1/bin/gitleaks"
+            )
+        );
+    }
 
     fn finding(
         rule_id: &str,

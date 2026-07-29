@@ -183,6 +183,7 @@ Useful flags:
 - `--dry-run` prints what would happen without changing anything
 - `--no-download` skips the optional Gitleaks download; review remains available without secret redaction
 - `--doctor` diagnoses scanner source, version, bundled SHA256, trusted configuration, and stdin/JSON capability without installing a skill; it exits non-zero when redaction is unavailable but does not imply that review is blocked
+- `--doctor-target /absolute/managed-skill` runs the read-only artifact doctor for an installed target; it never downloads, repairs, or selects a replacement
 
 Examples:
 
@@ -397,7 +398,7 @@ The entrypoint wrapper `scripts/collect_diff_context.sh` supports multiple execu
 - `PRE_COMMIT_REVIEW_SHADOW_DIFF_LOG`: Optional path for writing shadow mismatch diffs. By default, shadow mode does not write diff content to `/tmp`.
 - `PRE_COMMIT_REVIEW_DISABLE_FALLBACK`: If set to `1`, disables the legacy script fallback, strictly propagating Rust CLI process failures.
 - `PRE_COMMIT_REVIEW_SECRET_SCAN`: Controls optional local redaction: `auto` (default) uses a verified scanner when available; `off` skips scanning and continues review unredacted.
-- `PRE_COMMIT_REVIEW_GITLEAKS_BIN`: Explicit trusted absolute scanner path for development, tests, or controlled offline environments. It must match the pinned version and pass the stdin/JSON capability test. Setting it is an explicit trust decision; otherwise only the SHA256-verified bundled binary is accepted, and `PATH` is never searched.
+- `PRE_COMMIT_REVIEW_GITLEAKS_BIN`: Explicit trusted absolute scanner path for development, tests, or controlled offline environments. It must match the pinned version and pass the stdin/JSON capability test. Setting it is an explicit trust decision; otherwise the target-owned artifact (or legacy SHA256-verified bundle) is accepted, and `PATH` is never searched.
 - `PRE_COMMIT_REVIEW_GITLEAKS_CONFIG`: Explicit trusted scanner config path for development/tests. Do not point this at configuration from the repository being reviewed.
 - `PRE_COMMIT_REVIEW_GITLEAKS_TIMEOUT_MS`: Per-process Gitleaks deadline in milliseconds. The default is `30000`; accepted overrides are `50` through `120000`. A timeout kills and reaps the scanner, reports `scanner-timeout`, and continues review without redaction.
 - `PRE_COMMIT_REVIEW_FETCH_PROGRESS`: Controls Gitleaks download progress: `auto` (default), `always`, or `never`.

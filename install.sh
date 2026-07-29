@@ -10,6 +10,7 @@ force='no'
 dry_run='no'
 download_gitleaks='yes'
 doctor='no'
+doctor_target=''
 host=''
 skills_dir=''
 install_scope='global'
@@ -29,6 +30,7 @@ Usage:
   ./install.sh <agent> [--copy|--link] [--project|--dir PATH] [--force] [--dry-run] [--no-download]
   ./install.sh --agent AGENT [--copy|--link] [--project|--dir PATH] [--force] [--dry-run] [--no-download]
   ./install.sh --doctor
+  ./install.sh --doctor-target /absolute/managed-skill
 
 Options:
   --agent NAME  Agent id to install for
@@ -41,6 +43,8 @@ Options:
   --no-download
                Skip optional Gitleaks download; review remains available without secret redaction
   --doctor     Verify Gitleaks source, version, integrity, configuration, and stdin/JSON capability
+  --doctor-target PATH
+               Run read-only artifact doctor against one absolute managed target
   --list-agents
                List supported agent ids and default paths
   --help       Show this help text
@@ -428,6 +432,18 @@ provision_gitleaks() {
   local binary_name="$3"
   local bundled_path="$runtime_root/scripts/bin/$binary_name"
 
+  if [ "$dry_run" = 'no' ] && [ "$download_gitleaks" = 'yes' ]; then
+    local artifact_status=0
+    gitleaks_artifact_provision "$runtime_root" "$platform" || artifact_status=$?
+    if [ "$artifact_status" -eq 0 ]; then
+      log "Gitleaks: provisioned target-owned artifact for $platform"
+      return 0
+    elif [ "$artifact_status" -eq 2 ]; then
+      log "Warning: target-owned Gitleaks artifact was rejected; review will continue without secret redaction"
+      return 0
+    fi
+  fi
+
   if [ "$dry_run" = 'yes' ] && [ "$download_gitleaks" = 'yes' ]; then
     if [ -x "$bundled_path" ]; then
       log "DRY RUN validate bundled $binary_name and replace it if version, integrity, or capability checks fail"
@@ -508,10 +524,14 @@ copy_payload() {
   cp -R "$source_dir/references" "$staging_dir/"
   cp -R "$source_dir/scripts" "$staging_dir/"
   mkdir -p "$staging_dir/docs"
-  cp "$source_dir/docs/rust-analyzer-context-provider.md" \
-    "$source_dir/docs/helper-capabilities.md" \
-    "$source_dir/docs/call-graph-open-source-options.md" \
-    "$staging_dir/docs/"
+  for documentation in \
+    rust-analyzer-context-provider.md \
+    helper-capabilities.md \
+    call-graph-open-source-options.md; do
+    if [ -f "$source_dir/docs/$documentation" ]; then
+      cp "$source_dir/docs/$documentation" "$staging_dir/docs/"
+    fi
+  done
   mkdir -p "$staging_dir/collect-diff-context-cli"
   cp -R "$source_dir/collect-diff-context-cli/schemas" "$staging_dir/collect-diff-context-cli/"
   if [ -d "$source_dir/THIRD_PARTY_LICENSES" ]; then
@@ -586,6 +606,12 @@ while [ "$#" -gt 0 ]; do
     --doctor)
       doctor='yes'
       ;;
+    --doctor-target)
+      shift
+      [ "$#" -gt 0 ] || die "--doctor-target requires an absolute target path"
+      [ -z "$doctor_target" ] || die "--doctor-target specified more than once"
+      doctor_target="$1"
+      ;;
     --list-agents)
       list_agents
       exit 0
@@ -610,7 +636,17 @@ source "$source_dir/scripts/lib/gitleaks_integrity.sh"
 
 if [ "$doctor" = 'yes' ]; then
   [ -z "$host" ] || die '--doctor does not accept an agent argument'
+  [ -z "$doctor_target" ] || die '--doctor and --doctor-target are mutually exclusive'
   exec "$source_dir/scripts/check_gitleaks.sh"
+fi
+
+if [ -n "$doctor_target" ]; then
+  [ -z "$host" ] || die '--doctor-target does not accept an agent argument'
+  gitleaks_path_is_absolute "$doctor_target" \
+    || die '--doctor-target requires an absolute target path'
+  manager="$(gitleaks_artifact_manager "$source_dir" "$(resolve_gitleaks_platform)" 2>/dev/null || true)"
+  [ -n "$manager" ] || die 'artifact manager is unavailable'
+  exec "$manager" artifacts doctor --target-root "$doctor_target"
 fi
 
 [ -n "$host" ] || {

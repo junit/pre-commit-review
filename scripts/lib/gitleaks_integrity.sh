@@ -7,6 +7,65 @@ gitleaks_path_is_absolute() {
   esac
 }
 
+gitleaks_artifact_platform_binary() {
+  local platform="$1"
+  case "$platform" in
+    darwin-arm64|darwin-amd64|linux-amd64)
+      printf '%s\n' "collect_diff_context-${platform}"
+      ;;
+    windows-amd64)
+      printf '%s\n' "collect_diff_context-${platform}.exe"
+      ;;
+    *)
+      return 1
+      ;;
+  esac
+}
+
+gitleaks_artifact_manager() {
+  local runtime_root="$1"
+  local platform="$2"
+  local binary_name
+  binary_name="$(gitleaks_artifact_platform_binary "$platform")" || return 1
+  local candidate="$runtime_root/scripts/bin/$binary_name"
+  [ -x "$candidate" ] || return 1
+  printf '%s\n' "$candidate"
+}
+
+gitleaks_artifact_manifest() {
+  local runtime_root="$1"
+  local candidate="$runtime_root/runtime/distribution/manifest.json"
+  [ -f "$candidate" ] || return 1
+  printf '%s\n' "$candidate"
+}
+
+# Return 0 when the target-owned manager provisions Gitleaks, 1 when no
+# manager/manifest is present, and 2 when a selected manager rejects the pack.
+gitleaks_artifact_provision() {
+  local runtime_root="$1"
+  local platform="$2"
+  local manager
+  local manifest
+  manager="$(gitleaks_artifact_manager "$runtime_root" "$platform" 2>/dev/null)" || return 1
+  manifest="$(gitleaks_artifact_manifest "$runtime_root" 2>/dev/null)" || return 1
+  [ -d "$runtime_root" ] || return 1
+
+  local report
+  if report="$(
+    PRE_COMMIT_REVIEW_FETCH_PROGRESS="${PRE_COMMIT_REVIEW_FETCH_PROGRESS:-auto}" \
+      "$manager" artifacts provision \
+        --manifest "$manifest" \
+        --artifact-id gitleaks \
+        --platform-id "$platform" \
+        --target-root "$runtime_root" 2>&1
+  )"; then
+    printf '%s\n' "$report" >&2
+    return 0
+  fi
+  printf '%s\n' "$report" >&2
+  return 2
+}
+
 gitleaks_sha256_file() {
   local file="$1"
   if command -v sha256sum >/dev/null 2>&1; then
