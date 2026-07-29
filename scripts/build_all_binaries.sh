@@ -115,6 +115,10 @@ fi
 
 smoke_host_repository_context
 
+if [ -x "${SCRIPT_DIR}/build_artifact_pack.sh" ]; then
+  "${SCRIPT_DIR}/build_artifact_pack.sh" --help >/dev/null
+fi
+
 echo "Fetching pinned Gitleaks release binaries..."
 "${SCRIPT_DIR}/fetch_gitleaks.sh" --all --dest "${BIN_DIR}"
 
