@@ -1,6 +1,7 @@
 pub mod cli_contract;
 pub mod contract;
 pub mod json_rpc;
+pub mod model;
 pub mod rust_analyzer;
 pub mod session;
 pub mod snapshot;
