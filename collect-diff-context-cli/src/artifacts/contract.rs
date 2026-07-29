@@ -23,7 +23,7 @@ pub struct ArtifactError {
 }
 
 impl ArtifactError {
-    fn new(code: &'static str, message: impl Into<String>) -> Self {
+    pub(crate) fn new(code: &'static str, message: impl Into<String>) -> Self {
         Self {
             code,
             message: message.into(),
@@ -148,7 +148,7 @@ pub struct ArtifactPackRecord {
 }
 
 impl ArtifactPackRecord {
-    fn validate(&self) -> Result<(), ArtifactError> {
+    pub(crate) fn validate(&self) -> Result<(), ArtifactError> {
         validate_identifier(&self.artifact_id)?;
         validate_text(&self.tool_version)?;
         validate_repository(&self.upstream_repository)?;
