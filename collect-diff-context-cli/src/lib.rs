@@ -1,4 +1,5 @@
 mod app;
+pub mod artifacts;
 pub mod candidate;
 mod git_policy;
 pub mod impact_context;

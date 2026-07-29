@@ -1,0 +1,62 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "third-party-artifact-report.schema.json",
+  "title": "ThirdPartyArtifactReport",
+  "type": "object",
+  "required": [
+    "schema_version", "kind", "operation", "status", "artifact_id", "platform_id", "pack_version",
+    "pack_sha256", "executable_sha256", "sbom_sha256", "lifecycle_state", "code"
+  ],
+  "properties": {
+    "schema_version": { "type": "integer", "const": 1 },
+    "kind": { "type": "string", "const": "third_party_artifact_report" },
+    "operation": { "type": "string", "enum": ["doctor", "provision", "verify"] },
+    "status": { "type": "string", "enum": ["completed", "failed"] },
+    "artifact_id": {
+      "anyOf": [{ "$ref": "third-party-artifacts.schema.json#/$defs/identifier" }, { "type": "null" }]
+    },
+    "platform_id": {
+      "anyOf": [{ "$ref": "third-party-artifacts.schema.json#/$defs/platformId" }, { "type": "null" }]
+    },
+    "pack_version": {
+      "anyOf": [{ "$ref": "third-party-artifacts.schema.json#/$defs/text" }, { "type": "null" }]
+    },
+    "pack_sha256": {
+      "anyOf": [{ "$ref": "third-party-artifacts.schema.json#/$defs/sha256" }, { "type": "null" }]
+    },
+    "executable_sha256": {
+      "anyOf": [{ "$ref": "third-party-artifacts.schema.json#/$defs/sha256" }, { "type": "null" }]
+    },
+    "sbom_sha256": {
+      "anyOf": [{ "$ref": "third-party-artifacts.schema.json#/$defs/sha256" }, { "type": "null" }]
+    },
+    "lifecycle_state": {
+      "anyOf": [{ "$ref": "third-party-artifacts.schema.json#/$defs/artifactState" }, { "type": "null" }]
+    },
+    "code": {
+      "anyOf": [{ "$ref": "third-party-artifacts.schema.json#/$defs/errorCode" }, { "type": "null" }]
+    }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "status": { "const": "completed" } } },
+      "then": {
+        "properties": {
+          "artifact_id": { "$ref": "third-party-artifacts.schema.json#/$defs/identifier" },
+          "platform_id": { "$ref": "third-party-artifacts.schema.json#/$defs/platformId" },
+          "pack_version": { "$ref": "third-party-artifacts.schema.json#/$defs/text" },
+          "pack_sha256": { "$ref": "third-party-artifacts.schema.json#/$defs/sha256" },
+          "executable_sha256": { "$ref": "third-party-artifacts.schema.json#/$defs/sha256" },
+          "sbom_sha256": { "$ref": "third-party-artifacts.schema.json#/$defs/sha256" },
+          "lifecycle_state": { "$ref": "third-party-artifacts.schema.json#/$defs/artifactState" },
+          "code": { "type": "null" }
+        }
+      }
+    },
+    {
+      "if": { "properties": { "status": { "const": "failed" } } },
+      "then": { "properties": { "code": { "$ref": "third-party-artifacts.schema.json#/$defs/errorCode" } } }
+    }
+  ],
+  "additionalProperties": false
+}

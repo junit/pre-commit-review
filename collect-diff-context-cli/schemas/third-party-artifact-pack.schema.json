@@ -1,0 +1,62 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "third-party-artifact-pack.schema.json",
+  "title": "ThirdPartyArtifactPack",
+  "type": "object",
+  "required": [
+    "schema_version", "kind", "artifact_id", "tool_version", "pack_version", "platform_id",
+    "target_triple", "upstream_asset_name", "upstream_asset_sha256", "source_lock_sha256",
+    "project_asset_name", "files"
+  ],
+  "properties": {
+    "schema_version": { "type": "integer", "const": 1 },
+    "kind": { "type": "string", "const": "third_party_artifact_pack" },
+    "artifact_id": { "$ref": "third-party-artifacts.schema.json#/$defs/identifier" },
+    "tool_version": { "$ref": "third-party-artifacts.schema.json#/$defs/text" },
+    "pack_version": { "$ref": "third-party-artifacts.schema.json#/$defs/text" },
+    "platform_id": { "$ref": "third-party-artifacts.schema.json#/$defs/platformId" },
+    "target_triple": { "$ref": "third-party-artifacts.schema.json#/$defs/targetTriple" },
+    "upstream_asset_name": { "$ref": "third-party-artifacts.schema.json#/$defs/filename" },
+    "upstream_asset_sha256": { "$ref": "third-party-artifacts.schema.json#/$defs/sha256" },
+    "source_lock_sha256": { "$ref": "third-party-artifacts.schema.json#/$defs/sha256" },
+    "project_asset_name": { "$ref": "third-party-artifacts.schema.json#/$defs/filename" },
+    "files": {
+      "type": "array",
+      "minItems": 3,
+      "maxItems": 127,
+      "items": { "$ref": "#/$defs/packFile" }
+    }
+  },
+  "allOf": [
+    {
+      "if": { "properties": { "platform_id": { "const": "darwin-amd64" } } },
+      "then": { "properties": { "target_triple": { "const": "x86_64-apple-darwin" } } }
+    },
+    {
+      "if": { "properties": { "platform_id": { "const": "darwin-arm64" } } },
+      "then": { "properties": { "target_triple": { "const": "aarch64-apple-darwin" } } }
+    },
+    {
+      "if": { "properties": { "platform_id": { "const": "linux-amd64" } } },
+      "then": { "properties": { "target_triple": { "const": "x86_64-unknown-linux-musl" } } }
+    },
+    {
+      "if": { "properties": { "platform_id": { "const": "windows-amd64" } } },
+      "then": { "properties": { "target_triple": { "const": "x86_64-pc-windows-msvc" } } }
+    }
+  ],
+  "$defs": {
+    "packFile": {
+      "type": "object",
+      "required": ["path", "size", "sha256", "role"],
+      "properties": {
+        "path": { "$ref": "third-party-artifacts.schema.json#/$defs/relativePath" },
+        "size": { "type": "integer", "minimum": 1, "maximum": 2147483648 },
+        "sha256": { "$ref": "third-party-artifacts.schema.json#/$defs/sha256" },
+        "role": { "type": "string", "enum": ["executable", "license", "sbom"] }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

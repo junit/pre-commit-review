@@ -89,6 +89,61 @@ def load_schema_bundle(schema_dir):
             resources.append((schema['$id'], Resource.from_contents(schema)))
     return schemas, Registry().with_resources(resources)
 
+
+def _load_canonical_json(path):
+    raw = path.read_bytes()
+    if raw.endswith(b'\n'):
+        raise ValueError(f'{path} must not contain a trailing newline')
+    payload = json.loads(raw)
+    canonical = json.dumps(
+        payload,
+        ensure_ascii=False,
+        separators=(',', ':'),
+    ).encode('utf-8')
+    if raw != canonical:
+        raise ValueError(f'{path} must contain compact canonical JSON bytes')
+    return payload, raw
+
+
+def validate_canonical_artifact_metadata(skill_root, schemas, schema_registry):
+    artifact_root = skill_root / 'third_party_artifacts'
+    if not artifact_root.exists():
+        return
+    inputs = (
+        ('manifest.json', 'third-party-artifacts.schema.json'),
+        ('revocations.json', 'third-party-artifact-revocations.schema.json'),
+        ('sources/gitleaks-8.30.1.json', 'third-party-source-lock.schema.json'),
+    )
+    loaded = {}
+    for relative_path, schema_name in inputs:
+        path = artifact_root / relative_path
+        payload, raw = _load_canonical_json(path)
+        jsonschema.Draft202012Validator(
+            schemas[schema_name],
+            registry=schema_registry,
+        ).validate(payload)
+        loaded[relative_path] = (payload, raw)
+        print(f'  ✅ {path}: valid canonical artifact metadata')
+
+    manifest = loaded['manifest.json'][0]
+    revocation_bytes = loaded['revocations.json'][1]
+    expected_revocation_sha256 = hashlib.sha256(revocation_bytes).hexdigest()
+    if manifest['revocation_index_sha256'] != expected_revocation_sha256:
+        raise ValueError('artifact manifest does not bind the canonical revocation index')
+    if 'github.com/' in loaded['manifest.json'][1].decode('utf-8'):
+        raise ValueError('installer-facing artifact manifest exposes an upstream URL')
+
+    source_lock = loaded['sources/gitleaks-8.30.1.json'][0]
+    platforms = [asset['platform_id'] for asset in source_lock['assets']]
+    expected_platforms = [
+        'darwin-amd64',
+        'darwin-arm64',
+        'linux-amd64',
+        'windows-amd64',
+    ]
+    if platforms != expected_platforms:
+        raise ValueError('Gitleaks source-lock assets must cover the sorted platform set')
+
 def validate_control_plane_invariants(payload):
     if not payload.get('authoritative'):
         return
@@ -709,6 +764,13 @@ def main():
         sys.exit(1)
     print(f'All {len(schema_files)} schemas validated.')
     schemas, schema_registry = load_schema_bundle(schema_dir)
+    try:
+        validate_canonical_artifact_metadata(skill_root, schemas, schema_registry)
+    except Exception as exc:
+        print(f'  ❌ canonical artifact metadata: {exc}', file=sys.stderr)
+        errors += 1
+    if errors:
+        sys.exit(1)
     if args.control_plane_output:
         schema = json.loads((schema_dir / 'review-control-plane.schema.json').read_text())
         validator = jsonschema.Draft202012Validator(schema)
