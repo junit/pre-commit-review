@@ -8,6 +8,8 @@
 
 **Tech Stack:** Rust 2021 library from Delivery A, serde/serde_json, sha2, tempfile, Bash compatibility wrapper, Git integration fixtures, JSON Schema draft 2020-12, existing Python development validator.
 
+**Status:** Complete. Tasks 1-10 are implemented and the Delivery B release-readiness gates are recorded in the repository history.
+
 ---
 
 ## Prerequisite And Scope
@@ -70,17 +72,17 @@ Remaining profiles stopped by a snapshot-integrity failure are represented expli
 - Test: `collect-diff-context-cli/tests/static_orchestration.rs`
 - Test: `tests/static_analysis_orchestration_test.sh`
 
-- [ ] **Step 1: Write failing strict-contract tests**
+- [x] **Step 1: Write failing strict-contract tests**
 
 Cover valid manifest/artifact examples and reject unknown fields, relative paths, uppercase/short hashes, zero or more than 16 profiles, duplicate `profile_id`, duplicate path/hash pairs, out-of-range budgets, invalid run unions, and inconsistent overall status. Include a valid `failed` artifact where the first analyzer mutates the snapshot, every later profile is not run, and the combined v1 evidence contains zero reports and zero findings.
 
-- [ ] **Step 2: Run and verify red**
+- [x] **Step 2: Run and verify red**
 
 Run: `rtk cargo test --manifest-path collect-diff-context-cli/Cargo.toml --test static_orchestration contracts`
 
 Expected: FAIL because orchestration contract types do not exist.
 
-- [ ] **Step 3: Add the two strict JSON schemas**
+- [x] **Step 3: Add the two strict JSON schemas**
 
 The manifest requires exactly:
 
@@ -106,7 +108,7 @@ The orchestration artifact contains authoritative scope, manifest identity, snap
 
 Relax only the lower bounds of `static-analysis-evidence.schema.json` so orchestration can emit a reducer-compatible empty evidence object after a first-run snapshot invalidation: `reports.minItems` becomes `0` and `counts.reports.minimum` becomes `0`. Standalone `collect` still requires at least one `--result`, so its behavior does not change. Add semantic tests proving empty evidence is accepted only as the companion to an orchestration with no executed run evidence.
 
-- [ ] **Step 4: Add typed Rust contracts**
+- [x] **Step 4: Add typed Rust contracts**
 
 ```rust
 #[derive(Debug, Clone, Deserialize)]
@@ -169,7 +171,7 @@ pub struct BudgetRecord {
 }
 ```
 
-- [ ] **Step 5: Make schema and contract tests green**
+- [x] **Step 5: Make schema and contract tests green**
 
 Run: `rtk cargo test --manifest-path collect-diff-context-cli/Cargo.toml --test static_orchestration contracts`
 
@@ -177,7 +179,7 @@ Run: `rtk python3 scripts/validate_schemas.py`
 
 Expected: both PASS.
 
-- [ ] **Step 6: Commit contracts**
+- [x] **Step 6: Commit contracts**
 
 ```bash
 rtk git add collect-diff-context-cli/schemas/static-analysis-orchestration-manifest.schema.json collect-diff-context-cli/schemas/static-analysis-orchestration.schema.json collect-diff-context-cli/schemas/static-analysis-evidence.schema.json collect-diff-context-cli/src/static_analysis/contracts.rs collect-diff-context-cli/tests/static_orchestration.rs scripts/validate_schemas.py tests/static_analysis_orchestration_test.sh
@@ -192,17 +194,17 @@ rtk git commit -m "feat: define static analysis orchestration contracts"
 - Modify: `collect-diff-context-cli/src/static_analysis/executor.rs`
 - Test: `collect-diff-context-cli/tests/static_orchestration.rs`
 
-- [ ] **Step 1: Add failing preflight tests**
+- [x] **Step 1: Add failing preflight tests**
 
 Assert no analyzer marker is created when the manifest hash, any profile hash, profile schema, executable hash, duplicate profile reference, repository-configuration authorization, or manifest limit fails.
 
-- [ ] **Step 2: Run and verify red**
+- [x] **Step 2: Run and verify red**
 
 Run: `rtk cargo test --manifest-path collect-diff-context-cli/Cargo.toml --test static_orchestration preflight`
 
 Expected: FAIL because `prepare_orchestration` is missing.
 
-- [ ] **Step 3: Implement byte-bound manifest loading**
+- [x] **Step 3: Implement byte-bound manifest loading**
 
 ```rust
 pub struct OrchestrationRequest {
@@ -229,7 +231,7 @@ pub fn prepare_orchestration(
 
 Read and hash the exact manifest bytes once, validate all profile refs in order, call Delivery A's `prepare_profile` for every profile, and finish all authorization before opening a snapshot or executing any process. Record only entrypoint authorization; do not claim undeclared dependency closure.
 
-- [ ] **Step 4: Add final authorization revalidation**
+- [x] **Step 4: Add final authorization revalidation**
 
 ```rust
 impl PreparedOrchestration {
@@ -239,13 +241,13 @@ impl PreparedOrchestration {
 
 Rehash manifest, every profile, and every entrypoint executable before artifact release. Any mismatch returns an error and releases no authoritative orchestration/evidence output.
 
-- [ ] **Step 5: Make preflight tests green**
+- [x] **Step 5: Make preflight tests green**
 
 Run: `rtk cargo test --manifest-path collect-diff-context-cli/Cargo.toml --test static_orchestration preflight`
 
 Expected: PASS and no marker from rejected manifests.
 
-- [ ] **Step 6: Commit preflight**
+- [x] **Step 6: Commit preflight**
 
 ```bash
 rtk git add collect-diff-context-cli/src/static_analysis/mod.rs collect-diff-context-cli/src/static_analysis/orchestration.rs collect-diff-context-cli/src/static_analysis/executor.rs collect-diff-context-cli/tests/static_orchestration.rs
@@ -260,17 +262,17 @@ rtk git commit -m "feat: preflight analyzer manifests"
 - Modify: `collect-diff-context-cli/src/static_analysis/orchestration.rs`
 - Test: `collect-diff-context-cli/tests/static_orchestration.rs`
 
-- [ ] **Step 1: Add a failing shared-snapshot identity test**
+- [x] **Step 1: Add a failing shared-snapshot identity test**
 
 Use two fixture analyzers that print `PRE_COMMIT_REVIEW_SCOPE_FINGERPRINT` and inspect the same files. Assert both accepted executions record the same snapshot SHA/files/bytes and the snapshot is built only once.
 
-- [ ] **Step 2: Run and verify red**
+- [x] **Step 2: Run and verify red**
 
 Run: `rtk cargo test --manifest-path collect-diff-context-cli/Cargo.toml --test static_orchestration shared_snapshot`
 
 Expected: FAIL because orchestration cannot execute prepared profiles.
 
-- [ ] **Step 3: Calculate effective snapshot limits once**
+- [x] **Step 3: Calculate effective snapshot limits once**
 
 ```rust
 fn effective_snapshot_limits(prepared: &PreparedOrchestration) -> SnapshotLimits {
@@ -289,17 +291,17 @@ fn effective_snapshot_limits(prepared: &PreparedOrchestration) -> SnapshotLimits
 
 Open the authoritative scope, record repository state, materialize one `CandidateSnapshot`, and pass `&CandidateSnapshot` into every `execute_prepared` call.
 
-- [ ] **Step 4: Verify snapshot integrity around every tool**
+- [x] **Step 4: Verify snapshot integrity around every tool**
 
 Call `verify_unchanged()` before and after each analyzer. A pre-run mismatch invalidates the profile that was about to start; a post-run mismatch invalidates the profile that just ran. In both cases emit no authoritative execution/evidence for that profile, stop scheduling, and mark every later profile `not-run/shared-integrity-failure`.
 
-- [ ] **Step 5: Make the shared-snapshot test green**
+- [x] **Step 5: Make the shared-snapshot test green**
 
 Run: `rtk cargo test --manifest-path collect-diff-context-cli/Cargo.toml --test static_orchestration shared_snapshot`
 
 Expected: PASS.
 
-- [ ] **Step 6: Commit shared snapshot reuse**
+- [x] **Step 6: Commit shared snapshot reuse**
 
 ```bash
 rtk git add collect-diff-context-cli/src/static_analysis/snapshot.rs collect-diff-context-cli/src/static_analysis/executor.rs collect-diff-context-cli/src/static_analysis/orchestration.rs collect-diff-context-cli/tests/static_orchestration.rs
@@ -313,17 +315,17 @@ rtk git commit -m "feat: share one analyzer snapshot"
 - Modify: `collect-diff-context-cli/src/static_analysis/executor.rs`
 - Test: `collect-diff-context-cli/tests/static_orchestration.rs`
 
-- [ ] **Step 1: Add failing time and output budget tests**
+- [x] **Step 1: Add failing time and output budget tests**
 
 Use a deterministic test clock and fixture analyzers with known output sizes. Cover effective per-tool timeout, cumulative consumption, exact remaining values for time/output/findings/snapshot files/snapshot bytes, output overflow, and remaining tools marked `not-run/budget-exhausted`.
 
-- [ ] **Step 2: Run and verify red**
+- [x] **Step 2: Run and verify red**
 
 Run: `rtk cargo test --manifest-path collect-diff-context-cli/Cargo.toml --test static_orchestration budgets`
 
 Expected: FAIL because no budget ledger exists.
 
-- [ ] **Step 3: Implement the private ledger and clock seam**
+- [x] **Step 3: Implement the private ledger and clock seam**
 
 ```rust
 struct BudgetLedger {
@@ -376,13 +378,13 @@ pub(crate) fn execute_prepared_with_clock(
 
 `execute_prepared` delegates to this function with `SystemClock`; tests pass a sequence clock so timeout and consumed-duration assertions contain no wall-clock tolerance.
 
-- [ ] **Step 4: Make budget tests green**
+- [x] **Step 4: Make budget tests green**
 
 Run: `rtk cargo test --manifest-path collect-diff-context-cli/Cargo.toml --test static_orchestration budgets`
 
 Expected: PASS.
 
-- [ ] **Step 5: Commit budget accounting**
+- [x] **Step 5: Commit budget accounting**
 
 ```bash
 rtk git add collect-diff-context-cli/src/static_analysis/orchestration.rs collect-diff-context-cli/src/static_analysis/executor.rs collect-diff-context-cli/tests/static_orchestration.rs
@@ -395,17 +397,17 @@ rtk git commit -m "feat: enforce orchestration budgets"
 - Modify: `collect-diff-context-cli/src/static_analysis/orchestration.rs`
 - Test: `collect-diff-context-cli/tests/static_orchestration.rs`
 
-- [ ] **Step 1: Add failing scheduler tests**
+- [x] **Step 1: Add failing scheduler tests**
 
 Cover strict manifest order, continue-after-non-success/timeout/output-limit/invalid-output, stop-after-snapshot-mutation, all accepted=`completed`, mixed accepted/unavailable=`partial`, none accepted=`failed`, and no artifact on final manifest/profile/executable/repository/scope drift.
 
-- [ ] **Step 2: Run and verify red**
+- [x] **Step 2: Run and verify red**
 
 Run: `rtk cargo test --manifest-path collect-diff-context-cli/Cargo.toml --test static_orchestration scheduler`
 
 Expected: FAIL because `execute` is incomplete.
 
-- [ ] **Step 3: Implement the deep module interface**
+- [x] **Step 3: Implement the deep module interface**
 
 ```rust
 pub struct OrchestrationOutput {
@@ -420,17 +422,17 @@ pub fn execute(
 
 For tool-local failures, keep linked failed/timeout evidence and continue. For snapshot mutation, discard the current execution/evidence, emit `invalidated/snapshot-mutated`, stop, and mark later profiles not run. Before returning, revalidate scope, repository state, manifest, profiles, and entrypoints.
 
-- [ ] **Step 4: Compute deterministic ids**
+- [x] **Step 4: Compute deterministic ids**
 
 Use NUL-separated SHA256 material. `manifest_id` is the first 16 hex chars of the manifest SHA256; `orchestration_id` hashes scope fingerprint, manifest SHA256, snapshot SHA256, and ordered terminal tuples of manifest `profile_id`, terminal run kind/reason, and execution id or the empty string when no execution exists.
 
-- [ ] **Step 5: Make scheduler tests green**
+- [x] **Step 5: Make scheduler tests green**
 
 Run: `rtk cargo test --manifest-path collect-diff-context-cli/Cargo.toml --test static_orchestration scheduler`
 
 Expected: PASS.
 
-- [ ] **Step 6: Commit scheduling**
+- [x] **Step 6: Commit scheduling**
 
 ```bash
 rtk git add collect-diff-context-cli/src/static_analysis/orchestration.rs collect-diff-context-cli/tests/static_orchestration.rs
@@ -445,17 +447,17 @@ rtk git commit -m "feat: schedule analyzers serially"
 - Modify: `collect-diff-context-cli/src/static_analysis/orchestration.rs`
 - Test: `collect-diff-context-cli/tests/static_orchestration.rs`
 
-- [ ] **Step 1: Add failing provenance and duplicate tests**
+- [x] **Step 1: Add failing provenance and duplicate tests**
 
 Use two tools that report the same path, line, message, and severity. Assert two findings remain, manifest order is stable, ids are unique even when raw report ids collide, counts sum correctly, and truncation occurs only after union.
 
-- [ ] **Step 2: Run and verify red**
+- [x] **Step 2: Run and verify red**
 
 Run: `rtk cargo test --manifest-path collect-diff-context-cli/Cargo.toml --test static_orchestration evidence_union`
 
 Expected: FAIL because `union_evidence` is missing.
 
-- [ ] **Step 3: Implement technical id namespacing**
+- [x] **Step 3: Implement technical id namespacing**
 
 ```rust
 pub fn union_evidence(
@@ -472,17 +474,17 @@ pub struct EvidenceRun {
 
 Pass every authoritative `executed` run, including failed, timeout, output-limit, and invalid-output executions; only snapshot-invalidated and not-run entries have no `EvidenceRun`. For each run, derive `combined_report_id = compact_hash("orchestration-report-v1", execution_id, source_report_id)` and `combined_finding_id = compact_hash("orchestration-finding-v1", execution_id, source_finding_id)`. Rewrite the orchestration copy of `execution.evidence.report_ids`, report ids, finding ids, and finding report-id links consistently. Do not compare message, path, line, rule, CWE, category, severity, or confidence for grouping.
 
-- [ ] **Step 4: Aggregate counts and truncation honestly**
+- [x] **Step 4: Aggregate counts and truncation honestly**
 
 Sum report/input/deduplicated/mapped/disposition counts from every source evidence. Preserve `truncated: true` if any source was truncated or the combined independent finding list exceeds the manifest limit. Order reports and findings by manifest profile order, then their source deterministic order. Record findings budget consumption as `min(total_independent_findings, max_findings)` and remaining as the saturating difference; truncation does not erase the full counts.
 
-- [ ] **Step 5: Make evidence-union tests green**
+- [x] **Step 5: Make evidence-union tests green**
 
 Run: `rtk cargo test --manifest-path collect-diff-context-cli/Cargo.toml --test static_orchestration evidence_union`
 
 Expected: PASS with two independent duplicate findings.
 
-- [ ] **Step 6: Commit evidence union**
+- [x] **Step 6: Commit evidence union**
 
 ```bash
 rtk git add collect-diff-context-cli/src/static_analysis/evidence_union.rs collect-diff-context-cli/src/static_analysis/mod.rs collect-diff-context-cli/src/static_analysis/orchestration.rs collect-diff-context-cli/tests/static_orchestration.rs
@@ -498,17 +500,17 @@ rtk git commit -m "feat: union analyzer evidence independently"
 - Modify: `scripts/lib/static_analysis_cli.sh`
 - Test: `tests/static_analysis_orchestration_test.sh`
 
-- [ ] **Step 1: Add a failing public CLI integration test**
+- [x] **Step 1: Add a failing public CLI integration test**
 
 Invoke the Shell wrapper with `--source`, `--expect-scope`, `--manifest`, `--expect-manifest-sha256`, and optional `--allow-repository-configuration`; validate both JSON sections and sanitizer behavior.
 
-- [ ] **Step 2: Run and verify red**
+- [x] **Step 2: Run and verify red**
 
 Run: `rtk bash tests/static_analysis_orchestration_test.sh`
 
 Expected: FAIL because the wrapper and CLI subcommand do not exist.
 
-- [ ] **Step 3: Render the two-section output**
+- [x] **Step 3: Render the two-section output**
 
 ```rust
 pub fn render_orchestration(output: &OrchestrationOutput) -> Result<String, serde_json::Error> {
@@ -522,17 +524,17 @@ pub fn render_orchestration(output: &OrchestrationOutput) -> Result<String, serd
 
 Wire `static-analysis-cli orchestrate`. Use error prefix `orchestrate_static_analysis:` and exit `2` for authorization, contract, scope, or integrity failures that release no artifact.
 
-- [ ] **Step 4: Reuse wrapper binary resolution and sanitizer**
+- [x] **Step 4: Reuse wrapper binary resolution and sanitizer**
 
 The new wrapper calls `"$static_bin" orchestrate "$@"`, uses stream name `controlled-static-analysis-orchestration-stdout`, and preserves the same disabled/unavailable/redacted sanitizer states as the existing wrappers.
 
-- [ ] **Step 5: Make the public integration test green**
+- [x] **Step 5: Make the public integration test green**
 
 Run: `rtk bash tests/static_analysis_orchestration_test.sh`
 
 Expected: `static analysis orchestration tests passed`.
 
-- [ ] **Step 6: Commit the entrypoint**
+- [x] **Step 6: Commit the entrypoint**
 
 ```bash
 rtk git add collect-diff-context-cli/src/bin/static_analysis.rs collect-diff-context-cli/src/static_analysis/output.rs scripts/orchestrate_static_analysis.sh scripts/lib/static_analysis_cli.sh tests/static_analysis_orchestration_test.sh
@@ -557,23 +559,23 @@ rtk git commit -m "feat: expose static analysis orchestration"
 - Modify: `evals/output_eval_runner_test.sh`
 - Modify: `evals/eval_contract_test.sh`
 
-- [ ] **Step 1: Add failing skill-contract assertions**
+- [x] **Step 1: Add failing skill-contract assertions**
 
 Require exact manifest path/hash authorization, no discovery, supported self-contained analyzer class, build-coupled tools routed to precomputed evidence, `partial` honesty, independent findings, no `input/v2`, and final scope/authorization revalidation.
 
-- [ ] **Step 2: Document the operator workflow and support boundary**
+- [x] **Step 2: Document the operator workflow and support boundary**
 
 Include the manifest example, ASCII flow, completed/partial/failed table, run-entry union, cumulative budgets, snapshot mutation behavior, source-only analyzer requirements, and the statement that entrypoint hashing is not a complete arbitrary-analyzer execution closure.
 
-- [ ] **Step 3: Update review reduction rules**
+- [x] **Step 3: Update review reduction rules**
 
 Static orchestration evidence never marks manifest units reviewed. Failed, invalidated, and not-run profiles are unavailable verification; only completed accepted reports may support findings, and every blocking/priority candidate still passes independent verification.
 
-- [ ] **Step 4: Add model behavior evaluation**
+- [x] **Step 4: Add model behavior evaluation**
 
 Add a case with one completed security analyzer and one timeout. The expected response must call the orchestration `partial`, use only the completed evidence as a candidate, preserve the timeout as a limitation, and avoid claiming broad static coverage.
 
-- [ ] **Step 5: Run focused contracts and evals**
+- [x] **Step 5: Run focused contracts and evals**
 
 Run: `rtk bash tests/skill_contract_test.sh`
 
@@ -583,7 +585,7 @@ Run: `rtk bash evals/output_eval_runner_test.sh`
 
 Expected: all PASS.
 
-- [ ] **Step 6: Commit policy and docs**
+- [x] **Step 6: Commit policy and docs**
 
 ```bash
 rtk git add docs/static-analysis-orchestration.md references/decision/static-analysis-orchestration.md SKILL.md README.md README.zh-CN.md docs/helper-capabilities.md references/decision/finding-verification.md references/decision/verdict-rules.md tests/skill_contract_test.sh evals/output-eval.json evals/output/advanced-output-eval.json evals/output_eval_runner.sh evals/output_eval_runner_test.sh evals/eval_contract_test.sh
@@ -599,19 +601,19 @@ rtk git commit -m "docs: integrate static analysis orchestration"
 - Modify: `tests/install_smoke_test.sh`
 - Modify: `scripts/validate_schemas.py`
 
-- [ ] **Step 1: Add failing installation and schema assertions**
+- [x] **Step 1: Add failing installation and schema assertions**
 
 Require the orchestration wrapper, reference, docs-linked schemas, manifest validation option, and orchestration output validation option in installed/release payloads.
 
-- [ ] **Step 2: Package the new wrapper and schemas**
+- [x] **Step 2: Package the new wrapper and schemas**
 
 The existing `static_analysis-<platform>` binary already contains the subcommand. Add the wrapper, both schemas, executable bit, CI integration test, and release smoke validation; do not add another platform binary.
 
-- [ ] **Step 3: Extend semantic schema validation**
+- [x] **Step 3: Extend semantic schema validation**
 
 Validate that orchestration scope equals combined evidence scope, report/finding id sets match, completed/partial/failed status matches run states, executed report ids exist, invalidated/not-run entries expose no execution object, and failed/timeout reports have no blocking candidates. Permit zero reports only when there are no `executed` entries; otherwise every executed entry's rewritten report ids must exist in combined evidence.
 
-- [ ] **Step 4: Run packaging checks**
+- [x] **Step 4: Run packaging checks**
 
 Run: `rtk bash tests/install_smoke_test.sh`
 
@@ -621,7 +623,7 @@ Run: `rtk bash tests/static_analysis_orchestration_test.sh`
 
 Expected: all PASS.
 
-- [ ] **Step 5: Commit packaging**
+- [x] **Step 5: Commit packaging**
 
 ```bash
 rtk git add install.sh .github/workflows/lint.yml .github/workflows/release.yml tests/install_smoke_test.sh scripts/validate_schemas.py collect-diff-context-cli/schemas/static-analysis-orchestration-manifest.schema.json collect-diff-context-cli/schemas/static-analysis-orchestration.schema.json
@@ -633,7 +635,7 @@ rtk git commit -m "build: package static analysis orchestration"
 **Files:**
 - Verify all files touched in Tasks 1-9.
 
-- [ ] **Step 1: Run Rust gates**
+- [x] **Step 1: Run Rust gates**
 
 Run: `rtk cargo fmt --all --manifest-path collect-diff-context-cli/Cargo.toml -- --check`
 
@@ -643,7 +645,7 @@ Run: `rtk cargo test --manifest-path collect-diff-context-cli/Cargo.toml`
 
 Expected: all PASS.
 
-- [ ] **Step 2: Run all static-analysis public integrations**
+- [x] **Step 2: Run all static-analysis public integrations**
 
 Run: `rtk bash tests/static_analysis_evidence_test.sh`
 
@@ -655,7 +657,7 @@ Run: `rtk bash tests/static_analysis_orchestration_test.sh`
 
 Expected: all PASS.
 
-- [ ] **Step 3: Run all deterministic tests and eval self-tests**
+- [x] **Step 3: Run all deterministic tests and eval self-tests**
 
 Run: `rtk zsh -c 'for test_file in tests/*_test.sh; do bash "$test_file" || exit 1; done'`
 
@@ -663,7 +665,7 @@ Run: `rtk zsh -c 'for test_file in evals/*_test.sh; do bash "$test_file" || exit
 
 Expected: every script exits 0.
 
-- [ ] **Step 4: Run static quality gates**
+- [x] **Step 4: Run static quality gates**
 
 Run: `rtk shellcheck -S warning -s bash scripts/*.sh scripts/lib/*.sh install.sh tests/*.sh tests/lib/*.sh evals/*.sh`
 
@@ -673,10 +675,10 @@ Run: `rtk git diff --check`
 
 Expected: all PASS.
 
-- [ ] **Step 5: Audit approved design invariants**
+- [x] **Step 5: Audit approved design invariants**
 
 Confirm tests prove: preflight before execution, one snapshot identity, strict serial order, per-profile plus cumulative budgets, honest completed/partial/failed states, explicit invalidated/not-run entries, independent findings, no Python runtime, no public implementation selector, and no claim of complete execution closure.
 
-- [ ] **Step 6: Commit audit-only fixes**
+- [x] **Step 6: Commit audit-only fixes**
 
 Run `rtk git status --short` and commit only files changed to fix a failed audit gate, using the owning task's explicit file list. Skip this commit when the audit produces no changes; never stage unrelated work with a repository-wide add.
