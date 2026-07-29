@@ -351,6 +351,15 @@ repository_context_binary_name() {
   printf 'repository_context-%s%s\n' "$platform" "$suffix"
 }
 
+repository_context_provider_binary_name() {
+  local platform="$1"
+  local suffix=''
+  case "$platform" in
+    windows-*) suffix='.exe' ;;
+  esac
+  printf 'repository_context_provider-%s%s\n' "$platform" "$suffix"
+}
+
 provision_rust_binary() {
   local runtime_root="$1"
   local binary_name="$2"
@@ -469,6 +478,7 @@ copy_payload() {
   local binary_name="$3"
   local static_binary_name="$4"
   local repository_binary_name="$5"
+  local provider_binary_name="$6"
   local staging_dir="${target}.tmp.$$"
 
   if [ "$dry_run" = 'yes' ]; then
@@ -482,6 +492,8 @@ copy_payload() {
       'static-analysis-cli' 'Static analysis'
     provision_rust_binary "$plan_root" "$repository_binary_name" \
       'repository-context-cli' 'Repository context'
+    provision_rust_binary "$plan_root" "$provider_binary_name" \
+      'repository-context-provider-cli' 'Repository context provider'
     provision_gitleaks "$plan_root" "$platform" "$binary_name"
     return 0
   fi
@@ -495,6 +507,11 @@ copy_payload() {
   cp -R "$source_dir/agents" "$staging_dir/"
   cp -R "$source_dir/references" "$staging_dir/"
   cp -R "$source_dir/scripts" "$staging_dir/"
+  mkdir -p "$staging_dir/docs"
+  cp "$source_dir/docs/rust-analyzer-context-provider.md" \
+    "$source_dir/docs/helper-capabilities.md" \
+    "$source_dir/docs/call-graph-open-source-options.md" \
+    "$staging_dir/docs/"
   mkdir -p "$staging_dir/collect-diff-context-cli"
   cp -R "$source_dir/collect-diff-context-cli/schemas" "$staging_dir/collect-diff-context-cli/"
   if [ -d "$source_dir/THIRD_PARTY_LICENSES" ]; then
@@ -505,6 +522,8 @@ copy_payload() {
     'static-analysis-cli' 'Static analysis'
   provision_rust_binary "$staging_dir" "$repository_binary_name" \
     'repository-context-cli' 'Repository context'
+  provision_rust_binary "$staging_dir" "$provider_binary_name" \
+    'repository-context-provider-cli' 'Repository context provider'
   provision_gitleaks "$staging_dir" "$platform" "$binary_name"
 
   prepare_target "$target"
@@ -614,13 +633,15 @@ gitleaks_platform="$(resolve_gitleaks_platform)"
 gitleaks_binary="$(gitleaks_binary_name "$gitleaks_platform")"
 static_analysis_binary="$(static_analysis_binary_name "$gitleaks_platform")"
 repository_context_binary="$(repository_context_binary_name "$gitleaks_platform")"
+repository_context_provider_binary="$(repository_context_provider_binary_name "$gitleaks_platform")"
 
 validate_target "$target_dir"
 ensure_parent_dir "$skills_dir"
 
 case "$mode" in
   copy) copy_payload "$target_dir" "$gitleaks_platform" "$gitleaks_binary" \
-    "$static_analysis_binary" "$repository_context_binary" ;;
+    "$static_analysis_binary" "$repository_context_binary" \
+    "$repository_context_provider_binary" ;;
   link) link_payload "$target_dir" "$gitleaks_platform" "$gitleaks_binary" ;;
   *) die "unsupported mode: $mode" ;;
 esac

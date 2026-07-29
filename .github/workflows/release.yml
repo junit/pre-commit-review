@@ -28,6 +28,7 @@ jobs:
             artifact_name: collect_diff_context-linux-amd64
             static_artifact_name: static_analysis-linux-amd64
             repository_artifact_name: repository_context-linux-amd64
+            provider_artifact_name: repository_context_provider-linux-amd64
             gitleaks_platform: linux-amd64
             use_musl: true
 
@@ -36,6 +37,7 @@ jobs:
             artifact_name: collect_diff_context-darwin-arm64
             static_artifact_name: static_analysis-darwin-arm64
             repository_artifact_name: repository_context-darwin-arm64
+            provider_artifact_name: repository_context_provider-darwin-arm64
             gitleaks_platform: darwin-arm64
 
           - os: macos-15-intel
@@ -43,6 +45,7 @@ jobs:
             artifact_name: collect_diff_context-darwin-amd64
             static_artifact_name: static_analysis-darwin-amd64
             repository_artifact_name: repository_context-darwin-amd64
+            provider_artifact_name: repository_context_provider-darwin-amd64
             gitleaks_platform: darwin-amd64
 
           - os: windows-latest
@@ -50,6 +53,7 @@ jobs:
             artifact_name: collect_diff_context-windows-amd64.exe
             static_artifact_name: static_analysis-windows-amd64.exe
             repository_artifact_name: repository_context-windows-amd64.exe
+            provider_artifact_name: repository_context_provider-windows-amd64.exe
             gitleaks_platform: windows-amd64
 
     steps:
@@ -77,10 +81,12 @@ jobs:
             cp collect-diff-context-cli/target/${{ matrix.target }}/release/collect-diff-context-cli.exe dist/${{ matrix.artifact_name }}
             cp collect-diff-context-cli/target/${{ matrix.target }}/release/static-analysis-cli.exe dist/${{ matrix.static_artifact_name }}
             cp collect-diff-context-cli/target/${{ matrix.target }}/release/repository-context-cli.exe dist/${{ matrix.repository_artifact_name }}
+            cp collect-diff-context-cli/target/${{ matrix.target }}/release/repository-context-provider-cli.exe dist/${{ matrix.provider_artifact_name }}
           else
             cp collect-diff-context-cli/target/${{ matrix.target }}/release/collect-diff-context-cli dist/${{ matrix.artifact_name }}
             cp collect-diff-context-cli/target/${{ matrix.target }}/release/static-analysis-cli dist/${{ matrix.static_artifact_name }}
             cp collect-diff-context-cli/target/${{ matrix.target }}/release/repository-context-cli dist/${{ matrix.repository_artifact_name }}
+            cp collect-diff-context-cli/target/${{ matrix.target }}/release/repository-context-provider-cli dist/${{ matrix.provider_artifact_name }}
           fi
 
       - name: Smoke-test static-analysis binary
@@ -136,6 +142,16 @@ jobs:
           if find "$cache" -type f \( -name '*-wal' -o -name '*-shm' -o -name '*-journal' \) \
             -print -quit | grep -q .; then
             echo 'Repository index smoke left a published SQLite sidecar' >&2
+            exit 1
+          fi
+
+      - name: Smoke-test explicit provider CLI release shape
+        shell: bash
+        run: |
+          provider_binary="dist/${{ matrix.provider_artifact_name }}"
+          "$provider_binary" --help
+          if find dist -type f -name 'rust-analyzer*' -print -quit | grep -q .; then
+            echo 'Release payload unexpectedly contains a rust-analyzer artifact' >&2
             exit 1
           fi
 
@@ -211,15 +227,20 @@ jobs:
           cp SKILL.md LICENSE dist/pre-commit-review/
           cp dist/pre-commit-review.cdx.json dist/pre-commit-review/
           cp -R agents references scripts THIRD_PARTY_LICENSES dist/pre-commit-review/
+          mkdir -p dist/pre-commit-review/docs
+          cp docs/rust-analyzer-context-provider.md docs/helper-capabilities.md \
+            docs/call-graph-open-source-options.md dist/pre-commit-review/docs/
           mkdir -p dist/pre-commit-review/collect-diff-context-cli
           cp -R collect-diff-context-cli/schemas dist/pre-commit-review/collect-diff-context-cli/
           find artifacts -type f -name 'collect_diff_context-*' -exec cp {} dist/pre-commit-review/scripts/bin/ \;
           find artifacts -type f -name 'static_analysis-*' -exec cp {} dist/pre-commit-review/scripts/bin/ \;
           find artifacts -type f -name 'repository_context-*' -exec cp {} dist/pre-commit-review/scripts/bin/ \;
+          find artifacts -type f -name 'repository_context_provider-*' -exec cp {} dist/pre-commit-review/scripts/bin/ \;
           find artifacts -type f -name 'gitleaks-*' -exec cp {} dist/pre-commit-review/scripts/bin/ \;
           chmod +x dist/pre-commit-review/scripts/collect_diff_context.sh
           chmod +x dist/pre-commit-review/scripts/collect_impact_context.sh
           chmod +x dist/pre-commit-review/scripts/index_repository_context.sh
+          chmod +x dist/pre-commit-review/scripts/run_repository_context_provider.sh
           chmod +x dist/pre-commit-review/scripts/collect_static_evidence.sh
           chmod +x dist/pre-commit-review/scripts/run_static_analysis.sh
           chmod +x dist/pre-commit-review/scripts/orchestrate_static_analysis.sh
@@ -227,6 +248,7 @@ jobs:
           chmod +x dist/pre-commit-review/scripts/bin/collect_diff_context-* || true
           chmod +x dist/pre-commit-review/scripts/bin/static_analysis-* || true
           chmod +x dist/pre-commit-review/scripts/bin/repository_context-* || true
+          chmod +x dist/pre-commit-review/scripts/bin/repository_context_provider-* || true
           chmod +x dist/pre-commit-review/scripts/bin/gitleaks-* || true
           dist/pre-commit-review/scripts/check_gitleaks.sh
           tar -czf dist/pre-commit-review-runtime.tar.gz -C dist pre-commit-review
@@ -238,6 +260,7 @@ jobs:
             artifacts/**/collect_diff_context-*
             artifacts/**/static_analysis-*
             artifacts/**/repository_context-*
+            artifacts/**/repository_context_provider-*
             artifacts/**/gitleaks-*
             dist/pre-commit-review.cdx.json
             dist/pre-commit-review-runtime.tar.gz

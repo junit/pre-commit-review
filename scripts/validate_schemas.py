@@ -398,6 +398,72 @@ def validate_impact_context_invariants(payload):
             raise ValueError('metrics.summaries_emitted does not match domain summaries')
 
 
+def validate_provider_report_invariants(payload):
+    expected_top_level = {
+        'schema_version',
+        'kind',
+        'candidate',
+        'provider',
+        'status',
+        'index_completeness',
+        'query_completeness',
+        'seed_symbols',
+        'related_symbols',
+        'edges',
+        'limitations',
+        'isolation',
+        'metrics',
+    }
+    if set(payload) != expected_top_level:
+        raise ValueError('provider report contains unknown or missing top-level fields')
+
+    candidate = payload['candidate']
+    provider = payload['provider']
+    identity_fields = (
+        (candidate, 'scope_fingerprint'),
+        (candidate, 'candidate_digest'),
+        (candidate, 'snapshot_sha256'),
+        (candidate, 'project_model_digest'),
+        (provider, 'kind'),
+        (provider, 'version'),
+        (provider, 'profile_sha256'),
+        (provider, 'executable_sha256'),
+        (provider, 'configuration_sha256'),
+        (provider, 'target_triple'),
+        (provider, 'project_model_algorithm'),
+    )
+    for owner, field in identity_fields:
+        value = owner.get(field)
+        if not isinstance(value, str) or not value.strip():
+            raise ValueError(f'provider report identity field {field} must be present and non-empty')
+
+    forbidden_path_fields = {'snapshot_root', 'profile_path', 'executable_path'}
+    forbidden_rpc_fields = {'jsonrpc', 'method', 'params', 'result'}
+
+    def reject_private_runtime_data(value):
+        if isinstance(value, dict):
+            for key, child in value.items():
+                normalized = key.lower().replace('-', '_')
+                if normalized in forbidden_path_fields:
+                    raise ValueError('provider report exposes a local runtime path')
+                if 'stderr' in normalized and normalized != 'stderr_bytes':
+                    raise ValueError('provider report exposes raw stderr')
+                if normalized in forbidden_rpc_fields or normalized.startswith('raw_json_rpc'):
+                    raise ValueError('provider report exposes raw JSON-RPC fields')
+                reject_private_runtime_data(child)
+        elif isinstance(value, list):
+            for child in value:
+                reject_private_runtime_data(child)
+        elif isinstance(value, str):
+            lowered = value.lower()
+            if 'content-length:' in lowered or '"jsonrpc"' in lowered:
+                raise ValueError('provider report exposes raw JSON-RPC framing')
+            if 'file://' in lowered:
+                raise ValueError('provider report exposes a local file URI')
+
+    reject_private_runtime_data(payload)
+
+
 def validate_static_execution_invariants(payload, evidence):
     if payload['scope'] != evidence['scope']:
         raise ValueError('execution and evidence scopes must match')
@@ -620,6 +686,12 @@ def main():
         default=[],
         help='validate one repository_index_report/v1 JSON file',
     )
+    parser.add_argument(
+        '--repository-context-provider-report',
+        action='append',
+        default=[],
+        help='validate one repository_context_provider_report/v1 JSON file',
+    )
     args = parser.parse_args()
     skill_root = pathlib.Path(__file__).resolve().parent.parent
     schema_dir = skill_root / 'collect-diff-context-cli/schemas'
@@ -755,6 +827,20 @@ def main():
                 payload = json.loads(pathlib.Path(report_path).read_text(encoding='utf-8'))
                 report_validator.validate(payload)
                 print(f'  ✅ {report_path}: valid repository-index report')
+            except Exception as exc:
+                print(f'  ❌ {report_path}: {exc}', file=sys.stderr)
+                errors += 1
+        if errors:
+            sys.exit(1)
+    if args.repository_context_provider_report:
+        report_schema = schemas['repository-context-provider-report.schema.json']
+        report_validator = jsonschema.Draft202012Validator(report_schema)
+        for report_path in args.repository_context_provider_report:
+            try:
+                payload = json.loads(pathlib.Path(report_path).read_text(encoding='utf-8'))
+                report_validator.validate(payload)
+                validate_provider_report_invariants(payload)
+                print(f'  ✅ {report_path}: valid repository-context provider report')
             except Exception as exc:
                 print(f'  ❌ {report_path}: {exc}', file=sys.stderr)
                 errors += 1

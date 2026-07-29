@@ -109,7 +109,12 @@ jobs:
         run: cargo +1.95.0 fmt --all -- --check
         working-directory: collect-diff-context-cli
       - name: Run provider contract and protocol tests
-        run: cargo +1.95.0 test --locked --features test-fixture --test repository_context_provider_contracts --test repository_context_provider_snapshot --test repository_context_json_rpc --test repository_context_session --test repository_context_rust_analyzer --test repository_context_provider_platform
+        run: cargo +1.95.0 test --locked --features test-fixture --test repository_context_provider_contracts --test repository_context_provider_cli_contracts --test repository_context_provider_model --test repository_context_provider_cli --test repository_context_provider_snapshot --test repository_context_json_rpc --test repository_context_session --test repository_context_rust_analyzer --test repository_context_provider_platform
+        working-directory: collect-diff-context-cli
+      - name: Build and smoke explicit provider CLI
+        run: |
+          cargo +1.95.0 build --locked --bin repository-context-provider-cli
+          target/debug/repository-context-provider-cli --help
         working-directory: collect-diff-context-cli
       - name: Run provider Clippy
         run: cargo +1.95.0 clippy --locked --all-targets --all-features -- -D warnings
@@ -126,14 +131,17 @@ jobs:
             target: x86_64-unknown-linux-gnu
             executable: static-analysis-cli
             repository_executable: repository-context-cli
+            provider_executable: repository-context-provider-cli
           - os: macos-latest
             target: aarch64-apple-darwin
             executable: static-analysis-cli
             repository_executable: repository-context-cli
+            provider_executable: repository-context-provider-cli
           - os: windows-latest
             target: x86_64-pc-windows-msvc
             executable: static-analysis-cli.exe
             repository_executable: repository-context-cli.exe
+            provider_executable: repository-context-provider-cli.exe
     steps:
       - uses: actions/checkout@v4
       - name: Set up Rust
@@ -150,20 +158,22 @@ jobs:
             collect-diff-context-cli/target/
           key: ${{ runner.os }}-static-analysis-${{ matrix.target }}-${{ hashFiles('collect-diff-context-cli/Cargo.lock') }}
       - name: Build analysis CLIs
-        run: cargo build --release --target ${{ matrix.target }} --bin static-analysis-cli --bin repository-context-cli
+        run: cargo build --release --target ${{ matrix.target }} --bin static-analysis-cli --bin repository-context-cli --bin repository-context-provider-cli
         working-directory: collect-diff-context-cli
       - name: Smoke-test analysis CLIs
         shell: bash
         run: |
           static_binary="collect-diff-context-cli/target/${{ matrix.target }}/release/${{ matrix.executable }}"
           repository_binary="collect-diff-context-cli/target/${{ matrix.target }}/release/${{ matrix.repository_executable }}"
+          provider_binary="collect-diff-context-cli/target/${{ matrix.target }}/release/${{ matrix.provider_executable }}"
           "$static_binary" collect --help
           "$static_binary" run --help
           "$static_binary" orchestrate --help
           "$repository_binary" collect --help
           "$repository_binary" index --help
+          "$provider_binary" --help
       - name: Run focused Rust contracts
-        run: cargo test --target ${{ matrix.target }} --features test-fixture --test candidate_content --test impact_context_contracts --test repository_index_contracts --test static_evidence --test static_execution --test static_execution_modes --test static_execution_platform --test static_orchestration --test repository_context_provider_contracts --test repository_context_provider_snapshot --test repository_context_json_rpc --test repository_context_session --test repository_context_rust_analyzer --test repository_context_provider_platform
+        run: cargo test --target ${{ matrix.target }} --features test-fixture --test candidate_content --test impact_context_contracts --test repository_index_contracts --test static_evidence --test static_execution --test static_execution_modes --test static_execution_platform --test static_orchestration --test repository_context_provider_contracts --test repository_context_provider_cli_contracts --test repository_context_provider_model --test repository_context_provider_cli --test repository_context_provider_snapshot --test repository_context_json_rpc --test repository_context_session --test repository_context_rust_analyzer --test repository_context_provider_platform
         working-directory: collect-diff-context-cli
 
   integration-tests:
@@ -214,6 +224,7 @@ jobs:
         run: |
           ./tests/repository_index_test.sh
           ./tests/repository_context_test.sh
+          ./tests/repository_context_provider_cli_test.sh
       - name: Run output quality comparison self-test
         run: |
           ./evals/output_eval_runner_test.sh

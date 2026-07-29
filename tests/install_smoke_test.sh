@@ -32,11 +32,19 @@ repository_context_platform() {
   printf 'repository_context-%s\n' "${static_name#static_analysis-}"
 }
 
+repository_context_provider_platform() {
+  local static_name
+  static_name="$(static_analysis_platform)"
+  printf 'repository_context_provider-%s\n' "${static_name#static_analysis-}"
+}
+
 static_analysis_name="$(static_analysis_platform)"
 repository_context_name="$(repository_context_platform)"
+repository_context_provider_name="$(repository_context_provider_platform)"
 python_suffix='py'
 cargo build --release --manifest-path "$repo_root/collect-diff-context-cli/Cargo.toml" \
-  --bin static-analysis-cli --bin repository-context-cli >/dev/null
+  --bin static-analysis-cli --bin repository-context-cli \
+  --bin repository-context-provider-cli >/dev/null
 
 run_offline_install codex --copy --dir "$tmp_dir/codex-skills"
 [ -f "$tmp_dir/codex-skills/pre-commit-review/SKILL.md" ]
@@ -44,6 +52,7 @@ run_offline_install codex --copy --dir "$tmp_dir/codex-skills"
 [ -f "$tmp_dir/codex-skills/pre-commit-review/scripts/collect_diff_context.sh" ]
 [ -x "$tmp_dir/codex-skills/pre-commit-review/scripts/collect_impact_context.sh" ]
 [ -x "$tmp_dir/codex-skills/pre-commit-review/scripts/index_repository_context.sh" ]
+[ -x "$tmp_dir/codex-skills/pre-commit-review/scripts/run_repository_context_provider.sh" ]
 [ -x "$tmp_dir/codex-skills/pre-commit-review/scripts/collect_static_evidence.sh" ]
 [ ! -e "$tmp_dir/codex-skills/pre-commit-review/scripts/collect_static_evidence.$python_suffix" ]
 [ -x "$tmp_dir/codex-skills/pre-commit-review/scripts/run_static_analysis.sh" ]
@@ -57,8 +66,10 @@ run_offline_install codex --copy --dir "$tmp_dir/codex-skills"
 [ -f "$tmp_dir/codex-skills/pre-commit-review/scripts/lib/gitleaks_integrity.sh" ]
 [ -f "$tmp_dir/codex-skills/pre-commit-review/scripts/lib/static_analysis_cli.sh" ]
 [ -r "$tmp_dir/codex-skills/pre-commit-review/scripts/lib/repository_context_cli.sh" ]
+[ -r "$tmp_dir/codex-skills/pre-commit-review/scripts/lib/repository_context_provider_cli.sh" ]
 [ -x "$tmp_dir/codex-skills/pre-commit-review/scripts/bin/$static_analysis_name" ]
 [ -x "$tmp_dir/codex-skills/pre-commit-review/scripts/bin/$repository_context_name" ]
+[ -x "$tmp_dir/codex-skills/pre-commit-review/scripts/bin/$repository_context_provider_name" ]
 [ ! -e "$tmp_dir/codex-skills/pre-commit-review/README.md" ]
 [ ! -e "$tmp_dir/codex-skills/pre-commit-review/README.zh-CN.md" ]
 [ ! -e "$tmp_dir/codex-skills/pre-commit-review/install.sh" ]
@@ -85,6 +96,9 @@ run_offline_install codex --copy --dir "$tmp_dir/codex-skills"
 [ -f "$tmp_dir/codex-skills/pre-commit-review/collect-diff-context-cli/schemas/static-analysis-orchestration-manifest.schema.json" ]
 [ -f "$tmp_dir/codex-skills/pre-commit-review/collect-diff-context-cli/schemas/static-analysis-orchestration.schema.json" ]
 [ -f "$tmp_dir/codex-skills/pre-commit-review/collect-diff-context-cli/schemas/impact-context.schema.json" ]
+[ -f "$tmp_dir/codex-skills/pre-commit-review/collect-diff-context-cli/schemas/repository-context-provider-registry.schema.json" ]
+[ -f "$tmp_dir/codex-skills/pre-commit-review/collect-diff-context-cli/schemas/repository-context-provider-run-request.schema.json" ]
+[ -f "$tmp_dir/codex-skills/pre-commit-review/docs/rust-analyzer-context-provider.md" ]
 [ -f "$tmp_dir/codex-skills/pre-commit-review/THIRD_PARTY_LICENSES/gitleaks-LICENSE" ]
 [ -f "$tmp_dir/codex-skills/pre-commit-review/THIRD_PARTY_LICENSES/tree-sitter-LICENSE" ]
 [ -f "$tmp_dir/codex-skills/pre-commit-review/THIRD_PARTY_LICENSES/tree-sitter-rust-LICENSE" ]
@@ -95,25 +109,30 @@ run_offline_install codex --copy --dir "$tmp_dir/codex-skills"
 python3 "$tmp_dir/codex-skills/pre-commit-review/scripts/validate_schemas.py" --help >"$tmp_dir/schema-help.out"
 grep -Fq -- '--static-orchestration-manifest' "$tmp_dir/schema-help.out"
 grep -Fq -- '--static-orchestration-output' "$tmp_dir/schema-help.out"
+grep -Fq -- '--repository-context-provider-report' "$tmp_dir/schema-help.out"
 
 isolated_source="$tmp_dir/source-without-static-checkout"
 mkdir -p "$isolated_source/collect-diff-context-cli"
 cp "$repo_root/install.sh" "$repo_root/SKILL.md" "$repo_root/LICENSE" "$isolated_source/"
 cp -R "$repo_root/agents" "$repo_root/references" "$repo_root/scripts" \
-  "$repo_root/THIRD_PARTY_LICENSES" "$isolated_source/"
+  "$repo_root/docs" "$repo_root/THIRD_PARTY_LICENSES" "$isolated_source/"
 cp -R "$repo_root/collect-diff-context-cli/schemas" "$isolated_source/collect-diff-context-cli/"
 rm -f "$isolated_source"/scripts/bin/static_analysis-* \
-  "$isolated_source"/scripts/bin/repository_context-*
+  "$isolated_source"/scripts/bin/repository_context-* \
+  "$isolated_source"/scripts/bin/repository_context_provider-*
 "$isolated_source/install.sh" codex --copy --dir "$tmp_dir/source-without-static" --no-download
 [ -x "$tmp_dir/source-without-static/pre-commit-review/scripts/collect_impact_context.sh" ]
 [ -x "$tmp_dir/source-without-static/pre-commit-review/scripts/index_repository_context.sh" ]
+[ -x "$tmp_dir/source-without-static/pre-commit-review/scripts/run_repository_context_provider.sh" ]
 [ -x "$tmp_dir/source-without-static/pre-commit-review/scripts/collect_static_evidence.sh" ]
 [ -x "$tmp_dir/source-without-static/pre-commit-review/scripts/run_static_analysis.sh" ]
 [ -x "$tmp_dir/source-without-static/pre-commit-review/scripts/orchestrate_static_analysis.sh" ]
 [ -f "$tmp_dir/source-without-static/pre-commit-review/scripts/lib/static_analysis_cli.sh" ]
 [ -r "$tmp_dir/source-without-static/pre-commit-review/scripts/lib/repository_context_cli.sh" ]
+[ -r "$tmp_dir/source-without-static/pre-commit-review/scripts/lib/repository_context_provider_cli.sh" ]
 [ ! -e "$tmp_dir/source-without-static/pre-commit-review/scripts/bin/$static_analysis_name" ]
 [ ! -e "$tmp_dir/source-without-static/pre-commit-review/scripts/bin/$repository_context_name" ]
+[ ! -e "$tmp_dir/source-without-static/pre-commit-review/scripts/bin/$repository_context_provider_name" ]
 
 grep -Fq "\"\$static_binary\" orchestrate --help" "$repo_root/.github/workflows/lint.yml"
 grep -Fq "\"\$repository_binary\" collect --help" "$repo_root/.github/workflows/lint.yml"
@@ -126,6 +145,12 @@ done
 grep -Fq './tests/static_analysis_orchestration_test.sh' "$repo_root/.github/workflows/lint.yml"
 grep -Fq '"${repository_binary}" collect --help' "$repo_root/scripts/build_all_binaries.sh"
 grep -Fq '"${repository_binary}" index --help' "$repo_root/scripts/build_all_binaries.sh"
+grep -Fq '"${provider_binary}" --help' "$repo_root/scripts/build_all_binaries.sh"
+grep -Fq 'repository-context-provider-cli' "$repo_root/.github/workflows/lint.yml"
+grep -Fq './tests/repository_context_provider_cli_test.sh' "$repo_root/.github/workflows/lint.yml"
+grep -Fq 'repository_context_provider_cli_contracts' "$repo_root/.github/workflows/lint.yml"
+grep -Fq 'repository_context_provider_model' "$repo_root/.github/workflows/lint.yml"
+grep -Fq 'repository_context_provider_cli' "$repo_root/.github/workflows/lint.yml"
 grep -Fq "\"\$static_binary\" orchestrate --help" "$repo_root/.github/workflows/release.yml"
 grep -Fq "\"\$repository_binary\" collect --help" "$repo_root/.github/workflows/release.yml"
 grep -Fq "\"\$repository_binary\" index --help" "$repo_root/.github/workflows/release.yml"
@@ -133,6 +158,9 @@ grep -Fq 'chmod +x dist/pre-commit-review/scripts/orchestrate_static_analysis.sh
 grep -Fq 'chmod +x dist/pre-commit-review/scripts/collect_impact_context.sh' "$repo_root/.github/workflows/release.yml"
 grep -Fq 'chmod +x dist/pre-commit-review/scripts/index_repository_context.sh' "$repo_root/.github/workflows/release.yml"
 grep -Fq "find artifacts -type f -name 'repository_context-*'" "$repo_root/.github/workflows/release.yml"
+grep -Fq "find artifacts -type f -name 'repository_context_provider-*'" "$repo_root/.github/workflows/release.yml"
+grep -Fq 'repository-context-provider-cli' "$repo_root/.github/workflows/release.yml"
+grep -Fq "name 'rust-analyzer*'" "$repo_root/.github/workflows/release.yml"
 grep -Fq 'dist/pre-commit-review.cdx.json' "$repo_root/.github/workflows/release.yml"
 grep -Fq 'tree-sitter@0.26.11' "$repo_root/.github/workflows/release.yml"
 grep -Fq 'tree-sitter-rust@0.24.2' "$repo_root/.github/workflows/release.yml"

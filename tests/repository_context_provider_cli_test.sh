@@ -5,6 +5,7 @@ script_dir="$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd -P)"
 repo_root="$(CDPATH='' cd -- "$script_dir/.." && pwd -P)"
 wrapper="$repo_root/scripts/run_repository_context_provider.sh"
 resolver="$repo_root/scripts/lib/repository_context_provider_cli.sh"
+validator="$repo_root/scripts/validate_schemas.py"
 tmp_dir="$(mktemp -d)"
 tmp_dir="$(CDPATH='' cd -- "$tmp_dir" && pwd -P)"
 trap 'rm -rf "$tmp_dir"' EXIT
@@ -125,6 +126,139 @@ PRE_COMMIT_REVIEW_REPOSITORY_CONTEXT_PROVIDER_BIN="$fake_cli" \
   "$wrapper" "${run_args[@]}" >"$tmp_dir/run.json"
 assert_json_kind "$tmp_dir/run.json" repository_context_provider_report
 assert_forwarded "$FAKE_PROVIDER_LOG" "${run_args[@]}"
+
+provider_report="$tmp_dir/provider-report.json"
+cat >"$provider_report" <<'EOF_REPORT'
+{
+  "schema_version": 1,
+  "kind": "repository_context_provider_report",
+  "candidate": {
+    "source": "staged",
+    "scope_fingerprint": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+    "candidate_digest": "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb",
+    "snapshot_sha256": "cccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccccc",
+    "snapshot_files": 1,
+    "snapshot_bytes": 32,
+    "project_model_digest": "dddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddddd"
+  },
+  "provider": {
+    "kind": "rust-analyzer",
+    "version": "fixture-1",
+    "profile_sha256": "eeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeeee",
+    "executable_sha256": "ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff",
+    "configuration_sha256": "1111111111111111111111111111111111111111111111111111111111111111",
+    "target_triple": "x86_64-unknown-linux-gnu",
+    "toolchain_mode": "none",
+    "project_model_algorithm": "rust-analyzer-linked-project-v1",
+    "negotiated_encoding": null
+  },
+  "status": "unavailable",
+  "index_completeness": "unknown",
+  "query_completeness": "unavailable",
+  "seed_symbols": [],
+  "related_symbols": [],
+  "edges": [],
+  "limitations": [
+    {
+      "code": "provider-unavailable",
+      "message": "Provider capability is unavailable",
+      "changed_symbol_id": null,
+      "path": null
+    }
+  ],
+  "isolation": {
+    "network": "best-effort-offline",
+    "shell_enabled": false,
+    "original_repository_access": false
+  },
+  "metrics": {
+    "requests": 0,
+    "messages": 0,
+    "notifications": 0,
+    "server_requests": 0,
+    "invalid_messages": 0,
+    "call_ranges": 0,
+    "protocol_bytes": 0,
+    "stderr_bytes": 0,
+    "source_bytes": 0,
+    "nodes": 0,
+    "edges": 0,
+    "report_bytes": 0,
+    "elapsed_ms": 0
+  }
+}
+EOF_REPORT
+python3 "$validator" --repository-context-provider-report "$provider_report" \
+  >"$tmp_dir/provider-report-valid.out"
+
+raw_protocol_report="$tmp_dir/provider-report-raw-protocol.json"
+python3 - "$provider_report" "$raw_protocol_report" <<'PY'
+import json
+import pathlib
+import sys
+
+payload = json.loads(pathlib.Path(sys.argv[1]).read_text(encoding="utf-8"))
+payload["limitations"][0]["message"] = "Content-Length: 42"
+pathlib.Path(sys.argv[2]).write_text(json.dumps(payload), encoding="utf-8")
+PY
+if python3 "$validator" \
+  --repository-context-provider-report "$raw_protocol_report" \
+  >"$tmp_dir/provider-report-raw.out" 2>"$tmp_dir/provider-report-raw.err"; then
+  fail 'provider report validator accepted raw JSON-RPC framing text'
+fi
+grep -Fq 'raw JSON-RPC framing' "$tmp_dir/provider-report-raw.err" \
+  || fail 'raw JSON-RPC rejection was not actionable'
+
+python3 - "$validator" "$provider_report" <<'PY'
+import copy
+import importlib.util
+import json
+import pathlib
+import sys
+
+spec = importlib.util.spec_from_file_location("provider_schema_validator", sys.argv[1])
+module = importlib.util.module_from_spec(spec)
+spec.loader.exec_module(module)
+valid = json.loads(pathlib.Path(sys.argv[2]).read_text(encoding="utf-8"))
+
+def local_snapshot_root(payload):
+    payload["candidate"]["snapshot_root"] = "/private/tmp/provider-snapshot"
+
+def raw_stderr(payload):
+    payload["limitations"][0]["stderr"] = "private child text"
+
+def raw_json_rpc(payload):
+    payload["limitations"][0]["jsonrpc"] = "2.0"
+
+def unknown_top_level(payload):
+    payload["unknown"] = True
+
+def empty_identity(payload):
+    payload["provider"]["version"] = ""
+
+def missing_digest(payload):
+    del payload["provider"]["profile_sha256"]
+
+def local_file_uri(payload):
+    payload["limitations"][0]["message"] = "file:///private/tmp/provider-snapshot/src/lib.rs"
+
+for name, mutate in (
+    ("local snapshot root", local_snapshot_root),
+    ("raw stderr", raw_stderr),
+    ("raw JSON-RPC", raw_json_rpc),
+    ("unknown top-level field", unknown_top_level),
+    ("empty identity", empty_identity),
+    ("missing digest", missing_digest),
+    ("local file URI", local_file_uri),
+):
+    payload = copy.deepcopy(valid)
+    mutate(payload)
+    try:
+        module.validate_provider_report_invariants(payload)
+    except ValueError:
+        continue
+    raise SystemExit(f"provider report invariant accepted {name}")
+PY
 
 if PRE_COMMIT_REVIEW_REPOSITORY_CONTEXT_PROVIDER_BIN='relative-provider-cli' \
   "$wrapper" --help >"$tmp_dir/relative.out" 2>"$tmp_dir/relative.err"; then

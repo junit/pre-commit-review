@@ -10,7 +10,7 @@ BIN_DIR="${REPO_ROOT}/scripts/bin"
 mkdir -p "${BIN_DIR}"
 
 smoke_host_repository_context() {
-  local os_name arch_name suffix='' repository_binary
+  local os_name arch_name suffix='' repository_binary provider_binary
   case "$(uname -s | tr '[:upper:]' '[:lower:]')" in
     darwin) os_name='darwin' ;;
     linux) os_name='linux' ;;
@@ -38,6 +38,14 @@ smoke_host_repository_context() {
   echo "Smoke-testing host repository-context binary..."
   "${repository_binary}" collect --help >/dev/null
   "${repository_binary}" index --help >/dev/null
+
+  provider_binary="${BIN_DIR}/repository_context_provider-${os_name}-${arch_name}${suffix}"
+  if [ ! -x "${provider_binary}" ]; then
+    echo "Skipping repository-context provider smoke test; no host-compatible binary was built"
+    return 0
+  fi
+  echo "Smoke-testing host repository-context provider binary..."
+  "${provider_binary}" --help >/dev/null
 }
 
 echo "======================================================"
@@ -51,12 +59,14 @@ if [ "$(uname -s)" = "Darwin" ]; then
   cp "${CLI_DIR}/target/aarch64-apple-darwin/release/collect-diff-context-cli" "${BIN_DIR}/collect_diff_context-darwin-arm64"
   cp "${CLI_DIR}/target/aarch64-apple-darwin/release/static-analysis-cli" "${BIN_DIR}/static_analysis-darwin-arm64"
   cp "${CLI_DIR}/target/aarch64-apple-darwin/release/repository-context-cli" "${BIN_DIR}/repository_context-darwin-arm64"
+  cp "${CLI_DIR}/target/aarch64-apple-darwin/release/repository-context-provider-cli" "${BIN_DIR}/repository_context_provider-darwin-arm64"
 
   echo "[2/4] Building macOS amd64 (x86_64-apple-darwin)..."
   (cd "${CLI_DIR}" && cargo build --release --target x86_64-apple-darwin --bins >/dev/null)
   cp "${CLI_DIR}/target/x86_64-apple-darwin/release/collect-diff-context-cli" "${BIN_DIR}/collect_diff_context-darwin-amd64"
   cp "${CLI_DIR}/target/x86_64-apple-darwin/release/static-analysis-cli" "${BIN_DIR}/static_analysis-darwin-amd64"
   cp "${CLI_DIR}/target/x86_64-apple-darwin/release/repository-context-cli" "${BIN_DIR}/repository_context-darwin-amd64"
+  cp "${CLI_DIR}/target/x86_64-apple-darwin/release/repository-context-provider-cli" "${BIN_DIR}/repository_context_provider-darwin-amd64"
 else
   echo "[1/4 & 2/4] Skipping macOS targets (not on macOS host)"
 fi
@@ -69,6 +79,7 @@ if command -v cross >/dev/null 2>&1; then
   cp "${CLI_DIR}/target/x86_64-unknown-linux-musl/release/collect-diff-context-cli" "${BIN_DIR}/collect_diff_context-linux-amd64"
   cp "${CLI_DIR}/target/x86_64-unknown-linux-musl/release/static-analysis-cli" "${BIN_DIR}/static_analysis-linux-amd64"
   cp "${CLI_DIR}/target/x86_64-unknown-linux-musl/release/repository-context-cli" "${BIN_DIR}/repository_context-linux-amd64"
+  cp "${CLI_DIR}/target/x86_64-unknown-linux-musl/release/repository-context-provider-cli" "${BIN_DIR}/repository_context_provider-linux-amd64"
 else
   echo "      -> Using Docker musl container"
   docker run --rm --platform linux/amd64 \
@@ -78,6 +89,7 @@ else
   cp "${CLI_DIR}/target/x86_64-unknown-linux-musl/release/collect-diff-context-cli" "${BIN_DIR}/collect_diff_context-linux-amd64"
   cp "${CLI_DIR}/target/x86_64-unknown-linux-musl/release/static-analysis-cli" "${BIN_DIR}/static_analysis-linux-amd64"
   cp "${CLI_DIR}/target/x86_64-unknown-linux-musl/release/repository-context-cli" "${BIN_DIR}/repository_context-linux-amd64"
+  cp "${CLI_DIR}/target/x86_64-unknown-linux-musl/release/repository-context-provider-cli" "${BIN_DIR}/repository_context_provider-linux-amd64"
 fi
 
 # 4. Windows AMD64 (Native mingw if available, else Docker)
@@ -88,6 +100,7 @@ if command -v x86_64-w64-mingw32-gcc >/dev/null 2>&1; then
   cp "${CLI_DIR}/target/x86_64-pc-windows-gnu/release/collect-diff-context-cli.exe" "${BIN_DIR}/collect_diff_context-windows-amd64.exe"
   cp "${CLI_DIR}/target/x86_64-pc-windows-gnu/release/static-analysis-cli.exe" "${BIN_DIR}/static_analysis-windows-amd64.exe"
   cp "${CLI_DIR}/target/x86_64-pc-windows-gnu/release/repository-context-cli.exe" "${BIN_DIR}/repository_context-windows-amd64.exe"
+  cp "${CLI_DIR}/target/x86_64-pc-windows-gnu/release/repository-context-provider-cli.exe" "${BIN_DIR}/repository_context_provider-windows-amd64.exe"
 else
   echo "      -> Fallback to Docker mingw-w64 container"
   docker run --rm --platform linux/amd64 \
@@ -97,6 +110,7 @@ else
   cp "${CLI_DIR}/target/x86_64-pc-windows-gnu/release/collect-diff-context-cli.exe" "${BIN_DIR}/collect_diff_context-windows-amd64.exe"
   cp "${CLI_DIR}/target/x86_64-pc-windows-gnu/release/static-analysis-cli.exe" "${BIN_DIR}/static_analysis-windows-amd64.exe"
   cp "${CLI_DIR}/target/x86_64-pc-windows-gnu/release/repository-context-cli.exe" "${BIN_DIR}/repository_context-windows-amd64.exe"
+  cp "${CLI_DIR}/target/x86_64-pc-windows-gnu/release/repository-context-provider-cli.exe" "${BIN_DIR}/repository_context_provider-windows-amd64.exe"
 fi
 
 smoke_host_repository_context
