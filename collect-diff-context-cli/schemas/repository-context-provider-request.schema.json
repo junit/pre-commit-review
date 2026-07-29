@@ -27,6 +27,7 @@
   },
   "$defs": {
     "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "scopeFingerprint": { "type": "string", "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$" },
     "absolutePath": {
       "type": "string",
       "minLength": 1,
@@ -44,7 +45,7 @@
       "required": ["source", "scope_fingerprint", "candidate_digest", "snapshot_root", "snapshot_sha256", "snapshot_files", "snapshot_bytes", "project_model_digest"],
       "properties": {
         "source": { "type": "string", "enum": ["staged", "unstaged", "branch"] },
-        "scope_fingerprint": { "$ref": "#/$defs/sha256" },
+        "scope_fingerprint": { "$ref": "#/$defs/scopeFingerprint" },
         "candidate_digest": { "$ref": "#/$defs/sha256" },
         "snapshot_root": { "$ref": "#/$defs/absolutePath" },
         "snapshot_sha256": { "$ref": "#/$defs/sha256" },

@@ -355,7 +355,7 @@ pub struct CandidateBinding {
 
 impl CandidateBinding {
     pub(crate) fn validate(&self) -> Result<(), ContractError> {
-        validate_sha256(&self.scope_fingerprint, "scope fingerprint")?;
+        validate_scope_fingerprint(&self.scope_fingerprint)?;
         validate_sha256(&self.candidate_digest, "candidate digest")?;
         validate_sha256(&self.snapshot_sha256, "snapshot digest")?;
         validate_sha256(&self.project_model_digest, "project-model digest")?;
@@ -888,7 +888,7 @@ impl From<&CandidateBinding> for ReportedCandidateBinding {
 
 impl ReportedCandidateBinding {
     fn validate(&self) -> Result<(), ContractError> {
-        validate_sha256(&self.scope_fingerprint, "scope fingerprint")?;
+        validate_scope_fingerprint(&self.scope_fingerprint)?;
         validate_sha256(&self.candidate_digest, "candidate digest")?;
         validate_sha256(&self.snapshot_sha256, "snapshot digest")?;
         validate_sha256(&self.project_model_digest, "project-model digest")?;
@@ -1485,6 +1485,21 @@ pub(crate) fn validate_sha256(value: &str, name: &'static str) -> Result<(), Con
         return Err(ContractError::new(
             "provider-digest-invalid",
             format!("{name} must be exactly 64 lower-case hexadecimal characters"),
+        ));
+    }
+    Ok(())
+}
+
+fn validate_scope_fingerprint(value: &str) -> Result<(), ContractError> {
+    if !matches!(value.len(), 40 | 64)
+        || !value
+            .as_bytes()
+            .iter()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(byte))
+    {
+        return Err(ContractError::new(
+            "provider-scope-fingerprint-invalid",
+            "scope fingerprint must be 40 or 64 lower-case hexadecimal characters",
         ));
     }
     Ok(())

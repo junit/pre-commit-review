@@ -237,6 +237,23 @@ fn valid_request_profile_model_and_report_round_trip() -> Result<(), Box<dyn Err
 }
 
 #[test]
+fn request_and_report_accept_current_scope_fingerprint_grammar() -> Result<(), Box<dyn Error>> {
+    let mut request = valid_request();
+    request.candidate.scope_fingerprint = "a".repeat(40);
+    request.validate()?;
+
+    let mut report = valid_report();
+    report.candidate.scope_fingerprint = "b".repeat(40);
+    report.validate()?;
+
+    request.candidate.scope_fingerprint = "c".repeat(39);
+    assert!(request.validate().is_err());
+    report.candidate.scope_fingerprint = "D".repeat(40);
+    assert!(report.validate().is_err());
+    Ok(())
+}
+
+#[test]
 fn request_rejects_empty_seeds_duplicate_directions_and_raised_or_zero_limits() {
     let mut request = valid_request();
     request.seeds.clear();

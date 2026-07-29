@@ -29,6 +29,7 @@ fn main() {
         "initialize-error" => handshake_initialize_error(log_path.as_deref()),
         "unknown-encoding" => handshake(log_path.as_deref(), "ok", Some("utf-32")),
         "graph" => graph(log_path.as_deref()),
+        "graph-warning" => graph_with_health(log_path.as_deref(), "warning"),
         "--stdio" => fixture_stdio(log_path.as_deref()),
         "stderr-flood" => stderr_flood(),
         "hang" => hang(),
