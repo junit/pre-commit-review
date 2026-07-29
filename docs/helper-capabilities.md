@@ -50,14 +50,22 @@ The `impact_context/v1` contract keeps three evidence layers distinct:
 2. **Heuristic repository index facts** come from validated content-addressed FileFacts, the passive Cargo project model, an immutable exact-candidate SQLite graph generation, and an optional in-memory candidate overlay. Fast Mode may read a compatible generation with zero persistent writes; only explicit Deep/index operations may publish facts or generations. These edges are bounded syntactic or resolved-reference evidence, not compiler-complete semantic calls.
 3. **Opt-in semantic provider facts** may come from rust-analyzer now, or SCIP, Joern, or another separately authorized provider in a later subproject. They must preserve their own provider identity, confidence, completeness, and limitations. They may add higher-confidence evidence but must not silently rewrite or upgrade heuristic Repository Index edges.
 
-The rust-analyzer provider now has a bounded library implementation for an
-explicitly authorized, already materialized candidate snapshot. It remains
-opt-in and unreachable from the default review, Fast Mode, repository index,
-SQLite persistence, and static-analysis orchestration paths. See
+The rust-analyzer provider now has a bounded library implementation and an
+explicit `repository-context-provider-cli` entrypoint. Its `model` command
+constructs a digest-bound linked project from only an authoritative candidate
+snapshot; its `run` command requires absolute registry, model, and request paths
+plus the exact registry and model file digests. The compatibility wrapper
+resolves only the project-owned adapter CLI and never resolves or downloads
+`rust-analyzer`.
+
+This provider remains opt-in and unreachable from the default review, Fast
+Mode, repository index, SQLite persistence, and static-analysis orchestration
+paths. Delivery 4 packages no real `rust-analyzer` artifact. See
 [`rust-analyzer-context-provider.md`](rust-analyzer-context-provider.md) for
-the profile, linked-project, LSP, lifecycle, and report boundaries. A fake
-server proves the local protocol contract; real rust-analyzer artifacts and
-release claims are deferred.
+the commands, schemas, digest checks, exit codes, linked-project, LSP,
+lifecycle, and report boundaries. A fake server proves the local protocol
+contract; real-server artifacts and sustained release evidence belong to
+Delivery 5.
 
 The graph database is an internal implementation detail. Callers receive only bounded changed-symbol, incoming/outgoing relationship, reverse-dependent, connected-test, and limitation slices. Index, query, and output completeness remain independent so a complete bounded query over a heuristic graph is never presented as compiler completeness.
 

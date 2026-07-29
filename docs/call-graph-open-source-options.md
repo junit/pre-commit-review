@@ -262,13 +262,18 @@ Tree-sitter 应直接接收候选快照字节。LSP、SCIP indexer 和 Joern 需
 
 LSP adapter 不应直接塞入当前“无 daemon” static-analysis orchestration contract；应建立独立的 `repository_context_provider` 契约，或明确修改该契约后再接入。
 
-当前 rust-analyzer provider 已完成 Delivery 1-3 的本地边界实现：它只接受
-borrowed materialized snapshot、授权 linked-project model 和 profile，使用
-有界 JSON-RPC session 与 single-flight Call Hierarchy BFS，并通过 fake server
-验证 capability/readiness、生命周期和状态矩阵。它仍是 library-only opt-in，
-不进入默认 review、Fast Mode、repository index、SQLite 或 static-analysis
-orchestration；真实 rust-analyzer artifact、跨平台发布和 sustained fuzz 属于
-Delivery 4/5。
+当前 rust-analyzer provider 已完成 Delivery 4 explicit CLI：除原有 bounded
+library runner 外，`repository-context-provider-cli model` 会从 authoritative
+candidate snapshot 构造 digest-bound linked-project model，
+`repository-context-provider-cli run` 只执行显式 registry、model 和 bounded
+request 授权的 provider。registry 与 model 文件 digest、profile、executable、
+configuration、scope 和 snapshot 均在执行边界内校验并在漂移时 fail closed。
+
+该 CLI 仍是 opt-in，不进入默认 review、Fast Mode、repository index、SQLite 或
+static-analysis orchestration。Delivery 4 只跨平台打包本项目的 adapter CLI、
+wrapper 和 schemas，不捆绑、不下载真实 `rust-analyzer`。真实服务端 fixture、
+真实 artifact 的平台信任链与 SBOM/license closure、持续 fuzz 和性能证据属于
+Delivery 5。
 
 ### Phase 3：SCIP consumer
 

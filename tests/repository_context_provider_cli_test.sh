@@ -6,6 +6,9 @@ repo_root="$(CDPATH='' cd -- "$script_dir/.." && pwd -P)"
 wrapper="$repo_root/scripts/run_repository_context_provider.sh"
 resolver="$repo_root/scripts/lib/repository_context_provider_cli.sh"
 validator="$repo_root/scripts/validate_schemas.py"
+provider_doc="$repo_root/docs/rust-analyzer-context-provider.md"
+capabilities_doc="$repo_root/docs/helper-capabilities.md"
+options_doc="$repo_root/docs/call-graph-open-source-options.md"
 tmp_dir="$(mktemp -d)"
 tmp_dir="$(CDPATH='' cd -- "$tmp_dir" && pwd -P)"
 trap 'rm -rf "$tmp_dir"' EXIT
@@ -45,6 +48,23 @@ PY
 
 [ -r "$resolver" ] || fail 'resolver is missing'
 [ -x "$wrapper" ] || fail 'wrapper is missing or not executable'
+[ -r "$provider_doc" ] || fail 'provider documentation is missing'
+[ -r "$capabilities_doc" ] || fail 'helper capability documentation is missing'
+[ -r "$options_doc" ] || fail 'call-graph options documentation is missing'
+grep -Fq '`repository-context-provider-cli model`' "$provider_doc" \
+  || fail 'provider model command is not documented'
+grep -Fq '`repository-context-provider-cli run`' "$provider_doc" \
+  || fail 'provider run command is not documented'
+grep -Fq 'collect-diff-context-cli/schemas/repository-context-provider-registry.schema.json' \
+  "$provider_doc" || fail 'provider registry schema is not documented'
+grep -Fq 'collect-diff-context-cli/schemas/repository-context-provider-run-request.schema.json' \
+  "$provider_doc" || fail 'provider request schema is not documented'
+grep -Fq 'Delivery 4 does not bundle or download a real `rust-analyzer` artifact.' \
+  "$provider_doc" || fail 'Delivery 4 artifact boundary is not documented'
+grep -Fq '`repository-context-provider-cli`' "$capabilities_doc" \
+  || fail 'explicit provider CLI is not listed in helper capabilities'
+grep -Fq 'Delivery 4 explicit CLI' "$options_doc" \
+  || fail 'call-graph options do not record the Delivery 4 CLI boundary'
 
 fake_cli="$tmp_dir/fake-provider-cli"
 cat >"$fake_cli" <<'EOF_FAKE'
