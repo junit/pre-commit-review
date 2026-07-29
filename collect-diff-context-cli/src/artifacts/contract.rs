@@ -497,7 +497,7 @@ pub struct ProbeResult {
 }
 
 impl ProbeResult {
-    fn validate(&self) -> Result<(), ArtifactError> {
+    pub(crate) fn validate(&self) -> Result<(), ArtifactError> {
         if !self.success {
             return Err(ArtifactError::new(
                 "receipt-probe-failed",

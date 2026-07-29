@@ -48,6 +48,7 @@ toml = { version = "=1.1.3", default-features = false, features = ["std", "serde
 url = "=2.5.7"
 tar = { version = "=0.4.46", default-features = false }
 flate2 = { version = "=1.1.9", default-features = false, features = ["rust_backend"] }
+ureq = { version = "=3.3.0", default-features = false, features = ["rustls"] }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"

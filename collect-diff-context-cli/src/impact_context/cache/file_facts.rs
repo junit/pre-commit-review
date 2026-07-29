@@ -490,7 +490,7 @@ fn path_identity_bytes(path: &Path) -> Vec<u8> {
         .collect()
 }
 
-fn platform_default_cache_root() -> Result<PathBuf, CacheError> {
+pub(crate) fn platform_default_cache_root() -> Result<PathBuf, CacheError> {
     #[cfg(target_os = "macos")]
     {
         let home = std::env::var_os("HOME").ok_or_else(|| {
@@ -529,7 +529,7 @@ fn platform_default_cache_root() -> Result<PathBuf, CacheError> {
     }
 }
 
-fn resolve_absolute_path(path: &Path) -> Result<PathBuf, CacheError> {
+pub(crate) fn resolve_absolute_path(path: &Path) -> Result<PathBuf, CacheError> {
     let normalized = normalize_absolute_path(path)?;
     if normalized.exists() {
         return fs::canonicalize(&normalized).map_err(|error| {
