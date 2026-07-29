@@ -1,3 +1,4 @@
+pub mod cli;
 pub mod cli_contract;
 pub mod contract;
 pub mod json_rpc;

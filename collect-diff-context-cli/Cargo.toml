@@ -21,6 +21,10 @@ name = "repository-context-cli"
 path = "src/bin/repository_context.rs"
 
 [[bin]]
+name = "repository-context-provider-cli"
+path = "src/bin/repository_context_provider.rs"
+
+[[bin]]
 name = "static-analysis-fixture"
 path = "src/bin/static_analysis_fixture.rs"
 required-features = ["test-fixture"]
