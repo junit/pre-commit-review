@@ -185,6 +185,10 @@ Useful flags:
 - `--doctor` diagnoses scanner source, version, bundled SHA256, trusted configuration, and stdin/JSON capability without installing a skill; it exits non-zero when redaction is unavailable but does not imply that review is blocked
 - `--doctor-target /absolute/managed-skill` runs the read-only artifact doctor for an installed target; it never downloads, repairs, or selects a replacement
 
+Release artifact trust is checked outside the extracted core payload. A release consumer verifies the archive's published `.sha256` sidecar before opening it, then verifies the project attestation for the exact archive subject. The attestation must bind `junit/pre-commit-review`, the expected release workflow, an immutable version tag and commit, the GitHub Actions OIDC issuer, and the pack composition digests. `scripts/verify_release_artifacts.sh --fixture <fixture>` is the build-only verifier used by CI; an unscoped subject-only attestation is rejected.
+
+Third-party packs use the project-owned immutable release tag and never fall back to `latest`, `nightly`, another source, or a remote revocation service. Target-local revocations are sorted and digest-pinned with 16,384-entry and 8 MiB ceilings. An offline core installation cannot learn a revocation published after that core was built, so operators must install a newer reviewed core when the distribution manifest changes.
+
 Examples:
 
 ```bash

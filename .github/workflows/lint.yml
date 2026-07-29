@@ -9,6 +9,21 @@ permissions:
   contents: read
 
 jobs:
+  artifact-release-trust:
+    name: Verify release trust fixtures
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout reviewed verifier
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - name: Verify sidecars, scoped attestations, and revocation bounds
+        run: ./scripts/verify_release_artifacts.sh --fixture tests/fixtures/release
+      - name: Install schema validator
+        run: python3 -m pip install --disable-pip-version-check jsonschema
+      - name: Validate artifact schemas
+        run: python3 scripts/validate_schemas.py
+      - name: Check verifier shell syntax
+        run: bash -n scripts/verify_release_artifacts.sh
+
   shellcheck:
     runs-on: ubuntu-latest
     steps:

@@ -281,6 +281,18 @@ grep -Fq 'pre-commit-review-gitleaks-' "$repo_root/.github/workflows/release.yml
   || fail 'release workflow does not publish the Gitleaks asset grammar'
 grep -Fq 'pre-commit-review-core-' "$repo_root/.github/workflows/release.yml" \
   || fail 'release workflow does not publish the core asset grammar'
+grep -Fq 'sha256sum' "$repo_root/.github/workflows/release.yml" \
+  || fail 'release workflow does not publish external archive sidecars'
+grep -Fq 'actions/attest-build-provenance@' "$repo_root/.github/workflows/release.yml" \
+  || fail 'release workflow does not attest release archive subjects'
+grep -Fq 'artifact-pack-release.yml' "$repo_root/.github/workflows/artifact-pack-release.yml" \
+  || fail 'provider pack workflow does not bind its own workflow identity'
+grep -Fq 'verify_release_artifacts.sh --fixture' "$repo_root/.github/workflows/artifact-pack-release.yml" \
+  || fail 'provider pack workflow does not run the independent verifier'
+if grep -Eq 'uses: [^@]+@(v[0-9]+|master|stable|main)$' \
+  "$repo_root/.github/workflows/release.yml" "$repo_root/.github/workflows/artifact-pack-release.yml"; then
+  fail 'release trust workflows use a moving action ref'
+fi
 grep -Fq 'tag_name: artifact-gitleaks-8.30.1-pcr.1' "$repo_root/.github/workflows/release.yml" \
   || fail 'release workflow does not publish Gitleaks at the record-bound release tag'
 if grep -Fq 'pre-commit-review-runtime.tar.gz' "$repo_root/.github/workflows/release.yml"; then
@@ -308,6 +320,129 @@ gitleaks = installer.index('provision_gitleaks "$staging_dir"', provider)
 if not copy < provider < gitleaks:
     raise SystemExit('installer does not finalize core inventory before provider/Gitleaks provisioning')
 PY
+
+release_fixture="$repo_root/tests/fixtures/release"
+"$repo_root/scripts/verify_release_artifacts.sh" --fixture "$release_fixture" >/dev/null \
+  || fail 'release trust fixture did not verify'
+
+expect_release_rejection() {
+  local fixture_path="$1"
+  local expected_code="$2"
+  if "$repo_root/scripts/verify_release_artifacts.sh" --fixture "$fixture_path" \
+    >"$tmp_dir/release-stdout" 2>"$tmp_dir/release-stderr"; then
+    fail "release verifier accepted fixture expected to fail: $expected_code"
+  fi
+  grep -Fq "$expected_code" "$tmp_dir/release-stderr" \
+    || fail "release verifier did not report $expected_code"
+}
+
+sidecar_fixture="$tmp_dir/release-sidecar"
+cp -R "$release_fixture" "$sidecar_fixture"
+printf '%064d\n' 0 > "$sidecar_fixture/pre-commit-review-core-0.1.0-linux-amd64.tar.gz.sha256"
+expect_release_rejection "$sidecar_fixture" 'sidecar-digest'
+
+subject_fixture="$tmp_dir/release-subject"
+cp -R "$release_fixture" "$subject_fixture"
+python3 - "$subject_fixture/pre-commit-review-core-0.1.0-linux-amd64.tar.gz.attestation.json" <<'PY'
+import json
+from pathlib import Path
+import sys
+
+path = Path(sys.argv[1])
+attestation = json.loads(path.read_text(encoding='utf-8'))
+attestation['subject'][0]['digest']['sha256'] = '0' * 64
+path.write_text(json.dumps(attestation, separators=(',', ':')), encoding='utf-8')
+PY
+expect_release_rejection "$subject_fixture" 'attestation-subject'
+
+signer_fixture="$tmp_dir/release-signer"
+cp -R "$release_fixture" "$signer_fixture"
+python3 - "$signer_fixture/pre-commit-review-gitleaks-8.30.1-pcr.1-linux-amd64.tar.gz.attestation.json" <<'PY'
+import json
+from pathlib import Path
+import sys
+
+path = Path(sys.argv[1])
+attestation = json.loads(path.read_text(encoding='utf-8'))
+attestation['signer']['workflow'] = '.github/workflows/release.yml'
+path.write_text(json.dumps(attestation, separators=(',', ':')), encoding='utf-8')
+PY
+expect_release_rejection "$signer_fixture" 'attestation-signer'
+
+predicate_fixture="$tmp_dir/release-predicate"
+cp -R "$release_fixture" "$predicate_fixture"
+python3 - "$predicate_fixture/pre-commit-review-core-0.1.0-linux-amd64.tar.gz.attestation.json" <<'PY'
+import json
+from pathlib import Path
+import sys
+
+path = Path(sys.argv[1])
+attestation = json.loads(path.read_text(encoding='utf-8'))
+attestation['predicateType'] = 'https://slsa.dev/provenance/v1'
+path.write_text(json.dumps(attestation, separators=(',', ':')), encoding='utf-8')
+PY
+expect_release_rejection "$predicate_fixture" 'attestation-predicate'
+
+composition_fixture="$tmp_dir/release-composition"
+cp -R "$release_fixture" "$composition_fixture"
+python3 - "$composition_fixture/pre-commit-review-gitleaks-8.30.1-pcr.1-linux-amd64.tar.gz.attestation.json" <<'PY'
+import json
+from pathlib import Path
+import sys
+
+path = Path(sys.argv[1])
+attestation = json.loads(path.read_text(encoding='utf-8'))
+del attestation['predicate']['composition']['source_lock_sha256']
+path.write_text(json.dumps(attestation, separators=(',', ':')), encoding='utf-8')
+PY
+expect_release_rejection "$composition_fixture" 'attestation-composition'
+
+immutable_fixture="$tmp_dir/release-immutable"
+cp -R "$release_fixture" "$immutable_fixture"
+python3 - "$immutable_fixture/release.json" <<'PY'
+import json
+from pathlib import Path
+import sys
+
+path = Path(sys.argv[1])
+release = json.loads(path.read_text(encoding='utf-8'))
+release['immutable'] = False
+path.write_text(json.dumps(release, separators=(',', ':')), encoding='utf-8')
+PY
+expect_release_rejection "$immutable_fixture" 'immutable-release-unavailable'
+
+revocation_fixture="$tmp_dir/release-revocation-limit"
+cp -R "$release_fixture" "$revocation_fixture"
+python3 - "$revocation_fixture/revocations.json" "$revocation_fixture/release.json" <<'PY'
+import hashlib
+import json
+from pathlib import Path
+import sys
+
+revocations_path, release_path = map(Path, sys.argv[1:])
+entries = [
+    {
+        'pack_sha256': f'{index:064x}',
+        'artifact_id': 'gitleaks',
+        'platform_id': 'linux-amd64',
+        'pack_version': '8.30.1-pcr.1',
+        'reason': 'fixture revocation',
+        'replacement_pack_version': None,
+    }
+    for index in range(16_385)
+]
+revocations = {
+    'schema_version': 1,
+    'kind': 'third_party_artifact_revocations',
+    'entries': entries,
+}
+raw = json.dumps(revocations, separators=(',', ':')).encode('utf-8')
+revocations_path.write_bytes(raw)
+release = json.loads(release_path.read_text(encoding='utf-8'))
+release['revocation_index']['sha256'] = hashlib.sha256(raw).hexdigest()
+release_path.write_text(json.dumps(release, separators=(',', ':')), encoding='utf-8')
+PY
+expect_release_rejection "$revocation_fixture" 'revocation-entry-limit'
 
 tracked_packs="$(git -C "$repo_root" ls-files third_party_artifacts/packs)"
 [ "$tracked_packs" = 'third_party_artifacts/packs/.gitkeep' ] \

@@ -4,6 +4,12 @@ This is the deep-integrator reference for the read-only helper at `scripts/colle
 
 The helper is the source of truth for diff source, review boundaries, and snapshot identity. The review entrypoint never fetches, stages, resets, installs, or modifies files, and it never runs, rewrites, or skips tests. Pinned scanner download is limited to an explicit user-initiated install or release-staging operation handled by `install.sh` and `scripts/fetch_gitleaks.sh`, not an Agent-time fallback.
 
+## Release Artifact Trust
+
+Release installation is a separate operator action. Before an archive is opened, the clean consumer checks its external SHA256 sidecar and then its scoped project attestation. `scripts/verify_release_artifacts.sh` requires the exact archive subject digest, the `junit/pre-commit-review` repository, the owning workflow (`release.yml` for core or `artifact-pack-release.yml` for provider packs), an immutable version tag and commit, and the GitHub Actions OIDC/Sigstore issuer. Provider composition evidence must bind the source-lock, upstream archive, pack manifest, SBOM, and generator digests; core evidence binds its manifest, SBOM, and generator digests. A subject-only or upstream-provenance-only attestation is insufficient.
+
+Revocations are local, bounded, and offline. The canonical distribution manifest retains active records and a recent revoked window; older revoked digests live in the sorted, digest-pinned target-local `runtime/distribution/revocations.json` index (maximum 16,384 entries or 8 MiB). Doctor rejects receipts found in either location and never downloads a replacement or consults a remote kill switch. An old offline core cannot learn a later revocation until a newer reviewed core is installed.
+
 ## Control Plane Gateway
 
 The review workflow starts with `scripts/collect_diff_context.sh --control-plane`. This bounded gateway:
