@@ -1,0 +1,66 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "repository-context-provider-registry.schema.json",
+  "title": "ProviderRegistry",
+  "type": "object",
+  "required": ["schema_version", "kind", "entries"],
+  "properties": {
+    "schema_version": { "type": "integer", "const": 1 },
+    "kind": { "type": "string", "const": "repository_context_provider_registry" },
+    "entries": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 16,
+      "uniqueItems": true,
+      "items": { "$ref": "#/$defs/entry" }
+    }
+  },
+  "$defs": {
+    "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
+    "absolutePath": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 4096,
+      "pattern": "^(?:/|[A-Za-z]:[\\\\/])"
+    },
+    "entry": {
+      "type": "object",
+      "required": [
+        "provider_id",
+        "provider_kind",
+        "provider_version",
+        "target_triple",
+        "profile_path",
+        "profile_sha256",
+        "executable_path",
+        "executable_sha256",
+        "configuration_sha256",
+        "toolchain_mode"
+      ],
+      "properties": {
+        "provider_id": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256,
+          "pattern": "^[A-Za-z0-9._-]+$"
+        },
+        "provider_kind": { "type": "string", "const": "rust-analyzer" },
+        "provider_version": { "type": "string", "minLength": 1, "maxLength": 100 },
+        "target_triple": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 256,
+          "pattern": "^[A-Za-z0-9_.-]+$"
+        },
+        "profile_path": { "$ref": "#/$defs/absolutePath" },
+        "profile_sha256": { "$ref": "#/$defs/sha256" },
+        "executable_path": { "$ref": "#/$defs/absolutePath" },
+        "executable_sha256": { "$ref": "#/$defs/sha256" },
+        "configuration_sha256": { "$ref": "#/$defs/sha256" },
+        "toolchain_mode": { "type": "string", "const": "none" }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

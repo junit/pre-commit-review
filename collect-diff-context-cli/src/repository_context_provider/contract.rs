@@ -316,7 +316,7 @@ pub struct SeedSymbol {
 }
 
 impl SeedSymbol {
-    fn validate(&self) -> Result<(), ContractError> {
+    pub(crate) fn validate(&self) -> Result<(), ContractError> {
         validate_sha256(&self.changed_symbol_id, "changed_symbol_id")?;
         validate_snapshot_relative_path(&self.path, "seed path")?;
         validate_text(&self.name, MAX_NAME_BYTES, "seed name")?;
@@ -1475,7 +1475,7 @@ fn validate_metric(value: usize, maximum: usize, name: &'static str) -> Result<(
     Ok(())
 }
 
-fn validate_sha256(value: &str, name: &'static str) -> Result<(), ContractError> {
+pub(crate) fn validate_sha256(value: &str, name: &'static str) -> Result<(), ContractError> {
     if value.len() != 64
         || !value
             .as_bytes()
@@ -1490,7 +1490,11 @@ fn validate_sha256(value: &str, name: &'static str) -> Result<(), ContractError>
     Ok(())
 }
 
-fn validate_text(value: &str, maximum: usize, name: &'static str) -> Result<(), ContractError> {
+pub(crate) fn validate_text(
+    value: &str,
+    maximum: usize,
+    name: &'static str,
+) -> Result<(), ContractError> {
     if value.is_empty() || value.len() > maximum || value.contains(['\0', '\r', '\n']) {
         return Err(ContractError::new(
             "provider-text-invalid",
@@ -1514,7 +1518,7 @@ fn validate_identifier(value: &str, name: &'static str) -> Result<(), ContractEr
     Ok(())
 }
 
-fn validate_target(value: &str) -> Result<(), ContractError> {
+pub(crate) fn validate_target(value: &str) -> Result<(), ContractError> {
     validate_text(value, MAX_TARGET_BYTES, "target triple")?;
     if !value
         .bytes()
@@ -1528,7 +1532,7 @@ fn validate_target(value: &str) -> Result<(), ContractError> {
     Ok(())
 }
 
-fn validate_absolute_path(path: &Path, name: &'static str) -> Result<(), ContractError> {
+pub(crate) fn validate_absolute_path(path: &Path, name: &'static str) -> Result<(), ContractError> {
     let Some(value) = path.to_str() else {
         return contract_error(
             "provider-path-invalid",
@@ -1612,7 +1616,7 @@ fn validate_sorted_unique_text(
     Ok(())
 }
 
-fn sha256_json(value: &impl Serialize) -> String {
+pub(crate) fn sha256_json(value: &impl Serialize) -> String {
     let bytes = serde_json::to_vec(value).expect("typed provider contracts always serialize");
     format!("{:x}", Sha256::digest(bytes))
 }

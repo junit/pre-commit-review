@@ -1,3 +1,4 @@
+pub mod cli_contract;
 pub mod contract;
 pub mod json_rpc;
 pub mod rust_analyzer;
