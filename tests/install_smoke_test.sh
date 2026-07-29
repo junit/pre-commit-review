@@ -194,6 +194,15 @@ run_offline_install claude --link --dir "$tmp_dir/claude-skills"
 "$repo_root/install.sh" gemini --dry-run --copy --dir "$tmp_dir/gemini-skills"
 [ ! -e "$tmp_dir/gemini-skills/pre-commit-review" ]
 
+if "$repo_root/install.sh" codex --link --with-rust-analyzer \
+  --dir "$tmp_dir/provider-link" >"$tmp_dir/provider-link.out" 2>"$tmp_dir/provider-link.err"; then
+  printf '%s\n' 'install smoke test failed: --link --with-rust-analyzer was accepted' >&2
+  exit 1
+fi
+[ ! -e "$tmp_dir/provider-link" ]
+grep -Fq -- '--with-rust-analyzer cannot be combined with --link' \
+  "$tmp_dir/provider-link.err"
+
 KIRO_SKILLS_DIR="$tmp_dir/kiro-skills" run_offline_install kiro --copy
 [ -f "$tmp_dir/kiro-skills/pre-commit-review/SKILL.md" ]
 [ -f "$tmp_dir/kiro-skills/pre-commit-review/scripts/collect_diff_context.sh" ]

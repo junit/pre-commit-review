@@ -120,6 +120,25 @@ impl CliFixture {
             .output()?)
     }
 
+    fn provision_cache_only(&self) -> Result<Output, Box<dyn Error>> {
+        Ok(self
+            .command()
+            .args([
+                "artifacts",
+                "provision",
+                "--manifest",
+                path_text(&self.manifest_path)?,
+                "--artifact-id",
+                "gitleaks",
+                "--platform-id",
+                "linux-amd64",
+                "--target-root",
+                path_text(&self.target_root)?,
+                "--no-download",
+            ])
+            .output()?)
+    }
+
     fn doctor(&self) -> Result<Output, Box<dyn Error>> {
         self.doctor_artifact(None)
     }
@@ -432,6 +451,24 @@ fn local_pack_verify_and_provision_emit_compact_reports() -> Result<(), Box<dyn 
         .output()?;
     completed_report(&progress)?;
     assert!(!progress.stderr.is_empty());
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn no_download_provisions_only_from_a_verified_cache_entry() -> Result<(), Box<dyn Error>> {
+    let fixture = CliFixture::new()?;
+    fixture.seed_target_distribution()?;
+    failed_report(&fixture.provision_cache_only()?, 1, "corrupt-cache")?;
+
+    completed_report(&fixture.provision()?)?;
+    fs::remove_dir_all(&fixture.target_root)?;
+    fixture.seed_target_distribution()?;
+    completed_report(&fixture.provision_cache_only()?)?;
+    assert!(fixture
+        .target_root
+        .join("runtime/artifact-receipts/gitleaks.json")
+        .is_file());
     Ok(())
 }
 

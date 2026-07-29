@@ -44,20 +44,31 @@ gitleaks_artifact_manifest() {
 gitleaks_artifact_provision() {
   local runtime_root="$1"
   local platform="$2"
+  local cache_only="${3:-no}"
   local manager
   local manifest
   manager="$(gitleaks_artifact_manager "$runtime_root" "$platform" 2>/dev/null)" || return 1
   manifest="$(gitleaks_artifact_manifest "$runtime_root" 2>/dev/null)" || return 1
   [ -d "$runtime_root" ] || return 1
+  case "$cache_only" in
+    yes|no) ;;
+    *) return 1 ;;
+  esac
 
+  local -a provision_args=(
+    artifacts provision
+    --manifest "$manifest"
+    --artifact-id gitleaks
+    --platform-id "$platform"
+    --target-root "$runtime_root"
+  )
+  if [ "$cache_only" = 'yes' ]; then
+    provision_args+=(--no-download)
+  fi
   local report
   if report="$(
     PRE_COMMIT_REVIEW_FETCH_PROGRESS="${PRE_COMMIT_REVIEW_FETCH_PROGRESS:-auto}" \
-      "$manager" artifacts provision \
-        --manifest "$manifest" \
-        --artifact-id gitleaks \
-        --platform-id "$platform" \
-        --target-root "$runtime_root" 2>&1
+      "$manager" "${provision_args[@]}" 2>&1
   )"; then
     printf '%s\n' "$report" >&2
     return 0

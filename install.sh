@@ -9,6 +9,7 @@ mode='copy'
 force='no'
 dry_run='no'
 download_gitleaks='yes'
+with_rust_analyzer='no'
 doctor='no'
 doctor_target=''
 host=''
@@ -42,6 +43,8 @@ Options:
   --dry-run    Print planned actions without changing the filesystem
   --no-download
                Skip optional Gitleaks download; review remains available without secret redaction
+  --with-rust-analyzer
+               Require the separately published rust-analyzer provider pack
   --doctor     Verify Gitleaks source, version, integrity, configuration, and stdin/JSON capability
   --doctor-target PATH
                Run read-only artifact doctor against one absolute managed target
@@ -452,6 +455,14 @@ provision_gitleaks() {
     fi
     return 0
   fi
+  if [ "$dry_run" = 'no' ] && [ "$download_gitleaks" = 'no' ]; then
+    local cache_status=0
+    gitleaks_artifact_provision "$runtime_root" "$platform" yes || cache_status=$?
+    if [ "$cache_status" -eq 0 ]; then
+      log "Gitleaks: provisioned verified cache entry for $platform (--no-download)"
+      return 0
+    fi
+  fi
   if [ "$dry_run" = 'yes' ]; then
     log "DRY RUN skip optional Gitleaks download (--no-download)"
     return 0
@@ -510,6 +521,33 @@ copy_core_distribution() {
   cp -R "$distribution" "$staging_dir/runtime/"
 }
 
+commit_staged_target() {
+  local staging_dir="$1"
+  local target="$2"
+  local backup="${target}.previous.$$"
+  local had_target='no'
+
+  if [ -e "$backup" ] || [ -L "$backup" ]; then
+    die "refusing to overwrite an existing installer backup: $backup"
+  fi
+  if [ -e "$target" ] || [ -L "$target" ]; then
+    mv -- "$target" "$backup" || die "could not stage the existing target for replacement: $target"
+    had_target='yes'
+  fi
+  if mv -- "$staging_dir" "$target"; then
+    if [ "$had_target" = 'yes' ]; then
+      rm -rf -- "$backup" || log "Warning: previous target backup could not be removed: $backup"
+    fi
+    return 0
+  fi
+
+  if [ "$had_target" = 'yes' ]; then
+    mv -- "$backup" "$target" \
+      || die "target replacement failed and the previous target could not be restored: $target"
+  fi
+  die "could not commit staged installation: $target"
+}
+
 copy_payload() {
   local target="$1"
   local platform="$2"
@@ -565,8 +603,7 @@ copy_payload() {
     'repository-context-provider-cli' 'Repository context provider'
   provision_gitleaks "$staging_dir" "$platform" "$binary_name"
 
-  prepare_target "$target"
-  mv "$staging_dir" "$target"
+  commit_staged_target "$staging_dir" "$target"
   active_staging_dir=''
 }
 
@@ -621,6 +658,9 @@ while [ "$#" -gt 0 ]; do
       ;;
     --no-download)
       download_gitleaks='no'
+      ;;
+    --with-rust-analyzer)
+      with_rust_analyzer='yes'
       ;;
     --doctor)
       doctor='yes'
@@ -689,6 +729,13 @@ gitleaks_binary="$(gitleaks_binary_name "$gitleaks_platform")"
 static_analysis_binary="$(static_analysis_binary_name "$gitleaks_platform")"
 repository_context_binary="$(repository_context_binary_name "$gitleaks_platform")"
 repository_context_provider_binary="$(repository_context_provider_binary_name "$gitleaks_platform")"
+
+if [ "$with_rust_analyzer" = 'yes' ] && [ "$mode" = 'link' ]; then
+  die '--with-rust-analyzer cannot be combined with --link'
+fi
+if [ "$with_rust_analyzer" = 'yes' ]; then
+  die 'rust-analyzer provider pack is not bundled in this release'
+fi
 
 validate_target "$target_dir"
 ensure_parent_dir "$skills_dir"

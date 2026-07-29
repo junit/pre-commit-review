@@ -1,7 +1,7 @@
 use super::{
     cache::{
-        installed_executable_path, provision_from_cache, publish_cache, read_target_receipt,
-        verify_target_receipt, ArtifactCacheBoundaries, ArtifactCacheLayout,
+        installed_executable_path, open_cache, provision_from_cache, publish_cache,
+        read_target_receipt, verify_target_receipt, ArtifactCacheBoundaries, ArtifactCacheLayout,
     },
     contract::{
         canonical_json, sha256_bytes, ArtifactError, ArtifactManifest, ArtifactOperation,
@@ -42,6 +42,7 @@ enum ArtifactCommand {
     Provision {
         selection: Selection,
         target_root: PathBuf,
+        cache_only: bool,
     },
     Doctor {
         target_root: PathBuf,
@@ -151,11 +152,22 @@ fn parse(arguments: &[OsString]) -> Result<ArtifactCommand, CliError> {
     let mut platform_id = None;
     let mut pack_path = None;
     let mut target_root = None;
+    let mut cache_only = false;
     let mut index = 1;
     while index < arguments.len() {
         let flag = arguments[index].to_str().ok_or(CliError {
             code: "argument-unknown",
         })?;
+        if flag == "--no-download" {
+            if cache_only {
+                return Err(CliError {
+                    code: "argument-duplicate",
+                });
+            }
+            cache_only = true;
+            index += 1;
+            continue;
+        }
         if !matches!(
             flag,
             "--manifest" | "--artifact-id" | "--platform-id" | "--pack" | "--target-root"
@@ -180,6 +192,11 @@ fn parse(arguments: &[OsString]) -> Result<ArtifactCommand, CliError> {
 
     match operation {
         "verify" => {
+            if cache_only {
+                return Err(CliError {
+                    code: "argument-unsupported",
+                });
+            }
             reject_present(&target_root)?;
             Ok(ArtifactCommand::Verify(selection(
                 manifest_path,
@@ -188,15 +205,28 @@ fn parse(arguments: &[OsString]) -> Result<ArtifactCommand, CliError> {
                 pack_path,
             )?))
         }
-        "provision" => Ok(ArtifactCommand::Provision {
-            selection: selection(manifest_path, artifact_id, platform_id, pack_path)?,
-            target_root: required_absolute(
-                target_root,
-                "argument-required",
-                "target-root-not-absolute",
-            )?,
-        }),
+        "provision" => {
+            if cache_only && pack_path.is_some() {
+                return Err(CliError {
+                    code: "argument-unsupported",
+                });
+            }
+            Ok(ArtifactCommand::Provision {
+                selection: selection(manifest_path, artifact_id, platform_id, pack_path)?,
+                target_root: required_absolute(
+                    target_root,
+                    "argument-required",
+                    "target-root-not-absolute",
+                )?,
+                cache_only,
+            })
+        }
         "doctor" => {
+            if cache_only {
+                return Err(CliError {
+                    code: "argument-unsupported",
+                });
+            }
             reject_present(&manifest_path)?;
             reject_present(&platform_id)?;
             reject_present(&pack_path)?;
@@ -321,12 +351,28 @@ fn execute(command: ArtifactCommand, progress: Progress) -> Result<ArtifactRepor
         ArtifactCommand::Provision {
             selection,
             target_root,
+            cache_only,
         } => {
             let boundaries = ArtifactCacheBoundaries {
                 target_root: Some(target_root.clone()),
                 ..ArtifactCacheBoundaries::default()
             };
             let layout = ArtifactCacheLayout::resolve(None, &boundaries)?;
+            if cache_only {
+                let (manifest, _) = read_strict_json::<ArtifactManifest>(
+                    &selection.manifest_path,
+                    MAX_MANIFEST_BYTES,
+                    "manifest-json",
+                    "manifest-canonical",
+                )?;
+                manifest.validate()?;
+                let record = manifest
+                    .select_active(&selection.artifact_id, &selection.platform_id)?
+                    .clone();
+                let cached = open_cache(&layout, &record)?;
+                provision_from_cache(&cached, &target_root, &manifest)?;
+                return Ok(report_from_record(ArtifactOperation::Provision, &record));
+            }
             let prepared = prepare(selection, progress)?;
             let publication = publish_cache(
                 &layout,
