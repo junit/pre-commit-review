@@ -891,6 +891,9 @@ fn provider_writer_cli_rejects_drifted_generator_configuration_before_output() {
 fn provider_release_workflow_accepts_only_the_exact_rust_analyzer_tag() {
     const RELEASE_TAG: &str = "artifact-rust-analyzer-2026.07.27-pcr.3";
     const RELEASE_REF: &str = "refs/tags/artifact-rust-analyzer-2026.07.27-pcr.3";
+    fn exact_input_identity(artifact: &str, release_tag: &str) -> bool {
+        artifact == "rust-analyzer" && release_tag == RELEASE_TAG
+    }
     fn job_condition(job: &str) -> &str {
         job.lines()
             .find_map(|line| line.strip_prefix("    if: "))
@@ -923,6 +926,13 @@ fn provider_release_workflow_accepts_only_the_exact_rust_analyzer_tag() {
     assert!(!triggers.contains("repository_dispatch:"));
     assert!(!workflow.contains("artifact-rust-analyzer-2026.07.27-pcr.1"));
     assert!(!workflow.contains("artifact-rust-analyzer-2026.07.27-pcr.2"));
+    assert!(exact_input_identity("rust-analyzer", RELEASE_TAG));
+    for historical_tag in [
+        "artifact-rust-analyzer-2026.07.27-pcr.1",
+        "artifact-rust-analyzer-2026.07.27-pcr.2",
+    ] {
+        assert!(!exact_input_identity("rust-analyzer", historical_tag));
+    }
 
     let build_start = workflow.find("\n  build:\n").unwrap();
     let rust_build_start = workflow.find("\n  build-rust-analyzer:\n").unwrap();
@@ -943,16 +953,20 @@ fn provider_release_workflow_accepts_only_the_exact_rust_analyzer_tag() {
     let tag_selector = format!("github.ref == '{RELEASE_REF}'");
     assert_eq!(
         job_condition(rust_build),
-        format!("inputs.artifact == 'rust-analyzer' || {tag_selector}")
+        format!(
+            "(inputs.artifact == 'rust-analyzer' && inputs.release_tag == '{RELEASE_TAG}') || {tag_selector}"
+        )
     );
     assert_eq!(
         job_condition(rust_verify),
-        format!("inputs.artifact == 'rust-analyzer' || {tag_selector}")
+        format!(
+            "(inputs.artifact == 'rust-analyzer' && inputs.release_tag == '{RELEASE_TAG}') || {tag_selector}"
+        )
     );
     assert_eq!(
         job_condition(rust_publish),
         format!(
-            "(inputs.artifact == 'rust-analyzer' && (startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch')) || {tag_selector}"
+            "(inputs.artifact == 'rust-analyzer' && inputs.release_tag == '{RELEASE_TAG}' && (startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch')) || {tag_selector}"
         )
     );
     assert_eq!(
