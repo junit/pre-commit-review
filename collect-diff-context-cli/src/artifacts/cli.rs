@@ -11,6 +11,7 @@ use super::{
     },
     pack::{verify_pack, VerifiedPack, VerifyLimits},
     probes::{run_installed_probes, run_probes},
+    provider::select_provider_install_record,
     transport::Transport,
 };
 use crate::{
@@ -366,9 +367,12 @@ fn execute(command: ArtifactCommand, progress: Progress) -> Result<ArtifactRepor
                     "manifest-canonical",
                 )?;
                 manifest.validate()?;
-                let record = manifest
-                    .select_active(&selection.artifact_id, &selection.platform_id)?
-                    .clone();
+                let record = select_install_record(
+                    &manifest,
+                    &selection.artifact_id,
+                    &selection.platform_id,
+                )?
+                .clone();
                 let cached = open_cache(&layout, &record)?;
                 provision_from_cache(&cached, &target_root, &manifest)?;
                 return Ok(report_from_record(ArtifactOperation::Provision, &record));
@@ -401,9 +405,8 @@ fn prepare(selection: Selection, progress: Progress) -> Result<PreparedArtifact,
         "manifest-canonical",
     )?;
     manifest.validate()?;
-    let record = manifest
-        .select_active(&selection.artifact_id, &selection.platform_id)?
-        .clone();
+    let record =
+        select_install_record(&manifest, &selection.artifact_id, &selection.platform_id)?.clone();
     let transport = match selection.pack_path {
         Some(path) => Transport::local(&path, &record.pack_sha256)?,
         None => Transport::project_asset(&record)?,
@@ -419,6 +422,18 @@ fn prepare(selection: Selection, progress: Progress) -> Result<PreparedArtifact,
         verified,
         probes,
     })
+}
+
+fn select_install_record<'a>(
+    manifest: &'a ArtifactManifest,
+    artifact_id: &str,
+    platform_id: &str,
+) -> Result<&'a ArtifactPackRecord, ArtifactError> {
+    if artifact_id == "rust-analyzer" {
+        select_provider_install_record(manifest, platform_id)
+    } else {
+        manifest.select_active(artifact_id, platform_id)
+    }
 }
 
 fn doctor(

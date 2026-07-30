@@ -499,6 +499,45 @@ provision_gitleaks() {
   fi
 }
 
+provision_rust_analyzer() {
+  local runtime_root="$1"
+  local platform="$2"
+  local manager
+  local manifest
+  local -a provision_args
+  local report
+
+  if [ "$dry_run" = 'yes' ]; then
+    log "DRY RUN provision required rust-analyzer provider for $platform"
+    return 0
+  fi
+
+  manager="$(gitleaks_artifact_manager "$runtime_root" "$platform" 2>/dev/null || true)"
+  [ -n "$manager" ] || die 'rust-analyzer artifact manager is unavailable'
+  manifest="$(gitleaks_artifact_manifest "$runtime_root" 2>/dev/null || true)"
+  [ -n "$manifest" ] || die 'rust-analyzer distribution manifest is unavailable'
+
+  provision_args=(
+    artifacts provision
+    --manifest "$manifest"
+    --artifact-id rust-analyzer
+    --platform-id "$platform"
+    --target-root "$runtime_root"
+  )
+  if [ "$download_gitleaks" = 'no' ]; then
+    provision_args+=(--no-download)
+  fi
+  if ! report="$(
+    PRE_COMMIT_REVIEW_FETCH_PROGRESS="${PRE_COMMIT_REVIEW_FETCH_PROGRESS:-auto}" \
+      "$manager" "${provision_args[@]}" 2>&1
+  )"; then
+    printf '%s\n' "$report" >&2
+    die "rust-analyzer provisioning failed for $platform"
+  fi
+  printf '%s\n' "$report" >&2
+  log "rust-analyzer: provisioned required provider for $platform"
+}
+
 copy_core_distribution() {
   local staging_dir="$1"
   local distribution="$source_dir/runtime/distribution"
@@ -571,6 +610,9 @@ copy_payload() {
     provision_rust_binary "$plan_root" "$provider_binary_name" \
       'repository-context-provider-cli' 'Repository context provider'
     provision_gitleaks "$plan_root" "$platform" "$binary_name"
+    if [ "$with_rust_analyzer" = 'yes' ]; then
+      provision_rust_analyzer "$plan_root" "$platform"
+    fi
     return 0
   fi
 
@@ -602,6 +644,9 @@ copy_payload() {
   provision_rust_binary "$staging_dir" "$provider_binary_name" \
     'repository-context-provider-cli' 'Repository context provider'
   provision_gitleaks "$staging_dir" "$platform" "$binary_name"
+  if [ "$with_rust_analyzer" = 'yes' ]; then
+    provision_rust_analyzer "$staging_dir" "$platform"
+  fi
 
   commit_staged_target "$staging_dir" "$target"
   active_staging_dir=''
@@ -703,9 +748,7 @@ if [ -n "$doctor_target" ]; then
   [ -z "$host" ] || die '--doctor-target does not accept an agent argument'
   gitleaks_path_is_absolute "$doctor_target" \
     || die '--doctor-target requires an absolute target path'
-  manager="$(gitleaks_artifact_manager "$source_dir" "$(resolve_gitleaks_platform)" 2>/dev/null || true)"
-  [ -n "$manager" ] || die 'artifact manager is unavailable'
-  exec "$manager" artifacts doctor --target-root "$doctor_target"
+  exec "$source_dir/scripts/check_artifacts.sh" "$doctor_target"
 fi
 
 [ -n "$host" ] || {
@@ -733,10 +776,6 @@ repository_context_provider_binary="$(repository_context_provider_binary_name "$
 if [ "$with_rust_analyzer" = 'yes' ] && [ "$mode" = 'link' ]; then
   die '--with-rust-analyzer cannot be combined with --link'
 fi
-if [ "$with_rust_analyzer" = 'yes' ]; then
-  die 'rust-analyzer provider pack is not bundled in this release'
-fi
-
 validate_target "$target_dir"
 ensure_parent_dir "$skills_dir"
 

@@ -1,7 +1,7 @@
 use super::{
     contract::{
-        canonical_json, sha256_bytes, ArtifactError, PackFileRecord, PackFileRole, PackManifest,
-        SourceLock,
+        canonical_json, sha256_bytes, ArtifactError, ArtifactManifest, ArtifactPackRecord,
+        ArtifactRole, PackFileRecord, PackFileRole, PackManifest, SourceLock,
     },
     writer::{normalized_archive, read_canonical, read_regular, write_atomic, ArchiveFile},
 };
@@ -18,6 +18,20 @@ const PROVIDER_SOURCE_LOCK_SHA256: &str =
 const MAX_ARCHIVE_BYTES: usize = 512 * 1024 * 1024;
 const MAX_EXECUTABLE_BYTES: usize = 128 * 1024 * 1024;
 const MAX_LICENSE_BYTES: usize = 1024 * 1024;
+
+pub fn select_provider_install_record<'a>(
+    manifest: &'a ArtifactManifest,
+    platform_id: &str,
+) -> Result<&'a ArtifactPackRecord, ArtifactError> {
+    let record = manifest.select_active("rust-analyzer", platform_id)?;
+    if record.artifact_role != ArtifactRole::RepositoryContextProvider {
+        return Err(ArtifactError::new(
+            "provider-install-record",
+            "rust-analyzer installation requires a provider pack",
+        ));
+    }
+    Ok(record)
+}
 
 pub fn release_threshold_ms(p95_ms: u64) -> Result<u64, ArtifactError> {
     if p95_ms == 0 {
