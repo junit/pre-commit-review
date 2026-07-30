@@ -15,6 +15,34 @@ Delivery 4 remains the authoritative provider execution contract.
 The supporting distribution and trust analysis is recorded in
 [`docs/gitleaks-distribution-strategy-research.md`](../../gitleaks-distribution-strategy-research.md).
 
+## Local Repository Delivery Override
+
+The task owner clarified on 2026-07-30 that this repository is delivered
+locally and that this branch must be completed before it is merged back into
+`feature/SAST`. This task therefore performs no GitHub push, pull request,
+release, tag, workflow dispatch, or OIDC attestation.
+
+For this local delivery:
+
+- real-server verification accepts only an explicitly supplied, project-packaged
+  local rust-analyzer whose executable and pack bytes match the reviewed source
+  lock and generated manifest inputs;
+- missing local pack input fails the explicit evidence command and never falls
+  back to `PATH`, rustup, a package manager, a user registry, or a direct
+  runtime download;
+- repository tests validate release, attestation, four-platform, and publication
+  ordering contracts with deterministic fixtures and static workflow checks;
+- current-host real-server and latency evidence is written only to ignored local
+  evidence and is not represented as four-platform or GitHub release evidence;
+- the production distribution manifest remains free of an active rust-analyzer
+  record until real project packs and external attestations exist.
+
+Completion under this override means the local implementation, explicit local
+real-server path, deterministic evidence tooling, static cross-platform gates,
+and negative reachability checks are complete and verified. It does not make a
+GitHub release, four-platform measurement, immutability, or OIDC provenance
+claim.
+
 ## Product Boundary
 
 pre-commit-review is local developer tooling and static-analysis/code-review

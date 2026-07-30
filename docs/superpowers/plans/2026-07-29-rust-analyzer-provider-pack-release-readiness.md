@@ -10,6 +10,35 @@
 
 ---
 
+## Local-Only Execution Adapter
+
+The task owner selected local repository completion on 2026-07-30. Do not push,
+publish, create releases or tags, dispatch workflows, or merge remotely while
+executing this plan.
+
+Apply these substitutions to Tasks 7–10:
+
+- Task 7 uses an explicitly supplied local project pack and target-local
+  generated authorization. The evidence command fails when that input is absent
+  or drifted; it has no PATH, rustup, package-manager, global-registry, synthetic
+  pack, or runtime-download fallback.
+- Task 8 implements and tests the isolated measurement harness and records
+  current-host real measurements under ignored `.scratch/` evidence. Keep the
+  checked-in four-platform baseline as fixture/review data until independent
+  platform measurements exist; do not invent them locally and do not activate
+  a production provider manifest record.
+- Task 9 completes workflow definitions, exact matrices, pinned actions, fuzz
+  tiers, publication ordering, and trust verification as statically tested
+  configuration. Do not claim that GitHub Actions or OIDC attestations ran.
+- Task 10 runs every local gate, including the real-server gate against the
+  explicit local pack, and documents the distinction between local verification
+  and unexecuted external release evidence.
+
+The branch is complete under this adapter when local implementation and tests
+pass with no remote-release claim. It remains ineligible for a production
+provider record until real published packs, external attestations, and
+independent four-platform baselines are supplied.
+
 ## Execution Boundary And File Map
 
 Execute after Delivery 5A is accepted, from `feature/provider-artifact-distribution`; do not modify `feature/SAST` directly. Do not add provider discovery or invocation to ordinary review, Fast Mode, repository indexing, SQLite persistence, or static-analysis orchestration. `--with-rust-analyzer` is explicit copy-mode installation only; `--link --with-rust-analyzer` is rejected before any mutation.
