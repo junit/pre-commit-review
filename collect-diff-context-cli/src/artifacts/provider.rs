@@ -1,6 +1,7 @@
 use super::{
     contract::{
-        canonical_json, sha256_bytes, PackFileRecord, PackFileRole, PackManifest, SourceLock,
+        canonical_json, sha256_bytes, ArtifactError, PackFileRecord, PackFileRole, PackManifest,
+        SourceLock,
     },
     writer::{normalized_archive, read_canonical, read_regular, write_atomic, ArchiveFile},
 };
@@ -17,6 +18,29 @@ const PROVIDER_SOURCE_LOCK_SHA256: &str =
 const MAX_ARCHIVE_BYTES: usize = 512 * 1024 * 1024;
 const MAX_EXECUTABLE_BYTES: usize = 128 * 1024 * 1024;
 const MAX_LICENSE_BYTES: usize = 1024 * 1024;
+
+pub fn release_threshold_ms(p95_ms: u64) -> Result<u64, ArtifactError> {
+    if p95_ms == 0 {
+        return Err(ArtifactError::new(
+            "baseline-threshold-range",
+            "provider baseline p95 must be positive",
+        ));
+    }
+    p95_ms
+        .checked_mul(5)
+        .map(|scaled| scaled.div_ceil(4))
+        .and_then(|scaled| scaled.checked_add(250))
+        .ok_or_else(|| {
+            ArtifactError::new(
+                "baseline-threshold-overflow",
+                "provider baseline threshold arithmetic overflowed",
+            )
+        })
+}
+
+pub fn accept_p95(observed_p95_ms: u64, baseline_p95_ms: u64) -> Result<bool, ArtifactError> {
+    Ok(observed_p95_ms <= release_threshold_ms(baseline_p95_ms)?)
+}
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ProviderLicenseInput {
