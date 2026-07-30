@@ -113,6 +113,7 @@ def validate_canonical_artifact_metadata(skill_root, schemas, schema_registry):
         ('manifest.json', 'third-party-artifacts.schema.json'),
         ('revocations.json', 'third-party-artifact-revocations.schema.json'),
         ('sources/gitleaks-8.30.1.json', 'third-party-source-lock.schema.json'),
+        ('sources/rust-analyzer-2026-07-27.json', 'third-party-source-lock.schema.json'),
     )
     loaded = {}
     for relative_path, schema_name in inputs:
@@ -143,6 +144,24 @@ def validate_canonical_artifact_metadata(skill_root, schemas, schema_registry):
     ]
     if platforms != expected_platforms:
         raise ValueError('Gitleaks source-lock assets must cover the sorted platform set')
+
+    rust_analyzer_lock = loaded['sources/rust-analyzer-2026-07-27.json'][0]
+    rust_analyzer_bytes = loaded['sources/rust-analyzer-2026-07-27.json'][1]
+    expected_rust_analyzer_sha256 = (
+        '82ee6473601fba11e01fc37f60ee48f0634bfa1f24f3d01714119cfadf84b742'
+    )
+    if hashlib.sha256(rust_analyzer_bytes).hexdigest() != expected_rust_analyzer_sha256:
+        raise ValueError('rust-analyzer source-lock digest does not match the reviewed bytes')
+    if (
+        rust_analyzer_lock['artifact_id'] != 'rust-analyzer'
+        or rust_analyzer_lock['tool_version'] != '2026-07-27'
+        or rust_analyzer_lock['upstream_repository'] != 'rust-lang/rust-analyzer'
+        or rust_analyzer_lock['upstream_tag'] != '2026-07-27'
+        or rust_analyzer_lock['upstream_commit'] != '12c3381f0b17b8eec21075d1c72fd010996a9bda'
+    ):
+        raise ValueError('rust-analyzer source-lock identity does not match the reviewed release')
+    if [asset['platform_id'] for asset in rust_analyzer_lock['assets']] != expected_platforms:
+        raise ValueError('rust-analyzer source-lock assets must cover the sorted platform set')
 
 def validate_control_plane_invariants(payload):
     if not payload.get('authoritative'):

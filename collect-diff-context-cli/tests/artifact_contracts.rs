@@ -526,7 +526,8 @@ fn baseline_recomputes_nearest_rank_p95_and_binds_measurements() {
         kind: "third_party_artifact_baseline".to_string(),
         artifact_id: "rust-analyzer".to_string(),
         pack_version: "2026.07.27-pcr.1".to_string(),
-        source_lock_sha256: digest('1'),
+        source_lock_sha256: "82ee6473601fba11e01fc37f60ee48f0634bfa1f24f3d01714119cfadf84b742"
+            .to_string(),
         measurements: vec![BaselineMeasurement {
             platform_id: "linux-amd64".to_string(),
             pack_sha256: digest('2'),

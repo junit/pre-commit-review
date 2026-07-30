@@ -26,6 +26,13 @@ use std::{
 use tempfile::TempDir;
 
 const BINARY: &str = env!("CARGO_BIN_EXE_collect-diff-context-cli");
+const RUST_ANALYZER_EXPECTED_VERSION: &str =
+    "rust-analyzer 0.3.2989-standalone (12c3381f0b 2026-07-26)";
+const RUST_ANALYZER_EXECUTABLE_SHA256: &str =
+    "bf809712906c99b4056e19d05fbd42d51804a045f64bd211df9bc29ad2776eb6";
+const RUST_ANALYZER_PACK_VERSION: &str = "2026.07.27-pcr.1";
+const RUST_ANALYZER_SOURCE_LOCK_SHA256: &str =
+    "82ee6473601fba11e01fc37f60ee48f0634bfa1f24f3d01714119cfadf84b742";
 
 struct CliFixture {
     _root: TempDir,
@@ -303,6 +310,80 @@ fn tree_snapshot(root: &Path) -> Result<BTreeMap<PathBuf, Vec<u8>>, Box<dyn Erro
     let mut snapshot = BTreeMap::new();
     visit(root, root, &mut snapshot)?;
     Ok(snapshot)
+}
+
+fn install_reviewed_provider_fixture(fixture: &mut CliFixture) -> Result<PathBuf, Box<dyn Error>> {
+    fixture.install()?;
+
+    let record = &mut fixture.manifest.packs[0];
+    let mut apache_license = record.license_files[0].clone();
+    apache_license.path = "licenses/LICENSE-APACHE".to_string();
+    let mut mit_license = apache_license.clone();
+    mit_license.path = "licenses/LICENSE-MIT".to_string();
+    record.artifact_id = "rust-analyzer".to_string();
+    record.artifact_role = ArtifactRole::RepositoryContextProvider;
+    record.tool_version = "2026-07-27".to_string();
+    record.upstream_repository = "rust-lang/rust-analyzer".to_string();
+    record.upstream_tag = "2026-07-27".to_string();
+    record.upstream_commit = "12c3381f0b17b8eec21075d1c72fd010996a9bda".to_string();
+    record.source_lock_sha256 = RUST_ANALYZER_SOURCE_LOCK_SHA256.to_string();
+    record.pack_version = RUST_ANALYZER_PACK_VERSION.to_string();
+    record.project_release_tag = "artifact-rust-analyzer-2026.07.27-pcr.1".to_string();
+    record.project_asset_name =
+        "pre-commit-review-rust-analyzer-2026.07.27-pcr.1-linux-amd64.tar.gz".to_string();
+    record.executable.path = "bin/rust-analyzer".to_string();
+    record.executable.size = 44_889_000;
+    record.executable.sha256 = RUST_ANALYZER_EXECUTABLE_SHA256.to_string();
+    record.version_probe = ProbeId::RustAnalyzerVersionV1;
+    record.capability_probe = ProbeId::RustAnalyzerStdioV1;
+    record.expected_version = RUST_ANALYZER_EXPECTED_VERSION.to_string();
+    record.license_component = "rust-analyzer".to_string();
+    record.license_files = vec![apache_license, mit_license];
+    record.sbom_component = "pkg:github/rust-lang/rust-analyzer@2026-07-27".to_string();
+    record.default_configuration_sha256 = None;
+    record.quality_baseline_sha256 = Some("7".repeat(64));
+    fixture.manifest.validate()?;
+
+    let manifest_bytes = canonical_json(&fixture.manifest)?;
+    let distribution = fixture.target_root.join("runtime/distribution");
+    fs::write(distribution.join("manifest.json"), &manifest_bytes)?;
+    let core_path = distribution.join("core-pack-manifest.json");
+    let mut core: CorePackManifest = serde_json::from_slice(&fs::read(&core_path)?)?;
+    core.distribution_manifest_sha256 = sha256_bytes(&manifest_bytes);
+    core.members[0] = core_binding("runtime/distribution/manifest.json", &manifest_bytes);
+    set_mode(&distribution.join("manifest.json"), 0o644)?;
+    fs::write(&core_path, canonical_json(&core)?)?;
+
+    let receipt_root = fixture.target_root.join("runtime/artifact-receipts");
+    let gitleaks_receipt_path = receipt_root.join("gitleaks.json");
+    let mut receipt: ArtifactReceipt = serde_json::from_slice(&fs::read(&gitleaks_receipt_path)?)?;
+    receipt.distribution_manifest_sha256 = sha256_bytes(&manifest_bytes);
+    receipt.artifact_id = "rust-analyzer".to_string();
+    receipt.tool_version = "2026-07-27".to_string();
+    receipt.pack_version = RUST_ANALYZER_PACK_VERSION.to_string();
+    receipt.probes[0].probe_id = ProbeId::RustAnalyzerVersionV1;
+    receipt.probes[0].observed_version = Some(RUST_ANALYZER_EXPECTED_VERSION.to_string());
+    receipt.probes[1].probe_id = ProbeId::RustAnalyzerStdioV1;
+    fs::write(
+        receipt_root.join("rust-analyzer.json"),
+        canonical_json(&receipt)?,
+    )?;
+    fs::remove_file(gitleaks_receipt_path)?;
+
+    let source_executable = fixture
+        .target_root
+        .join("runtime/third-party/gitleaks/8.30.1-pcr.1/bin/gitleaks");
+    let installed_executable = fixture.target_root.join(format!(
+        "runtime/third-party/rust-analyzer/{RUST_ANALYZER_PACK_VERSION}/bin/rust-analyzer"
+    ));
+    fs::create_dir_all(
+        installed_executable
+            .parent()
+            .ok_or("provider executable parent is missing")?,
+    )?;
+    fs::copy(source_executable, &installed_executable)?;
+    set_mode(&installed_executable, 0o755)?;
+    Ok(installed_executable)
 }
 
 #[test]
@@ -648,31 +729,7 @@ fn doctor_rejects_a_revoked_receipt_before_an_active_replacement() -> Result<(),
 #[test]
 fn doctor_requires_a_registry_for_a_provider_receipt() -> Result<(), Box<dyn Error>> {
     let mut fixture = CliFixture::new()?;
-    fixture.install()?;
-    let record = &mut fixture.manifest.packs[0];
-    record.artifact_role = ArtifactRole::RepositoryContextProvider;
-    record.version_probe = ProbeId::RustAnalyzerVersionV1;
-    record.capability_probe = ProbeId::RustAnalyzerStdioV1;
-    record.default_configuration_sha256 = None;
-    record.quality_baseline_sha256 = Some("7".repeat(64));
-    let manifest_bytes = canonical_json(&fixture.manifest)?;
-    let distribution = fixture.target_root.join("runtime/distribution");
-    fs::write(distribution.join("manifest.json"), &manifest_bytes)?;
-    let core_path = distribution.join("core-pack-manifest.json");
-    let mut core: CorePackManifest = serde_json::from_slice(&fs::read(&core_path)?)?;
-    core.distribution_manifest_sha256 = sha256_bytes(&manifest_bytes);
-    core.members[0] = core_binding("runtime/distribution/manifest.json", &manifest_bytes);
-    set_mode(&distribution.join("manifest.json"), 0o644)?;
-    fs::write(&core_path, canonical_json(&core)?)?;
-
-    let receipt_path = fixture
-        .target_root
-        .join("runtime/artifact-receipts/gitleaks.json");
-    let mut receipt: ArtifactReceipt = serde_json::from_slice(&fs::read(&receipt_path)?)?;
-    receipt.distribution_manifest_sha256 = sha256_bytes(&manifest_bytes);
-    receipt.probes[0].probe_id = ProbeId::RustAnalyzerVersionV1;
-    receipt.probes[1].probe_id = ProbeId::RustAnalyzerStdioV1;
-    fs::write(&receipt_path, canonical_json(&receipt)?)?;
+    install_reviewed_provider_fixture(&mut fixture)?;
 
     failed_report(&fixture.doctor()?, 1, "provider-registry-required")?;
     Ok(())
@@ -685,37 +742,10 @@ fn doctor_requires_provider_registry_to_bind_the_installed_executable() -> Resul
     use std::os::unix::fs::PermissionsExt;
 
     let mut fixture = CliFixture::new()?;
-    fixture.install()?;
-    let record = &mut fixture.manifest.packs[0];
-    record.artifact_role = ArtifactRole::RepositoryContextProvider;
-    record.version_probe = ProbeId::RustAnalyzerVersionV1;
-    record.capability_probe = ProbeId::RustAnalyzerStdioV1;
-    record.default_configuration_sha256 = None;
-    record.quality_baseline_sha256 = Some("7".repeat(64));
-    let manifest_bytes = canonical_json(&fixture.manifest)?;
-    let distribution = fixture.target_root.join("runtime/distribution");
-    fs::write(distribution.join("manifest.json"), &manifest_bytes)?;
-    let core_path = distribution.join("core-pack-manifest.json");
-    let mut core: CorePackManifest = serde_json::from_slice(&fs::read(&core_path)?)?;
-    core.distribution_manifest_sha256 = sha256_bytes(&manifest_bytes);
-    core.members[0] = core_binding("runtime/distribution/manifest.json", &manifest_bytes);
-    set_mode(&distribution.join("manifest.json"), 0o644)?;
-    fs::write(&core_path, canonical_json(&core)?)?;
-
-    let receipt_path = fixture
-        .target_root
-        .join("runtime/artifact-receipts/gitleaks.json");
-    let mut receipt: ArtifactReceipt = serde_json::from_slice(&fs::read(&receipt_path)?)?;
-    receipt.distribution_manifest_sha256 = sha256_bytes(&manifest_bytes);
-    receipt.probes[0].probe_id = ProbeId::RustAnalyzerVersionV1;
-    receipt.probes[1].probe_id = ProbeId::RustAnalyzerStdioV1;
-    fs::write(&receipt_path, canonical_json(&receipt)?)?;
+    let installed = install_reviewed_provider_fixture(&mut fixture)?;
 
     let providers = fixture.target_root.join("runtime/providers");
     fs::create_dir_all(&providers)?;
-    let installed = fixture
-        .target_root
-        .join("runtime/third-party/gitleaks/8.30.1-pcr.1/bin/gitleaks");
     let alternate = providers.join("unbound-rust-analyzer");
     fs::copy(&installed, &alternate)?;
     let mut permissions = fs::metadata(&alternate)?.permissions();
@@ -726,7 +756,7 @@ fn doctor_requires_provider_registry_to_bind_the_installed_executable() -> Resul
         schema_version: 1,
         kind: "repository_context_provider_profile".to_string(),
         provider_kind: "rust-analyzer".to_string(),
-        provider_version: "8.30.1".to_string(),
+        provider_version: "2026-07-27".to_string(),
         executable_sha256: fixture.pack.record.executable.sha256.clone(),
         configuration_sha256: "0".repeat(64),
         target_triple: "x86_64-unknown-linux-musl".to_string(),

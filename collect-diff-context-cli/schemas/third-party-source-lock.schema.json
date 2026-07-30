@@ -10,7 +10,7 @@
   "properties": {
     "schema_version": { "type": "integer", "const": 1 },
     "kind": { "type": "string", "const": "third_party_sources" },
-    "artifact_id": { "$ref": "third-party-artifacts.schema.json#/$defs/identifier" },
+    "artifact_id": { "type": "string", "enum": ["gitleaks", "rust-analyzer"] },
     "tool_version": { "$ref": "third-party-artifacts.schema.json#/$defs/text" },
     "upstream_repository": { "type": "string", "enum": ["gitleaks/gitleaks", "rust-lang/rust-analyzer"] },
     "upstream_tag": { "$ref": "third-party-artifacts.schema.json#/$defs/sourceTag" },
@@ -38,7 +38,7 @@
           "minLength": 1,
           "maxLength": 2048,
           "format": "uri",
-          "pattern": "^https://github\\.com/(?:gitleaks/gitleaks|rust-lang/rust-analyzer)/releases/download/[^/]+/[A-Za-z0-9._-]+$"
+          "pattern": "^https://github\\.com/(?:gitleaks/gitleaks|rust-lang/rust-analyzer)/releases/download/[A-Za-z0-9._-]+/[A-Za-z0-9._-]+$"
         },
         "archive_name": { "$ref": "third-party-artifacts.schema.json#/$defs/filename" },
         "archive_size": { "type": "integer", "minimum": 1, "maximum": 536870912 },
@@ -73,7 +73,94 @@
         }
       ],
       "additionalProperties": false
+    },
+    "rustAnalyzerSourceLock": {
+      "type": "object",
+      "required": [
+        "schema_version", "kind", "artifact_id", "tool_version", "upstream_repository",
+        "upstream_tag", "upstream_commit", "assets"
+      ],
+      "properties": {
+        "schema_version": { "type": "integer", "const": 1 },
+        "kind": { "type": "string", "const": "third_party_sources" },
+        "artifact_id": { "type": "string", "const": "rust-analyzer" },
+        "tool_version": { "type": "string", "const": "2026-07-27" },
+        "upstream_repository": { "type": "string", "const": "rust-lang/rust-analyzer" },
+        "upstream_tag": { "type": "string", "const": "2026-07-27" },
+        "upstream_commit": {
+          "type": "string",
+          "const": "12c3381f0b17b8eec21075d1c72fd010996a9bda"
+        },
+        "assets": {
+          "type": "array",
+          "const": [
+            {
+              "platform_id": "darwin-amd64",
+              "target_triple": "x86_64-apple-darwin",
+              "url": "https://github.com/rust-lang/rust-analyzer/releases/download/2026-07-27/rust-analyzer-x86_64-apple-darwin.gz",
+              "archive_name": "rust-analyzer-x86_64-apple-darwin.gz",
+              "archive_size": 14715786,
+              "archive_sha256": "9d1a60991ead6c27baa9d265fc8fd03bba9c39cf0ec2aaf389e37e6155af7cbb",
+              "executable_name": "rust-analyzer",
+              "executable_size": 39729020,
+              "executable_sha256": "01ed4388725ef878a8682ab086749b8c9f3dfa76cf9ac9a7b173add6075236b3",
+              "expected_version_output": "rust-analyzer 0.3.2989-standalone (12c3381f0b 2026-07-26)",
+              "license_source_paths": ["LICENSE-APACHE", "LICENSE-MIT"]
+            },
+            {
+              "platform_id": "darwin-arm64",
+              "target_triple": "aarch64-apple-darwin",
+              "url": "https://github.com/rust-lang/rust-analyzer/releases/download/2026-07-27/rust-analyzer-aarch64-apple-darwin.gz",
+              "archive_name": "rust-analyzer-aarch64-apple-darwin.gz",
+              "archive_size": 13987778,
+              "archive_sha256": "102215ae7e7a41c0dda8f24e910a01e757f58091204863e5e3e6696b743f7e97",
+              "executable_name": "rust-analyzer",
+              "executable_size": 38192576,
+              "executable_sha256": "c4e9a82238092144191799a0631d21927ea75b8cbf245f79b51d1e89ca9fd760",
+              "expected_version_output": "rust-analyzer 0.3.2989-standalone (12c3381f0b 2026-07-26)",
+              "license_source_paths": ["LICENSE-APACHE", "LICENSE-MIT"]
+            },
+            {
+              "platform_id": "linux-amd64",
+              "target_triple": "x86_64-unknown-linux-musl",
+              "url": "https://github.com/rust-lang/rust-analyzer/releases/download/2026-07-27/rust-analyzer-x86_64-unknown-linux-musl.gz",
+              "archive_name": "rust-analyzer-x86_64-unknown-linux-musl.gz",
+              "archive_size": 15070124,
+              "archive_sha256": "4793930e0fe32f18ed7e8e689df3ebb03b632f76c16625c44754fb42ce39fc72",
+              "executable_name": "rust-analyzer",
+              "executable_size": 44889000,
+              "executable_sha256": "bf809712906c99b4056e19d05fbd42d51804a045f64bd211df9bc29ad2776eb6",
+              "expected_version_output": "rust-analyzer 0.3.2989-standalone (12c3381f0b 2026-07-26)",
+              "license_source_paths": ["LICENSE-APACHE", "LICENSE-MIT"]
+            },
+            {
+              "platform_id": "windows-amd64",
+              "target_triple": "x86_64-pc-windows-msvc",
+              "url": "https://github.com/rust-lang/rust-analyzer/releases/download/2026-07-27/rust-analyzer-x86_64-pc-windows-msvc.zip",
+              "archive_name": "rust-analyzer-x86_64-pc-windows-msvc.zip",
+              "archive_size": 17612036,
+              "archive_sha256": "7abdf50734026de963b3b25eba7714be8acf43a15ffb7f4f9d8b041e796ce2c9",
+              "executable_name": "rust-analyzer.exe",
+              "executable_size": 38694912,
+              "executable_sha256": "61ad88c3c90a5dece93f590aa31407f69be96023a2536a4f0285bd3def9cb278",
+              "expected_version_output": "rust-analyzer 0.3.2989-standalone (12c3381f0b 2026-07-26)",
+              "license_source_paths": ["LICENSE-APACHE", "LICENSE-MIT"]
+            }
+          ]
+        }
+      },
+      "additionalProperties": false
     }
   },
+  "allOf": [
+    {
+      "if": { "properties": { "artifact_id": { "const": "gitleaks" } } },
+      "then": { "properties": { "upstream_repository": { "const": "gitleaks/gitleaks" } } }
+    },
+    {
+      "if": { "properties": { "artifact_id": { "const": "rust-analyzer" } } },
+      "then": { "$ref": "#/$defs/rustAnalyzerSourceLock" }
+    }
+  ],
   "additionalProperties": false
 }

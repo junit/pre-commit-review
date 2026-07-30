@@ -7,9 +7,12 @@
   "properties": {
     "schema_version": { "type": "integer", "const": 1 },
     "kind": { "type": "string", "const": "third_party_artifact_baseline" },
-    "artifact_id": { "$ref": "third-party-artifacts.schema.json#/$defs/identifier" },
-    "pack_version": { "$ref": "third-party-artifacts.schema.json#/$defs/text" },
-    "source_lock_sha256": { "$ref": "third-party-artifacts.schema.json#/$defs/sha256" },
+    "artifact_id": { "type": "string", "const": "rust-analyzer" },
+    "pack_version": { "type": "string", "const": "2026.07.27-pcr.1" },
+    "source_lock_sha256": {
+      "type": "string",
+      "const": "82ee6473601fba11e01fc37f60ee48f0634bfa1f24f3d01714119cfadf84b742"
+    },
     "measurements": {
       "type": "array",
       "minItems": 1,

@@ -15,6 +15,76 @@ const MAX_LICENSE_FILES: usize = 32;
 const MAX_SOURCE_ASSETS: usize = 4;
 const MAX_COMPRESSED_BYTES: u64 = 512 * 1024 * 1024;
 const MAX_EXPANDED_BYTES: u64 = 2 * 1024 * 1024 * 1024;
+const RUST_ANALYZER_SOURCE_LOCK_SHA256: &str =
+    "82ee6473601fba11e01fc37f60ee48f0634bfa1f24f3d01714119cfadf84b742";
+const RUST_ANALYZER_ARTIFACT_ID: &str = "rust-analyzer";
+const RUST_ANALYZER_PACK_VERSION: &str = "2026.07.27-pcr.1";
+const RUST_ANALYZER_PROJECT_RELEASE_TAG: &str = "artifact-rust-analyzer-2026.07.27-pcr.1";
+const RUST_ANALYZER_REPOSITORY: &str = "rust-lang/rust-analyzer";
+const RUST_ANALYZER_SBOM_COMPONENT: &str = "pkg:github/rust-lang/rust-analyzer@2026-07-27";
+const RUST_ANALYZER_TOOL_VERSION: &str = "2026-07-27";
+const RUST_ANALYZER_UPSTREAM_COMMIT: &str = "12c3381f0b17b8eec21075d1c72fd010996a9bda";
+const RUST_ANALYZER_EXPECTED_VERSION: &str =
+    "rust-analyzer 0.3.2989-standalone (12c3381f0b 2026-07-26)";
+
+struct RustAnalyzerSourceAssetPolicy {
+    platform_id: &'static str,
+    target_triple: &'static str,
+    url: &'static str,
+    archive_name: &'static str,
+    archive_size: u64,
+    archive_sha256: &'static str,
+    executable_name: &'static str,
+    executable_size: u64,
+    executable_sha256: &'static str,
+}
+
+const RUST_ANALYZER_SOURCE_ASSETS: [RustAnalyzerSourceAssetPolicy; MAX_SOURCE_ASSETS] = [
+    RustAnalyzerSourceAssetPolicy {
+        platform_id: "darwin-amd64",
+        target_triple: "x86_64-apple-darwin",
+        url: "https://github.com/rust-lang/rust-analyzer/releases/download/2026-07-27/rust-analyzer-x86_64-apple-darwin.gz",
+        archive_name: "rust-analyzer-x86_64-apple-darwin.gz",
+        archive_size: 14_715_786,
+        archive_sha256: "9d1a60991ead6c27baa9d265fc8fd03bba9c39cf0ec2aaf389e37e6155af7cbb",
+        executable_name: "rust-analyzer",
+        executable_size: 39_729_020,
+        executable_sha256: "01ed4388725ef878a8682ab086749b8c9f3dfa76cf9ac9a7b173add6075236b3",
+    },
+    RustAnalyzerSourceAssetPolicy {
+        platform_id: "darwin-arm64",
+        target_triple: "aarch64-apple-darwin",
+        url: "https://github.com/rust-lang/rust-analyzer/releases/download/2026-07-27/rust-analyzer-aarch64-apple-darwin.gz",
+        archive_name: "rust-analyzer-aarch64-apple-darwin.gz",
+        archive_size: 13_987_778,
+        archive_sha256: "102215ae7e7a41c0dda8f24e910a01e757f58091204863e5e3e6696b743f7e97",
+        executable_name: "rust-analyzer",
+        executable_size: 38_192_576,
+        executable_sha256: "c4e9a82238092144191799a0631d21927ea75b8cbf245f79b51d1e89ca9fd760",
+    },
+    RustAnalyzerSourceAssetPolicy {
+        platform_id: "linux-amd64",
+        target_triple: "x86_64-unknown-linux-musl",
+        url: "https://github.com/rust-lang/rust-analyzer/releases/download/2026-07-27/rust-analyzer-x86_64-unknown-linux-musl.gz",
+        archive_name: "rust-analyzer-x86_64-unknown-linux-musl.gz",
+        archive_size: 15_070_124,
+        archive_sha256: "4793930e0fe32f18ed7e8e689df3ebb03b632f76c16625c44754fb42ce39fc72",
+        executable_name: "rust-analyzer",
+        executable_size: 44_889_000,
+        executable_sha256: "bf809712906c99b4056e19d05fbd42d51804a045f64bd211df9bc29ad2776eb6",
+    },
+    RustAnalyzerSourceAssetPolicy {
+        platform_id: "windows-amd64",
+        target_triple: "x86_64-pc-windows-msvc",
+        url: "https://github.com/rust-lang/rust-analyzer/releases/download/2026-07-27/rust-analyzer-x86_64-pc-windows-msvc.zip",
+        archive_name: "rust-analyzer-x86_64-pc-windows-msvc.zip",
+        archive_size: 17_612_036,
+        archive_sha256: "7abdf50734026de963b3b25eba7714be8acf43a15ffb7f4f9d8b041e796ce2c9",
+        executable_name: "rust-analyzer.exe",
+        executable_size: 38_694_912,
+        executable_sha256: "61ad88c3c90a5dece93f590aa31407f69be96023a2536a4f0285bd3def9cb278",
+    },
+];
 
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub struct ArtifactError {
@@ -199,7 +269,8 @@ impl ArtifactPackRecord {
     fn validate_role_fields(&self) -> Result<(), ArtifactError> {
         match self.artifact_role {
             ArtifactRole::Sanitizer => {
-                if self.version_probe != ProbeId::GitleaksVersionV1
+                if self.binds_rust_analyzer()
+                    || self.version_probe != ProbeId::GitleaksVersionV1
                     || self.capability_probe != ProbeId::GitleaksStdinJsonV1
                     || self.default_configuration_sha256.is_none()
                     || self.quality_baseline_sha256.is_some()
@@ -222,8 +293,65 @@ impl ArtifactPackRecord {
                         "provider pack fields do not match the provider policy",
                     ));
                 }
+                self.validate_rust_analyzer_pack()?;
                 validate_sha256(self.quality_baseline_sha256.as_deref().unwrap())?;
             }
+        }
+        Ok(())
+    }
+
+    fn binds_rust_analyzer(&self) -> bool {
+        self.artifact_id == RUST_ANALYZER_ARTIFACT_ID
+            || self.upstream_repository == RUST_ANALYZER_REPOSITORY
+            || self.source_lock_sha256 == RUST_ANALYZER_SOURCE_LOCK_SHA256
+    }
+
+    fn validate_rust_analyzer_pack(&self) -> Result<(), ArtifactError> {
+        let expected_asset = RUST_ANALYZER_SOURCE_ASSETS
+            .iter()
+            .find(|asset| asset.platform_id == self.platform_id)
+            .ok_or_else(|| {
+                ArtifactError::new(
+                    "artifact-role-policy",
+                    "provider platform has no reviewed rust-analyzer source asset",
+                )
+            })?;
+        let expected_path = format!("bin/{}", expected_asset.executable_name);
+        let expected_project_asset = format!(
+            "pre-commit-review-rust-analyzer-{RUST_ANALYZER_PACK_VERSION}-{}.tar.gz",
+            self.platform_id
+        );
+        let license_paths_match = self
+            .license_files
+            .iter()
+            .map(|license| license.path.as_str())
+            .eq(["licenses/LICENSE-APACHE", "licenses/LICENSE-MIT"]);
+        if self.artifact_id != RUST_ANALYZER_ARTIFACT_ID
+            || self.tool_version != RUST_ANALYZER_TOOL_VERSION
+            || self.upstream_repository != RUST_ANALYZER_REPOSITORY
+            || self.upstream_tag != RUST_ANALYZER_TOOL_VERSION
+            || self.upstream_commit != RUST_ANALYZER_UPSTREAM_COMMIT
+            || self.pack_version != RUST_ANALYZER_PACK_VERSION
+            || self.project_release_tag != RUST_ANALYZER_PROJECT_RELEASE_TAG
+            || self.project_asset_name != expected_project_asset
+            || self.expected_version != RUST_ANALYZER_EXPECTED_VERSION
+            || self.executable.path != expected_path
+            || self.executable.size != expected_asset.executable_size
+            || self.executable.sha256 != expected_asset.executable_sha256
+            || self.license_component != RUST_ANALYZER_ARTIFACT_ID
+            || !license_paths_match
+            || self.sbom_component != RUST_ANALYZER_SBOM_COMPONENT
+        {
+            return Err(ArtifactError::new(
+                "artifact-role-policy",
+                "rust-analyzer pack fields do not match the reviewed provider policy",
+            ));
+        }
+        if self.source_lock_sha256 != RUST_ANALYZER_SOURCE_LOCK_SHA256 {
+            return Err(ArtifactError::new(
+                "artifact-source-lock-policy",
+                "provider pack does not bind the reviewed rust-analyzer source lock",
+            ));
         }
         Ok(())
     }
@@ -870,8 +998,25 @@ impl ArtifactBaseline {
             ));
         }
         validate_identifier(&self.artifact_id)?;
-        validate_text(&self.pack_version)?;
+        if self.artifact_id != "rust-analyzer" {
+            return Err(ArtifactError::new(
+                "baseline-artifact-policy",
+                "quality baselines are only authorized for rust-analyzer provider packs",
+            ));
+        }
+        if self.pack_version != RUST_ANALYZER_PACK_VERSION {
+            return Err(ArtifactError::new(
+                "baseline-pack-policy",
+                "quality baseline does not name the reviewed provider pack version",
+            ));
+        }
         validate_sha256(&self.source_lock_sha256)?;
+        if self.source_lock_sha256 != RUST_ANALYZER_SOURCE_LOCK_SHA256 {
+            return Err(ArtifactError::new(
+                "baseline-source-lock-policy",
+                "quality baseline does not bind the reviewed rust-analyzer source lock",
+            ));
+        }
         if self.measurements.is_empty() || self.measurements.len() > 64 {
             return Err(ArtifactError::new(
                 "baseline-measurement-count",
@@ -1118,6 +1263,15 @@ impl SourceLock {
         validate_identifier(&self.artifact_id)?;
         validate_text(&self.tool_version)?;
         validate_repository(&self.upstream_repository)?;
+        if !matches!(
+            (self.artifact_id.as_str(), self.upstream_repository.as_str()),
+            ("gitleaks", "gitleaks/gitleaks") | ("rust-analyzer", "rust-lang/rust-analyzer")
+        ) {
+            return Err(ArtifactError::new(
+                "source-artifact-policy",
+                "source lock artifact and upstream repository do not match",
+            ));
+        }
         validate_source_tag(&self.upstream_tag)?;
         validate_commit(&self.upstream_commit)?;
         if self.assets.len() != MAX_SOURCE_ASSETS {
@@ -1137,10 +1291,47 @@ impl SourceLock {
             }
             previous = Some(&asset.platform_id);
         }
+        if self.artifact_id == "rust-analyzer" {
+            self.validate_rust_analyzer_policy()?;
+        }
         if canonical_json(self)?.len() > MAX_MANIFEST_BYTES {
             return Err(ArtifactError::new(
                 "source-lock-size-limit",
                 "source lock exceeds its byte limit",
+            ));
+        }
+        Ok(())
+    }
+
+    fn validate_rust_analyzer_policy(&self) -> Result<(), ArtifactError> {
+        let identity_matches = self.tool_version == RUST_ANALYZER_TOOL_VERSION
+            && self.upstream_tag == RUST_ANALYZER_TOOL_VERSION
+            && self.upstream_commit == RUST_ANALYZER_UPSTREAM_COMMIT;
+        let assets_match = self
+            .assets
+            .iter()
+            .zip(RUST_ANALYZER_SOURCE_ASSETS.iter())
+            .all(|(asset, expected)| {
+                asset.platform_id == expected.platform_id
+                    && asset.target_triple == expected.target_triple
+                    && asset.url == expected.url
+                    && asset.archive_name == expected.archive_name
+                    && asset.archive_size == expected.archive_size
+                    && asset.archive_sha256 == expected.archive_sha256
+                    && asset.executable_name == expected.executable_name
+                    && asset.executable_size == expected.executable_size
+                    && asset.executable_sha256 == expected.executable_sha256
+                    && asset.expected_version_output == RUST_ANALYZER_EXPECTED_VERSION
+                    && asset
+                        .license_source_paths
+                        .iter()
+                        .map(String::as_str)
+                        .eq(["LICENSE-APACHE", "LICENSE-MIT"])
+            });
+        if !identity_matches || !assets_match {
+            return Err(ArtifactError::new(
+                "rust-analyzer-source-policy",
+                "rust-analyzer source lock does not match the reviewed release inputs",
             ));
         }
         Ok(())
