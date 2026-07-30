@@ -5,8 +5,15 @@ use super::{
     },
     writer::{normalized_archive, read_canonical, read_regular, write_atomic, ArchiveFile},
 };
+use crate::repository_context_provider::{
+    cli_contract::ProviderRegistry, contract::AuthorizedProviderProfile,
+};
 use serde_json::{json, Value};
-use std::{collections::BTreeMap, path::Path};
+use std::{
+    collections::BTreeMap,
+    fs,
+    path::{Component, Path, PathBuf},
+};
 
 const PROVIDER_PACK_VERSION: &str = "2026.07.27-pcr.1";
 const PROVIDER_TOOL_VERSION: &str = "2026-07-27";
@@ -54,6 +61,189 @@ pub fn release_threshold_ms(p95_ms: u64) -> Result<u64, ArtifactError> {
 
 pub fn accept_p95(observed_p95_ms: u64, baseline_p95_ms: u64) -> Result<bool, ArtifactError> {
     Ok(observed_p95_ms <= release_threshold_ms(baseline_p95_ms)?)
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct VerifiedProvider {
+    pub staging_target: PathBuf,
+    pub provider_version: String,
+    pub executable_relative_path: PathBuf,
+    pub executable_sha256: String,
+    pub target_triple: String,
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct GeneratedProviderAuthorization {
+    pub profile: AuthorizedProviderProfile,
+    pub registry: ProviderRegistry,
+    pub profile_bytes: Vec<u8>,
+    pub registry_bytes: Vec<u8>,
+}
+
+pub fn generate_provider_authorization(
+    final_target: &Path,
+    verified: &VerifiedProvider,
+) -> Result<GeneratedProviderAuthorization, ArtifactError> {
+    let final_target = resolve_final_target(final_target)?;
+    verify_staged_executable(verified)?;
+
+    let profile = AuthorizedProviderProfile::rust_analyzer(
+        verified.provider_version.clone(),
+        verified.executable_sha256.clone(),
+        verified.target_triple.clone(),
+    );
+    profile.validate().map_err(|error| {
+        ArtifactError::new(
+            "provider-profile-binding",
+            format!("generated provider profile is invalid: {error}"),
+        )
+    })?;
+    let registry = ProviderRegistry::rust_analyzer(
+        final_target.join("runtime/providers/rust-analyzer.profile.json"),
+        final_target.join(&verified.executable_relative_path),
+        &profile,
+    );
+    registry.validate().map_err(|error| {
+        ArtifactError::new(
+            "provider-registry-binding",
+            format!("generated provider registry is invalid: {error}"),
+        )
+    })?;
+    registry
+        .validate_profile_binding(&profile)
+        .map_err(|error| {
+            ArtifactError::new(
+                "provider-registry-binding",
+                format!("generated provider registry is unbound: {error}"),
+            )
+        })?;
+
+    let profile_bytes = canonical_json(&profile)?;
+    let registry_bytes = canonical_json(&registry)?;
+    if sha256_bytes(&profile_bytes) != profile.sha256()
+        || sha256_bytes(&registry_bytes) != registry.sha256()
+    {
+        return Err(ArtifactError::new(
+            "provider-authorization-digest",
+            "generated provider authorization digest drifted",
+        ));
+    }
+
+    Ok(GeneratedProviderAuthorization {
+        profile,
+        registry,
+        profile_bytes,
+        registry_bytes,
+    })
+}
+
+fn resolve_final_target(final_target: &Path) -> Result<PathBuf, ArtifactError> {
+    if !final_target.is_absolute() {
+        return Err(ArtifactError::new(
+            "provider-final-target",
+            "provider final target must be absolute",
+        ));
+    }
+    let parent = final_target.parent().ok_or_else(|| {
+        ArtifactError::new(
+            "provider-final-target",
+            "provider final target must have an existing parent",
+        )
+    })?;
+    let name = final_target.file_name().ok_or_else(|| {
+        ArtifactError::new(
+            "provider-final-target",
+            "provider final target must name a target directory",
+        )
+    })?;
+    let canonical_parent = fs::canonicalize(parent).map_err(|_| {
+        ArtifactError::new(
+            "provider-final-target",
+            "provider final target parent could not be resolved",
+        )
+    })?;
+    if !fs::metadata(&canonical_parent)
+        .map(|metadata| metadata.is_dir())
+        .unwrap_or(false)
+    {
+        return Err(ArtifactError::new(
+            "provider-final-target",
+            "provider final target parent must be a directory",
+        ));
+    }
+    Ok(canonical_parent.join(name))
+}
+
+fn verify_staged_executable(verified: &VerifiedProvider) -> Result<(), ArtifactError> {
+    if verified.executable_relative_path.as_os_str().is_empty()
+        || verified.executable_relative_path.is_absolute()
+        || verified
+            .executable_relative_path
+            .components()
+            .any(|component| !matches!(component, Component::Normal(_)))
+    {
+        return Err(ArtifactError::new(
+            "provider-staging-path",
+            "provider executable path must be normalized and staging-relative",
+        ));
+    }
+
+    let canonical_staging = fs::canonicalize(&verified.staging_target).map_err(|_| {
+        ArtifactError::new(
+            "provider-staging-path",
+            "provider staging target could not be resolved",
+        )
+    })?;
+    if !fs::metadata(&canonical_staging)
+        .map(|metadata| metadata.is_dir())
+        .unwrap_or(false)
+    {
+        return Err(ArtifactError::new(
+            "provider-staging-path",
+            "provider staging target must be a directory",
+        ));
+    }
+
+    let staged_executable = verified
+        .staging_target
+        .join(&verified.executable_relative_path);
+    let metadata = fs::symlink_metadata(&staged_executable).map_err(|_| {
+        ArtifactError::new(
+            "provider-staging-path",
+            "provider staging executable is missing",
+        )
+    })?;
+    if !metadata.file_type().is_file() {
+        return Err(ArtifactError::new(
+            "provider-staging-path",
+            "provider staging executable must be a regular file",
+        ));
+    }
+    let canonical_executable = fs::canonicalize(&staged_executable).map_err(|_| {
+        ArtifactError::new(
+            "provider-staging-path",
+            "provider staging executable could not be resolved",
+        )
+    })?;
+    if !canonical_executable.starts_with(&canonical_staging) {
+        return Err(ArtifactError::new(
+            "provider-staging-path",
+            "provider staging executable escapes its target",
+        ));
+    }
+    let executable = fs::read(&canonical_executable).map_err(|_| {
+        ArtifactError::new(
+            "provider-staging-path",
+            "provider staging executable could not be read",
+        )
+    })?;
+    if sha256_bytes(&executable) != verified.executable_sha256 {
+        return Err(ArtifactError::new(
+            "provider-executable-binding",
+            "provider staging executable digest does not match its verified binding",
+        ));
+    }
+    Ok(())
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]

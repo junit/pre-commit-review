@@ -1,6 +1,6 @@
 use super::contract::{
     sha256_json, validate_absolute_path, validate_sha256, validate_target, validate_text,
-    CallDirection, ContractError, ProviderLimits, SeedSymbol,
+    AuthorizedProviderProfile, CallDirection, ContractError, ProviderLimits, SeedSymbol,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
@@ -63,6 +63,29 @@ pub struct ProviderRegistryEntry {
 }
 
 impl ProviderRegistry {
+    pub fn rust_analyzer(
+        profile_path: PathBuf,
+        executable_path: PathBuf,
+        profile: &AuthorizedProviderProfile,
+    ) -> Self {
+        Self {
+            schema_version: 1,
+            kind: "repository_context_provider_registry".to_string(),
+            entries: vec![ProviderRegistryEntry {
+                provider_id: "rust-analyzer-project-pack".to_string(),
+                provider_kind: profile.provider_kind.clone(),
+                provider_version: profile.provider_version.clone(),
+                target_triple: profile.target_triple.clone(),
+                profile_path,
+                profile_sha256: profile.sha256(),
+                executable_path,
+                executable_sha256: profile.executable_sha256.clone(),
+                configuration_sha256: profile.configuration_sha256.clone(),
+                toolchain_mode: profile.toolchain_mode.clone(),
+            }],
+        }
+    }
+
     pub fn validate(&self) -> Result<(), CliContractError> {
         if self.schema_version != 1 {
             return cli_error(
@@ -97,6 +120,42 @@ impl ProviderRegistry {
 
     pub fn sha256(&self) -> String {
         sha256_json(self)
+    }
+
+    pub fn validate_profile_binding(
+        &self,
+        profile: &AuthorizedProviderProfile,
+    ) -> Result<(), CliContractError> {
+        profile.validate().map_err(|_| {
+            CliContractError::new(
+                "provider-registry-profile-mismatch",
+                "authorized provider profile is invalid",
+            )
+        })?;
+        let entry = self
+            .entries
+            .iter()
+            .find(|entry| entry.provider_id == "rust-analyzer-project-pack")
+            .ok_or_else(|| {
+                CliContractError::new(
+                    "provider-registry-profile-mismatch",
+                    "registry does not contain the authorized provider entry",
+                )
+            })?;
+        if entry.provider_kind != profile.provider_kind
+            || entry.provider_version != profile.provider_version
+            || entry.target_triple != profile.target_triple
+            || entry.profile_sha256 != profile.sha256()
+            || entry.executable_sha256 != profile.executable_sha256
+            || entry.configuration_sha256 != profile.configuration_sha256
+            || entry.toolchain_mode != profile.toolchain_mode
+        {
+            return cli_error(
+                "provider-registry-profile-mismatch",
+                "registry entry does not match the authorized provider profile",
+            );
+        }
+        self.validate()
     }
 
     pub fn select(&self, provider_id: &str) -> Result<&ProviderRegistryEntry, CliContractError> {

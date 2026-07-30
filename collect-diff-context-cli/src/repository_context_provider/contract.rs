@@ -539,6 +539,40 @@ pub struct AuthorizedProviderProfile {
 }
 
 impl AuthorizedProviderProfile {
+    pub fn rust_analyzer(
+        provider_version: String,
+        executable_sha256: String,
+        target_triple: String,
+    ) -> Self {
+        let profile = Self {
+            schema_version: 1,
+            kind: "repository_context_provider_profile".to_string(),
+            provider_kind: "rust-analyzer".to_string(),
+            provider_version,
+            executable_sha256,
+            configuration_sha256: String::new(),
+            target_triple,
+            toolchain_mode: "none".to_string(),
+            arguments: vec!["--stdio".to_string()],
+            hardening: ProviderHardening {
+                cargo_build_scripts: false,
+                cargo_no_deps: true,
+                cargo_sysroot: None,
+                cargo_sysroot_src: None,
+                proc_macro: false,
+                check_on_save: false,
+                workspace_discovery: false,
+                empty_path: true,
+                server_status_notification: true,
+            },
+            maximum_limits: ProviderLimits::maximum(),
+        };
+        Self {
+            configuration_sha256: profile.canonical_configuration_sha256(),
+            ..profile
+        }
+    }
+
     pub fn validate(&self) -> Result<(), ProfileError> {
         if self.schema_version != 1 {
             return profile_error(

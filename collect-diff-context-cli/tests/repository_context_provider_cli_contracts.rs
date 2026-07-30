@@ -2,7 +2,8 @@ use collect_diff_context_cli::repository_context_provider::cli_contract::{
     ProviderRegistry, ProviderRegistryEntry, ProviderRunRequest,
 };
 use collect_diff_context_cli::repository_context_provider::contract::{
-    CallDirection, ProviderLimits, ProviderRange, ProviderRangeFormat, SeedKind, SeedSymbol,
+    AuthorizedProviderProfile, CallDirection, ProviderLimits, ProviderRange, ProviderRangeFormat,
+    SeedKind, SeedSymbol,
 };
 use std::error::Error;
 use std::path::PathBuf;
@@ -173,4 +174,63 @@ fn unknown_json_fields_are_rejected() {
         .unwrap()
         .insert("unexpected".to_string(), serde_json::json!(true));
     assert!(serde_json::from_value::<ProviderRunRequest>(request).is_err());
+}
+
+#[test]
+fn generated_profile_and_registry_keep_exact_cross_contract_bindings() {
+    let profile = AuthorizedProviderProfile::rust_analyzer(
+        "2026-07-27".to_string(),
+        digest('a'),
+        "x86_64-unknown-linux-musl".to_string(),
+    );
+    profile.validate().unwrap();
+    let registry = ProviderRegistry::rust_analyzer(
+        trusted_path("runtime/providers/rust-analyzer.profile.json"),
+        trusted_path("runtime/third-party/rust-analyzer/2026.07.27-pcr.1/bin/rust-analyzer"),
+        &profile,
+    );
+    registry.validate().unwrap();
+    registry.validate_profile_binding(&profile).unwrap();
+    assert_eq!(registry.entries[0].profile_sha256, profile.sha256());
+
+    let mut digest_drift = registry.clone();
+    digest_drift.entries[0].profile_sha256 = digest('b');
+    assert_eq!(
+        digest_drift
+            .validate_profile_binding(&profile)
+            .unwrap_err()
+            .code,
+        "provider-registry-profile-mismatch"
+    );
+
+    let mut configuration_drift = registry;
+    configuration_drift.entries[0].configuration_sha256 = digest('c');
+    assert_eq!(
+        configuration_drift
+            .validate_profile_binding(&profile)
+            .unwrap_err()
+            .code,
+        "provider-registry-profile-mismatch"
+    );
+
+    for field in ["kind", "version", "target", "executable", "toolchain"] {
+        let mut drifted = ProviderRegistry::rust_analyzer(
+            trusted_path("runtime/providers/rust-analyzer.profile.json"),
+            trusted_path("runtime/third-party/rust-analyzer/2026.07.27-pcr.1/bin/rust-analyzer"),
+            &profile,
+        );
+        match field {
+            "kind" => drifted.entries[0].provider_kind = "clangd".to_string(),
+            "version" => drifted.entries[0].provider_version = "2026-07-28".to_string(),
+            "target" => drifted.entries[0].target_triple = "aarch64-apple-darwin".to_string(),
+            "executable" => drifted.entries[0].executable_sha256 = digest('d'),
+            "toolchain" => drifted.entries[0].toolchain_mode = "rustup".to_string(),
+            _ => unreachable!(),
+        }
+        assert_eq!(
+            drifted.validate_profile_binding(&profile).unwrap_err().code,
+            "provider-registry-profile-mismatch",
+            "binding drift in {field} must be rejected"
+        );
+    }
 }
