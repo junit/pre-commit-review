@@ -874,6 +874,93 @@ fn provider_writer_cli_rejects_drifted_generator_configuration_before_output() {
 }
 
 #[test]
+fn provider_release_workflow_accepts_only_the_exact_rust_analyzer_tag() {
+    const RELEASE_TAG: &str = "artifact-rust-analyzer-2026.07.27-pcr.1";
+    const RELEASE_REF: &str = "refs/tags/artifact-rust-analyzer-2026.07.27-pcr.1";
+    fn job_condition(job: &str) -> &str {
+        job.lines()
+            .find_map(|line| line.strip_prefix("    if: "))
+            .expect("provider job is missing its selection condition")
+    }
+
+    let workflow = include_str!("../../.github/workflows/artifact-pack-release.yml");
+    let on_start = workflow.find("on:\n").unwrap();
+    let permissions_start = workflow.find("\npermissions:\n").unwrap();
+    let triggers = &workflow[on_start..permissions_start];
+    let push = triggers
+        .split_once("  push:\n")
+        .map(|(_, push)| push)
+        .expect("provider workflow is missing the exact release push trigger");
+    let push_lines = push
+        .lines()
+        .take_while(|line| line.starts_with("    "))
+        .collect::<Vec<_>>();
+
+    assert_eq!(
+        push_lines,
+        vec![
+            "    tags:",
+            "      - artifact-rust-analyzer-2026.07.27-pcr.1"
+        ]
+    );
+    assert!(triggers.contains("  workflow_call:\n"));
+    assert!(triggers.contains("  workflow_dispatch:\n"));
+    assert!(!triggers.contains("branches:"));
+    assert!(!triggers.contains("repository_dispatch:"));
+
+    let build_start = workflow.find("\n  build:\n").unwrap();
+    let rust_build_start = workflow.find("\n  build-rust-analyzer:\n").unwrap();
+    let verify_start = workflow.find("\n  verify:\n").unwrap();
+    let rust_verify_start = workflow.find("\n  verify-rust-analyzer:\n").unwrap();
+    let publish_start = workflow.find("\n  publish:\n").unwrap();
+    let rust_publish_start = workflow.find("\n  publish-rust-analyzer:\n").unwrap();
+    let gitleaks_build = &workflow[build_start..rust_build_start];
+    let rust_build = &workflow[rust_build_start..verify_start];
+    let gitleaks_verify = &workflow[verify_start..rust_verify_start];
+    let rust_verify = &workflow[rust_verify_start..publish_start];
+    let gitleaks_publish = &workflow[publish_start..rust_publish_start];
+    let rust_publish = &workflow[rust_publish_start..];
+
+    let tag_selector = format!("github.ref == '{RELEASE_REF}'");
+    assert_eq!(
+        job_condition(rust_build),
+        format!("inputs.artifact == 'rust-analyzer' || {tag_selector}")
+    );
+    assert_eq!(
+        job_condition(rust_verify),
+        format!("inputs.artifact == 'rust-analyzer' || {tag_selector}")
+    );
+    assert_eq!(
+        job_condition(rust_publish),
+        format!(
+            "(inputs.artifact == 'rust-analyzer' && (startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch')) || {tag_selector}"
+        )
+    );
+    assert_eq!(
+        job_condition(gitleaks_build),
+        "inputs.artifact == 'gitleaks'"
+    );
+    assert!(gitleaks_verify
+        .lines()
+        .all(|line| !line.starts_with("    if: ")));
+    assert!(gitleaks_verify.contains("    needs: build\n"));
+    assert_eq!(
+        job_condition(gitleaks_publish),
+        "inputs.artifact == 'gitleaks' && (startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch')"
+    );
+
+    let ref_name_uses = workflow
+        .lines()
+        .filter(|line| line.contains("github.ref_name"))
+        .collect::<Vec<_>>();
+    assert_eq!(ref_name_uses.len(), 2);
+    assert!(ref_name_uses
+        .iter()
+        .all(|line| { line.trim() == "tag_name: ${{ inputs.release_tag || github.ref_name }}" }));
+    assert_eq!(triggers.matches(RELEASE_TAG).count(), 1);
+}
+
+#[test]
 fn provider_release_workflow_prepares_bound_inputs_before_invoking_writer() {
     let workflow = include_str!("../../.github/workflows/artifact-pack-release.yml");
     let prepare_start = workflow

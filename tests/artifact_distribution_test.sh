@@ -289,6 +289,30 @@ grep -Fq 'artifact-pack-release.yml' "$repo_root/.github/workflows/artifact-pack
   || fail 'provider pack workflow does not bind its own workflow identity'
 grep -Fq 'verify_release_artifacts.sh --fixture' "$repo_root/.github/workflows/artifact-pack-release.yml" \
   || fail 'provider pack workflow does not run the independent verifier'
+python3 - "$repo_root/.github/workflows/artifact-pack-release.yml" <<'PY'
+from pathlib import Path
+import sys
+
+workflow = Path(sys.argv[1]).read_text(encoding='utf-8')
+triggers = workflow[workflow.index('on:\n'):workflow.index('\npermissions:\n')]
+try:
+    push = triggers.split('  push:\n', 1)[1]
+except IndexError as error:
+    raise SystemExit('provider workflow is missing the exact release push trigger') from error
+push_lines = []
+for line in push.splitlines():
+    if not line.startswith('    '):
+        break
+    push_lines.append(line)
+expected = [
+    '    tags:',
+    '      - artifact-rust-analyzer-2026.07.27-pcr.1',
+]
+if push_lines != expected:
+    raise SystemExit(f'provider workflow push trigger is not exact: {push_lines!r}')
+if 'branches:' in triggers or 'repository_dispatch:' in triggers:
+    raise SystemExit('provider workflow exposes an unreviewed non-tag trigger')
+PY
 grep -Fq 'Record release toolchain and lockfile evidence' "$repo_root/.github/workflows/release.yml" \
   || fail 'release workflow does not record toolchain evidence'
 grep -Fq 'Cargo.lock' "$repo_root/.github/workflows/release.yml" \
