@@ -333,7 +333,6 @@ resolve_gitleaks_platform() {
 
 require_rust_analyzer_host() {
   local platform="$1"
-  local probe="${PRE_COMMIT_REVIEW_LIBC_PROBE:-getconf}"
   local observed=''
   local probe_status=0
   local version
@@ -341,7 +340,7 @@ require_rust_analyzer_host() {
   local minor
 
   [ "$platform" = 'linux-amd64' ] || return 0
-  observed="$(LC_ALL=C "$probe" GNU_LIBC_VERSION 2>/dev/null)" || probe_status=$?
+  observed="$(LC_ALL=C getconf GNU_LIBC_VERSION 2>/dev/null)" || probe_status=$?
   if [ "$probe_status" -ne 0 ] || [ "${#observed}" -gt 128 ]; then
     observed=''
   fi

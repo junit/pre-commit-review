@@ -178,10 +178,11 @@ fn unknown_json_fields_are_rejected() {
 
 #[test]
 fn generated_profile_and_registry_keep_exact_cross_contract_bindings() {
+    let release_manifest_target = "x86_64-unknown-linux-gnu";
     let profile = AuthorizedProviderProfile::rust_analyzer(
         "2026-07-27".to_string(),
         digest('a'),
-        "x86_64-unknown-linux-musl".to_string(),
+        "x86_64-unknown-linux-gnu".to_string(),
     );
     profile.validate().unwrap();
     let registry = ProviderRegistry::rust_analyzer(
@@ -192,6 +193,8 @@ fn generated_profile_and_registry_keep_exact_cross_contract_bindings() {
     registry.validate().unwrap();
     registry.validate_profile_binding(&profile).unwrap();
     assert_eq!(registry.entries[0].profile_sha256, profile.sha256());
+    assert_eq!(profile.target_triple, release_manifest_target);
+    assert_eq!(registry.entries[0].target_triple, release_manifest_target);
 
     let mut digest_drift = registry.clone();
     digest_drift.entries[0].profile_sha256 = digest('b');

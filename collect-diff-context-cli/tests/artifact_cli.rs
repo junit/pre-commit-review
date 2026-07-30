@@ -760,7 +760,7 @@ fn doctor_requires_provider_registry_to_bind_the_installed_executable() -> Resul
         provider_version: "2026-07-27".to_string(),
         executable_sha256: fixture.pack.record.executable.sha256.clone(),
         configuration_sha256: "0".repeat(64),
-        target_triple: "x86_64-unknown-linux-musl".to_string(),
+        target_triple: "x86_64-unknown-linux-gnu".to_string(),
         toolchain_mode: "none".to_string(),
         arguments: vec!["--stdio".to_string()],
         hardening: ProviderHardening {
@@ -796,6 +796,14 @@ fn doctor_requires_provider_registry_to_bind_the_installed_executable() -> Resul
             toolchain_mode: profile.toolchain_mode.clone(),
         }],
     };
+    assert_eq!(
+        profile.target_triple,
+        fixture.manifest.packs[0].target_triple
+    );
+    assert_eq!(
+        registry.entries[0].target_triple,
+        fixture.manifest.packs[0].target_triple
+    );
     registry.validate()?;
     fs::write(
         providers.join("provider-registry.json"),

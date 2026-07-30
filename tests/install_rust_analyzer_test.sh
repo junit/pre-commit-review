@@ -127,6 +127,12 @@ run_install() {
     "$source_root/install.sh" codex --copy --dir "$1" "${@:2}"
 }
 
+if grep -Fq 'PRE_COMMIT_REVIEW_LIBC_PROBE' "$source_root/install.sh"; then
+  printf '%s\n' \
+    'provider installer test failed: production installer exposes a libc probe executable override' >&2
+  exit 1
+fi
+
 fake_bin="$tmp_dir/fake-bin"
 mkdir -p "$fake_bin"
 cat >"$fake_bin/uname" <<'FAKE_UNAME'
@@ -138,20 +144,21 @@ case "${1:-}" in
   *) exit 2 ;;
 esac
 FAKE_UNAME
-cat >"$fake_bin/libc-probe" <<'FAKE_LIBC_PROBE'
+cat >"$fake_bin/getconf" <<'FAKE_GETCONF'
 #!/usr/bin/env bash
 set -euo pipefail
-printf '%s\n' 'libc-probe' >>"${FAKE_MANAGER_LOG:?}"
+[ "$#" -eq 1 ] && [ "$1" = 'GNU_LIBC_VERSION' ]
+printf '%s\n' 'getconf' >>"${FAKE_MANAGER_LOG:?}"
 printf '%s\n' "${FAKE_LIBC_OUTPUT:-}"
 exit "${FAKE_LIBC_STATUS:-0}"
-FAKE_LIBC_PROBE
+FAKE_GETCONF
 cat >"$fake_bin/host-mutation" <<'FAKE_HOST_MUTATION'
 #!/usr/bin/env bash
 set -euo pipefail
 printf '%s\n' "$(basename "$0")" >>"${FAKE_HOST_MUTATION_LOG:?}"
 exit 99
 FAKE_HOST_MUTATION
-chmod +x "$fake_bin/uname" "$fake_bin/libc-probe" "$fake_bin/host-mutation"
+chmod +x "$fake_bin/uname" "$fake_bin/getconf" "$fake_bin/host-mutation"
 for command_name in apt apt-get apk dnf yum sudo; do
   cp "$fake_bin/host-mutation" "$fake_bin/$command_name"
 done
@@ -173,7 +180,6 @@ run_install_on_fake_platform() {
     FAKE_LIBC_STATUS="$libc_status" \
     FAKE_MANAGER_LOG="$manager_log" \
     FAKE_HOST_MUTATION_LOG="$host_mutation_log" \
-    PRE_COMMIT_REVIEW_LIBC_PROBE="$fake_bin/libc-probe" \
     "$source_root/install.sh" codex --copy --dir "$target" "$@"
 }
 
@@ -209,7 +215,7 @@ linux_default_skills="$tmp_dir/linux-default-skills"
 : >"$manager_log"
 run_install_on_fake_platform \
   Linux x86_64 'unparseable libc output' 1 "$linux_default_skills" >/dev/null
-if grep -Fq 'libc-probe' "$manager_log" || grep -Fq 'provider:' "$manager_log"; then
+if grep -Fq 'getconf' "$manager_log" || grep -Fq 'provider:' "$manager_log"; then
   printf '%s\n' 'provider installer test failed: default Linux install probed or provisioned rust-analyzer' >&2
   exit 1
 fi
@@ -220,7 +226,7 @@ for accepted_version in 2.28 2.39; do
   run_install_on_fake_platform \
     Linux x86_64 "glibc $accepted_version" 0 "$accepted_skills" \
     --with-rust-analyzer >/dev/null
-  if [ "$(sed -n '1p' "$manager_log")" != 'libc-probe' ]; then
+  if [ "$(sed -n '1p' "$manager_log")" != 'getconf' ]; then
     printf 'provider installer test failed: glibc %s was not checked before provisioning\n' \
       "$accepted_version" >&2
     exit 1
@@ -259,7 +265,7 @@ non_linux_skills="$tmp_dir/non-linux-provider-skills"
 run_install_on_fake_platform \
   Darwin x86_64 'unparseable libc output' 1 "$non_linux_skills" \
   --with-rust-analyzer >/dev/null
-if grep -Fq 'libc-probe' "$manager_log"; then
+if grep -Fq 'getconf' "$manager_log"; then
   printf '%s\n' 'provider installer test failed: non-Linux install probed glibc' >&2
   exit 1
 fi
