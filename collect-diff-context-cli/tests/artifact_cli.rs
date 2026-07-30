@@ -29,10 +29,10 @@ const BINARY: &str = env!("CARGO_BIN_EXE_collect-diff-context-cli");
 const RUST_ANALYZER_EXPECTED_VERSION: &str =
     "rust-analyzer 0.3.2989-standalone (12c3381f0b 2026-07-26)";
 const RUST_ANALYZER_EXECUTABLE_SHA256: &str =
-    "bf809712906c99b4056e19d05fbd42d51804a045f64bd211df9bc29ad2776eb6";
-const RUST_ANALYZER_PACK_VERSION: &str = "2026.07.27-pcr.1";
+    "f06d56b784d621794290826d28f30345029122f86fb2223d7dda820de8dc8de6";
+const RUST_ANALYZER_PACK_VERSION: &str = "2026.07.27-pcr.2";
 const RUST_ANALYZER_SOURCE_LOCK_SHA256: &str =
-    "82ee6473601fba11e01fc37f60ee48f0634bfa1f24f3d01714119cfadf84b742";
+    "38f5f8ea4f9cbec56d8dabb0ac4b992234ae069f76e7cfdeb46388017b3b22c5";
 
 struct CliFixture {
     _root: TempDir,
@@ -327,12 +327,13 @@ fn install_reviewed_provider_fixture(fixture: &mut CliFixture) -> Result<PathBuf
     record.upstream_tag = "2026-07-27".to_string();
     record.upstream_commit = "12c3381f0b17b8eec21075d1c72fd010996a9bda".to_string();
     record.source_lock_sha256 = RUST_ANALYZER_SOURCE_LOCK_SHA256.to_string();
+    record.target_triple = "x86_64-unknown-linux-gnu".to_string();
     record.pack_version = RUST_ANALYZER_PACK_VERSION.to_string();
-    record.project_release_tag = "artifact-rust-analyzer-2026.07.27-pcr.1".to_string();
+    record.project_release_tag = "artifact-rust-analyzer-2026.07.27-pcr.2".to_string();
     record.project_asset_name =
-        "pre-commit-review-rust-analyzer-2026.07.27-pcr.1-linux-amd64.tar.gz".to_string();
+        "pre-commit-review-rust-analyzer-2026.07.27-pcr.2-linux-amd64.tar.gz".to_string();
     record.executable.path = "bin/rust-analyzer".to_string();
-    record.executable.size = 44_889_000;
+    record.executable.size = 42_570_504;
     record.executable.sha256 = RUST_ANALYZER_EXECUTABLE_SHA256.to_string();
     record.version_probe = ProbeId::RustAnalyzerVersionV1;
     record.capability_probe = ProbeId::RustAnalyzerStdioV1;

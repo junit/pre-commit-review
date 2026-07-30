@@ -91,7 +91,7 @@ case "${FAKE_PROVIDER_MODE:-success}" in
   *) exit 2 ;;
 esac
 
-pack_version='2026.07.27-pcr.1'
+pack_version='2026.07.27-pcr.2'
 pack_root="$target_root/runtime/third-party/rust-analyzer/$pack_version"
 executable_name='rust-analyzer'
 case "$platform_id" in
@@ -109,6 +109,15 @@ printf '{}' >"$target_root/runtime/artifact-receipts/rust-analyzer.json"
 printf '{"operation":"provision","status":"completed"}'
 FAKE_MANAGER
 chmod +x "$manager"
+for fake_platform in darwin-amd64 darwin-arm64 linux-amd64 windows-amd64; do
+  fake_manager="$source_root/scripts/bin/collect_diff_context-$fake_platform"
+  case "$fake_platform" in
+    windows-*) fake_manager="${fake_manager}.exe" ;;
+  esac
+  if [ "$fake_manager" != "$manager" ]; then
+    cp "$manager" "$fake_manager"
+  fi
+done
 
 manager_log="$tmp_dir/manager.log"
 : >"$manager_log"
@@ -116,6 +125,56 @@ manager_log="$tmp_dir/manager.log"
 run_install() {
   FAKE_MANAGER_LOG="$manager_log" FAKE_PROVIDER_MODE="${FAKE_PROVIDER_MODE:-success}" \
     "$source_root/install.sh" codex --copy --dir "$1" "${@:2}"
+}
+
+fake_bin="$tmp_dir/fake-bin"
+mkdir -p "$fake_bin"
+cat >"$fake_bin/uname" <<'FAKE_UNAME'
+#!/usr/bin/env bash
+set -euo pipefail
+case "${1:-}" in
+  -s) printf '%s\n' "${FAKE_UNAME_S:?}" ;;
+  -m) printf '%s\n' "${FAKE_UNAME_M:?}" ;;
+  *) exit 2 ;;
+esac
+FAKE_UNAME
+cat >"$fake_bin/libc-probe" <<'FAKE_LIBC_PROBE'
+#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' 'libc-probe' >>"${FAKE_MANAGER_LOG:?}"
+printf '%s\n' "${FAKE_LIBC_OUTPUT:-}"
+exit "${FAKE_LIBC_STATUS:-0}"
+FAKE_LIBC_PROBE
+cat >"$fake_bin/host-mutation" <<'FAKE_HOST_MUTATION'
+#!/usr/bin/env bash
+set -euo pipefail
+printf '%s\n' "$(basename "$0")" >>"${FAKE_HOST_MUTATION_LOG:?}"
+exit 99
+FAKE_HOST_MUTATION
+chmod +x "$fake_bin/uname" "$fake_bin/libc-probe" "$fake_bin/host-mutation"
+for command_name in apt apt-get apk dnf yum sudo; do
+  cp "$fake_bin/host-mutation" "$fake_bin/$command_name"
+done
+
+host_mutation_log="$tmp_dir/host-mutation.log"
+: >"$host_mutation_log"
+
+run_install_on_fake_platform() {
+  local os_name="$1"
+  local arch_name="$2"
+  local libc_output="$3"
+  local libc_status="$4"
+  local target="$5"
+  shift 5
+  PATH="$fake_bin:$PATH" \
+    FAKE_UNAME_S="$os_name" \
+    FAKE_UNAME_M="$arch_name" \
+    FAKE_LIBC_OUTPUT="$libc_output" \
+    FAKE_LIBC_STATUS="$libc_status" \
+    FAKE_MANAGER_LOG="$manager_log" \
+    FAKE_HOST_MUTATION_LOG="$host_mutation_log" \
+    PRE_COMMIT_REVIEW_LIBC_PROBE="$fake_bin/libc-probe" \
+    "$source_root/install.sh" codex --copy --dir "$target" "$@"
 }
 
 default_skills="$tmp_dir/default-skills"
@@ -130,7 +189,7 @@ fi
 explicit_skills="$tmp_dir/explicit-skills"
 run_install "$explicit_skills" --with-rust-analyzer >/dev/null
 explicit_target="$explicit_skills/pre-commit-review"
-pack_root="$explicit_target/runtime/third-party/rust-analyzer/2026.07.27-pcr.1"
+pack_root="$explicit_target/runtime/third-party/rust-analyzer/2026.07.27-pcr.2"
 provider_executable='rust-analyzer'
 case "$platform" in
   windows-*) provider_executable='rust-analyzer.exe' ;;
@@ -145,6 +204,67 @@ esac
 [ -f "$explicit_target/runtime/distribution/revocations.json" ]
 [ -f "$explicit_target/runtime/distribution/core-pack-manifest.json" ]
 grep -Fq "provider:${platform}:no" "$manager_log"
+
+linux_default_skills="$tmp_dir/linux-default-skills"
+: >"$manager_log"
+run_install_on_fake_platform \
+  Linux x86_64 'unparseable libc output' 1 "$linux_default_skills" >/dev/null
+if grep -Fq 'libc-probe' "$manager_log" || grep -Fq 'provider:' "$manager_log"; then
+  printf '%s\n' 'provider installer test failed: default Linux install probed or provisioned rust-analyzer' >&2
+  exit 1
+fi
+
+for accepted_version in 2.28 2.39; do
+  accepted_skills="$tmp_dir/linux-glibc-$accepted_version"
+  : >"$manager_log"
+  run_install_on_fake_platform \
+    Linux x86_64 "glibc $accepted_version" 0 "$accepted_skills" \
+    --with-rust-analyzer >/dev/null
+  if [ "$(sed -n '1p' "$manager_log")" != 'libc-probe' ]; then
+    printf 'provider installer test failed: glibc %s was not checked before provisioning\n' \
+      "$accepted_version" >&2
+    exit 1
+  fi
+  grep -Fq 'provider:linux-amd64:no' "$manager_log"
+done
+
+for rejected_case in \
+  'old|glibc 2.27|0' \
+  'musl|musl libc (x86_64)|0' \
+  'unknown|unknown libc|0' \
+  'failed|glibc 2.39|1' \
+  'missing||127'; do
+  IFS='|' read -r case_name libc_output libc_status <<EOF
+$rejected_case
+EOF
+  rejected_skills="$tmp_dir/linux-libc-$case_name"
+  : >"$manager_log"
+  if run_install_on_fake_platform \
+    Linux x86_64 "$libc_output" "$libc_status" "$rejected_skills" \
+    --with-rust-analyzer \
+    >"$tmp_dir/libc-$case_name.out" 2>"$tmp_dir/libc-$case_name.err"; then
+    printf 'provider installer test failed: %s Linux libc was accepted\n' "$case_name" >&2
+    exit 1
+  fi
+  grep -Fq 'rust-analyzer requires glibc 2.28 or newer' \
+    "$tmp_dir/libc-$case_name.err"
+  if grep -Fq 'provider:' "$manager_log"; then
+    printf 'provider installer test failed: %s Linux libc reached provisioning\n' "$case_name" >&2
+    exit 1
+  fi
+done
+
+non_linux_skills="$tmp_dir/non-linux-provider-skills"
+: >"$manager_log"
+run_install_on_fake_platform \
+  Darwin x86_64 'unparseable libc output' 1 "$non_linux_skills" \
+  --with-rust-analyzer >/dev/null
+if grep -Fq 'libc-probe' "$manager_log"; then
+  printf '%s\n' 'provider installer test failed: non-Linux install probed glibc' >&2
+  exit 1
+fi
+grep -Fq 'provider:darwin-amd64:no' "$manager_log"
+[ ! -s "$host_mutation_log" ]
 
 cache_skills="$tmp_dir/cache-skills"
 run_install "$cache_skills" --with-rust-analyzer --no-download >/dev/null

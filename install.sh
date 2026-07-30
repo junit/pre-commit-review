@@ -331,6 +331,41 @@ resolve_gitleaks_platform() {
   printf '%s-%s\n' "$os_name" "$arch_name"
 }
 
+require_rust_analyzer_host() {
+  local platform="$1"
+  local probe="${PRE_COMMIT_REVIEW_LIBC_PROBE:-getconf}"
+  local observed=''
+  local probe_status=0
+  local version
+  local major
+  local minor
+
+  [ "$platform" = 'linux-amd64' ] || return 0
+  observed="$(LC_ALL=C "$probe" GNU_LIBC_VERSION 2>/dev/null)" || probe_status=$?
+  if [ "$probe_status" -ne 0 ] || [ "${#observed}" -gt 128 ]; then
+    observed=''
+  fi
+  case "$observed" in
+    'glibc '[0-9]*.[0-9]*)
+      version="${observed#glibc }"
+      ;;
+    *)
+      die 'rust-analyzer requires glibc 2.28 or newer on Linux; the host libc could not prove that prerequisite'
+      ;;
+  esac
+  case "$version" in
+    *[!0-9.]*|*.*.*|.*|*.)
+      die 'rust-analyzer requires glibc 2.28 or newer on Linux; the host libc version was not parseable'
+      ;;
+  esac
+  major="${version%%.*}"
+  minor="${version#*.}"
+  if [ "$((10#$major))" -lt 2 ] \
+    || { [ "$((10#$major))" -eq 2 ] && [ "$((10#$minor))" -lt 28 ]; }; then
+    die 'rust-analyzer requires glibc 2.28 or newer on Linux; upgrade the host before provisioning'
+  fi
+}
+
 gitleaks_binary_name() {
   local platform="$1"
   local suffix=''
@@ -775,6 +810,9 @@ repository_context_provider_binary="$(repository_context_provider_binary_name "$
 
 if [ "$with_rust_analyzer" = 'yes' ] && [ "$mode" = 'link' ]; then
   die '--with-rust-analyzer cannot be combined with --link'
+fi
+if [ "$with_rust_analyzer" = 'yes' ]; then
+  require_rust_analyzer_host "$gitleaks_platform"
 fi
 validate_target "$target_dir"
 ensure_parent_dir "$skills_dir"

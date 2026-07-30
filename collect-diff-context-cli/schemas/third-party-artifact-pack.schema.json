@@ -38,7 +38,11 @@
     },
     {
       "if": { "properties": { "platform_id": { "const": "linux-amd64" } } },
-      "then": { "properties": { "target_triple": { "const": "x86_64-unknown-linux-musl" } } }
+      "then": {
+        "if": { "properties": { "artifact_id": { "const": "rust-analyzer" } } },
+        "then": { "properties": { "target_triple": { "const": "x86_64-unknown-linux-gnu" } } },
+        "else": { "properties": { "target_triple": { "const": "x86_64-unknown-linux-musl" } } }
+      }
     },
     {
       "if": { "properties": { "platform_id": { "const": "windows-amd64" } } },

@@ -35,7 +35,7 @@ fn provider_install_selects_one_active_current_platform_record() {
 
     assert_eq!(record.artifact_id, "rust-analyzer");
     assert_eq!(record.platform_id, "linux-amd64");
-    assert_eq!(record.pack_version, "2026.07.27-pcr.1");
+    assert_eq!(record.pack_version, "2026.07.27-pcr.2");
 }
 
 #[test]
@@ -65,7 +65,7 @@ fn provider_install_rejects_wrong_missing_and_revoked_platform_records() {
 
 fn staged_provider(root: &Path, executable: &[u8]) -> VerifiedProvider {
     let relative =
-        PathBuf::from("runtime/third-party/rust-analyzer/2026.07.27-pcr.1/bin/rust-analyzer");
+        PathBuf::from("runtime/third-party/rust-analyzer/2026.07.27-pcr.2/bin/rust-analyzer");
     let path = root.join(&relative);
     fs::create_dir_all(path.parent().unwrap()).unwrap();
     fs::write(&path, executable).unwrap();
@@ -74,7 +74,7 @@ fn staged_provider(root: &Path, executable: &[u8]) -> VerifiedProvider {
         provider_version: "2026-07-27".to_string(),
         executable_relative_path: relative,
         executable_sha256: sha256_bytes(executable),
-        target_triple: "x86_64-unknown-linux-musl".to_string(),
+        target_triple: "x86_64-unknown-linux-gnu".to_string(),
     }
 }
 

@@ -61,7 +61,7 @@ source_lock_sha256 = hashlib.sha256(source_lock.read_bytes()).hexdigest()
 config = root / 'rust-analyzer-linux-amd64.generator-config.json'
 config.write_text(json.dumps({
     'compression': 'gzip-level-9', 'gzip_mtime': 0, 'gzip_os': 255,
-    'pack_version': '2026.07.27-pcr.1', 'platform_id': 'linux-amd64',
+    'pack_version': '2026.07.27-pcr.2', 'platform_id': 'linux-amd64',
     'rust_toolchain': '1.95.0', 'tar_format': 'posix-ustar'
 }, separators=(',', ':')), encoding='utf-8')
 config_sha256 = hashlib.sha256(config.read_bytes()).hexdigest()
@@ -80,7 +80,7 @@ release['composition']['source_lock_sha256'] = source_lock_sha256
 release['composition']['upstream_archive_sha256'] = asset['archive_sha256']
 release['composition']['generator_configuration_sha256'] = config_sha256
 subject_names = {
-    'pack': 'pre-commit-review-rust-analyzer-2026.07.27-pcr.1-linux-amd64.tar.gz',
+    'pack': 'pre-commit-review-rust-analyzer-2026.07.27-pcr.2-linux-amd64.tar.gz',
     'manifest': 'rust-analyzer-linux-amd64.pack-manifest.json',
     'sbom': 'rust-analyzer-linux-amd64.sbom.cdx.json',
 }
@@ -135,7 +135,7 @@ for platform in ['darwin-amd64', 'darwin-arm64', 'windows-amd64']:
     config = root / f'rust-analyzer-{platform}.generator-config.json'
     config.write_text(json.dumps({
         'compression': 'gzip-level-9', 'gzip_mtime': 0, 'gzip_os': 255,
-        'pack_version': '2026.07.27-pcr.1', 'platform_id': platform,
+        'pack_version': '2026.07.27-pcr.2', 'platform_id': platform,
         'rust_toolchain': '1.95.0', 'tar_format': 'posix-ustar'
     }, separators=(',', ':')), encoding='utf-8')
     config_sha256 = hashlib.sha256(config.read_bytes()).hexdigest()
@@ -150,7 +150,7 @@ for platform in ['darwin-amd64', 'darwin-arm64', 'windows-amd64']:
     release['composition']['upstream_archive_sha256'] = asset['archive_sha256']
     release['composition']['generator_configuration_sha256'] = config_sha256
     names = {
-        'pack': f'pre-commit-review-rust-analyzer-2026.07.27-pcr.1-{platform}.tar.gz',
+        'pack': f'pre-commit-review-rust-analyzer-2026.07.27-pcr.2-{platform}.tar.gz',
         'manifest': f'rust-analyzer-{platform}.pack-manifest.json',
         'sbom': f'rust-analyzer-{platform}.sbom.cdx.json',
     }
@@ -221,7 +221,7 @@ PY
 chmod +x "$fake_bin/gh"
 
 export PATH="$fake_bin:$PATH"
-export GITHUB_REF='refs/tags/artifact-rust-analyzer-2026.07.27-pcr.1'
+export GITHUB_REF='refs/tags/artifact-rust-analyzer-2026.07.27-pcr.2'
 export GITHUB_SHA='1111111111111111111111111111111111111111'
 export FAKE_GH_LOG="$tmp_dir/gh.log"
 "$verifier" --signed-release-root "$signed_fixture" >/dev/null

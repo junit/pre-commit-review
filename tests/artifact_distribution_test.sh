@@ -306,12 +306,14 @@ for line in push.splitlines():
     push_lines.append(line)
 expected = [
     '    tags:',
-    '      - artifact-rust-analyzer-2026.07.27-pcr.1',
+    '      - artifact-rust-analyzer-2026.07.27-pcr.2',
 ]
 if push_lines != expected:
     raise SystemExit(f'provider workflow push trigger is not exact: {push_lines!r}')
 if 'branches:' in triggers or 'repository_dispatch:' in triggers:
     raise SystemExit('provider workflow exposes an unreviewed non-tag trigger')
+if 'artifact-rust-analyzer-2026.07.27-pcr.1' in workflow:
+    raise SystemExit('provider workflow still activates the historical pcr.1 tag')
 PY
 grep -Fq 'Record release toolchain and lockfile evidence' "$repo_root/.github/workflows/release.yml" \
   || fail 'release workflow does not record toolchain evidence'

@@ -12,8 +12,8 @@ use serde_json::{json, Value};
 use std::{fs, io::Read, path::PathBuf, process::Command};
 
 const RUST_ANALYZER_SOURCE_LOCK_SHA256: &str =
-    "82ee6473601fba11e01fc37f60ee48f0634bfa1f24f3d01714119cfadf84b742";
-const PROVIDER_PACK_VERSION: &str = "2026.07.27-pcr.1";
+    "38f5f8ea4f9cbec56d8dabb0ac4b992234ae069f76e7cfdeb46388017b3b22c5";
+const PROVIDER_PACK_VERSION: &str = "2026.07.27-pcr.2";
 const EXPECTED_VERSION_OUTPUT: &str = "rust-analyzer 0.3.2989-standalone (12c3381f0b 2026-07-26)";
 
 fn digest(character: char) -> String {
@@ -85,16 +85,16 @@ fn expected_source_lock() -> SourceLock {
             ),
             source_asset(
                 "linux-amd64",
-                "x86_64-unknown-linux-musl",
+                "x86_64-unknown-linux-gnu",
                 (
-                    "rust-analyzer-x86_64-unknown-linux-musl.gz",
-                    15_070_124,
-                    "4793930e0fe32f18ed7e8e689df3ebb03b632f76c16625c44754fb42ce39fc72",
+                    "rust-analyzer-x86_64-unknown-linux-gnu.gz",
+                    15_035_345,
+                    "ac4f42ddbbd040d75d847e991894776485783e28beb744b9719a660a99abe115",
                 ),
                 (
                     "rust-analyzer",
-                    44_889_000,
-                    "bf809712906c99b4056e19d05fbd42d51804a045f64bd211df9bc29ad2776eb6",
+                    42_570_504,
+                    "f06d56b784d621794290826d28f30345029122f86fb2223d7dda820de8dc8de6",
                 ),
             ),
             source_asset(
@@ -143,11 +143,11 @@ fn provider_record(source_lock_sha256: &str) -> ArtifactPackRecord {
         upstream_commit: "12c3381f0b17b8eec21075d1c72fd010996a9bda".to_string(),
         source_lock_sha256: source_lock_sha256.to_string(),
         platform_id: "linux-amd64".to_string(),
-        target_triple: "x86_64-unknown-linux-musl".to_string(),
+        target_triple: "x86_64-unknown-linux-gnu".to_string(),
         state: ArtifactState::Active,
         pack_version: PROVIDER_PACK_VERSION.to_string(),
-        project_release_tag: "artifact-rust-analyzer-2026.07.27-pcr.1".to_string(),
-        project_asset_name: "pre-commit-review-rust-analyzer-2026.07.27-pcr.1-linux-amd64.tar.gz"
+        project_release_tag: "artifact-rust-analyzer-2026.07.27-pcr.2".to_string(),
+        project_asset_name: "pre-commit-review-rust-analyzer-2026.07.27-pcr.2-linux-amd64.tar.gz"
             .to_string(),
         expected_compressed_size: 16 * 1024 * 1024,
         max_compressed_size: 32 * 1024 * 1024,
@@ -157,8 +157,8 @@ fn provider_record(source_lock_sha256: &str) -> ArtifactPackRecord {
         pack_format: PackFormat::NormalizedTarGzipV1,
         executable: ArtifactFileBinding {
             path: "bin/rust-analyzer".to_string(),
-            size: 44_889_000,
-            sha256: "bf809712906c99b4056e19d05fbd42d51804a045f64bd211df9bc29ad2776eb6".to_string(),
+            size: 42_570_504,
+            sha256: "f06d56b784d621794290826d28f30345029122f86fb2223d7dda820de8dc8de6".to_string(),
         },
         version_probe: ProbeId::RustAnalyzerVersionV1,
         capability_probe: ProbeId::RustAnalyzerStdioV1,
@@ -255,7 +255,7 @@ fn source_lock_rejects_moving_untrusted_or_ambiguous_inputs() {
     }
 
     let mut changed_target = expected_source_lock();
-    changed_target.assets[2].target_triple = "x86_64-unknown-linux-gnu".to_string();
+    changed_target.assets[2].target_triple = "x86_64-unknown-linux-musl".to_string();
     assert_eq!(
         changed_target.validate().unwrap_err().code,
         "platform-target-mismatch"
@@ -425,11 +425,19 @@ fn provider_records_reject_wrong_identity_or_missing_digest_bindings() {
     let mut unreviewed_provider = provider_record(&digest('a'));
     unreviewed_provider.artifact_id = "unreviewed-provider".to_string();
     unreviewed_provider.upstream_repository = "gitleaks/gitleaks".to_string();
-    assert_eq!(rejection(unreviewed_provider), "artifact-role-policy");
+    assert_eq!(
+        rejection(unreviewed_provider),
+        "platform-target-mismatch",
+        "GNU/Linux must remain scoped to the reviewed rust-analyzer identity"
+    );
 
     let mut wrong_artifact = provider_record(RUST_ANALYZER_SOURCE_LOCK_SHA256);
     wrong_artifact.artifact_id = "gitleaks".to_string();
-    assert_eq!(rejection(wrong_artifact), "artifact-role-policy");
+    assert_eq!(
+        rejection(wrong_artifact),
+        "platform-target-mismatch",
+        "Gitleaks must keep the generic musl mapping"
+    );
 
     let mut wrong_repository = provider_record(RUST_ANALYZER_SOURCE_LOCK_SHA256);
     wrong_repository.upstream_repository = "gitleaks/gitleaks".to_string();
@@ -557,7 +565,7 @@ fn quality_baselines_are_provider_specific_and_source_lock_bound() {
         schema_version: 1,
         kind: "third_party_artifact_baseline".to_string(),
         artifact_id: "rust-analyzer".to_string(),
-        pack_version: "2026.07.27-pcr.1".to_string(),
+        pack_version: "2026.07.27-pcr.2".to_string(),
         source_lock_sha256: RUST_ANALYZER_SOURCE_LOCK_SHA256.to_string(),
         measurements: vec![BaselineMeasurement {
             platform_id: "linux-amd64".to_string(),
@@ -701,7 +709,7 @@ fn provider_pack_reproduction_and_sbom_are_byte_stable() {
     for (platform_id, target_triple, executable_name) in [
         ("darwin-amd64", "x86_64-apple-darwin", "rust-analyzer"),
         ("darwin-arm64", "aarch64-apple-darwin", "rust-analyzer"),
-        ("linux-amd64", "x86_64-unknown-linux-musl", "rust-analyzer"),
+        ("linux-amd64", "x86_64-unknown-linux-gnu", "rust-analyzer"),
         (
             "windows-amd64",
             "x86_64-pc-windows-msvc",
@@ -775,7 +783,7 @@ fn production_provider_writer_rejects_unreviewed_upstream_bytes_before_output() 
     let temporary = tempfile::tempdir().unwrap();
     let archive = temporary
         .path()
-        .join("rust-analyzer-x86_64-unknown-linux-musl.gz");
+        .join("rust-analyzer-x86_64-unknown-linux-gnu.gz");
     let executable = temporary.path().join("rust-analyzer");
     let version = temporary.path().join("version-output.txt");
     let source_lock = temporary.path().join("rust-analyzer-2026-07-27.json");
@@ -789,7 +797,7 @@ fn production_provider_writer_rejects_unreviewed_upstream_bytes_before_output() 
     fs::write(temporary.path().join("LICENSE-MIT"), b"MIT").unwrap();
     fs::write(
         &generator_config,
-        br#"{"compression":"gzip-level-9","gzip_mtime":0,"gzip_os":255,"pack_version":"2026.07.27-pcr.1","platform_id":"linux-amd64","rust_toolchain":"1.95.0","tar_format":"posix-ustar"}"#,
+        br#"{"compression":"gzip-level-9","gzip_mtime":0,"gzip_os":255,"pack_version":"2026.07.27-pcr.2","platform_id":"linux-amd64","rust_toolchain":"1.95.0","tar_format":"posix-ustar"}"#,
     )
     .unwrap();
 
@@ -844,7 +852,7 @@ fn provider_writer_cli_rejects_drifted_generator_configuration_before_output() {
     fs::copy(source_lock_path(), &source_lock).unwrap();
     fs::write(
         &generator_config,
-        br#"{"compression":"gzip-level-8","gzip_mtime":0,"gzip_os":255,"pack_version":"2026.07.27-pcr.1","platform_id":"linux-amd64","rust_toolchain":"1.95.0","tar_format":"posix-ustar"}"#,
+        br#"{"compression":"gzip-level-8","gzip_mtime":0,"gzip_os":255,"pack_version":"2026.07.27-pcr.2","platform_id":"linux-amd64","rust_toolchain":"1.95.0","tar_format":"posix-ustar"}"#,
     )
     .unwrap();
 
@@ -875,8 +883,8 @@ fn provider_writer_cli_rejects_drifted_generator_configuration_before_output() {
 
 #[test]
 fn provider_release_workflow_accepts_only_the_exact_rust_analyzer_tag() {
-    const RELEASE_TAG: &str = "artifact-rust-analyzer-2026.07.27-pcr.1";
-    const RELEASE_REF: &str = "refs/tags/artifact-rust-analyzer-2026.07.27-pcr.1";
+    const RELEASE_TAG: &str = "artifact-rust-analyzer-2026.07.27-pcr.2";
+    const RELEASE_REF: &str = "refs/tags/artifact-rust-analyzer-2026.07.27-pcr.2";
     fn job_condition(job: &str) -> &str {
         job.lines()
             .find_map(|line| line.strip_prefix("    if: "))
@@ -900,13 +908,14 @@ fn provider_release_workflow_accepts_only_the_exact_rust_analyzer_tag() {
         push_lines,
         vec![
             "    tags:",
-            "      - artifact-rust-analyzer-2026.07.27-pcr.1"
+            "      - artifact-rust-analyzer-2026.07.27-pcr.2"
         ]
     );
     assert!(triggers.contains("  workflow_call:\n"));
     assert!(triggers.contains("  workflow_dispatch:\n"));
     assert!(!triggers.contains("branches:"));
     assert!(!triggers.contains("repository_dispatch:"));
+    assert!(!workflow.contains("artifact-rust-analyzer-2026.07.27-pcr.1"));
 
     let build_start = workflow.find("\n  build:\n").unwrap();
     let rust_build_start = workflow.find("\n  build-rust-analyzer:\n").unwrap();
@@ -920,6 +929,9 @@ fn provider_release_workflow_accepts_only_the_exact_rust_analyzer_tag() {
     let rust_verify = &workflow[rust_verify_start..publish_start];
     let gitleaks_publish = &workflow[publish_start..rust_publish_start];
     let rust_publish = &workflow[rust_publish_start..];
+    assert!(gitleaks_build.contains("Install musl-tools"));
+    assert!(!rust_build.contains("Install musl-tools"));
+    assert!(!rust_build.contains("apt-get install"));
 
     let tag_selector = format!("github.ref == '{RELEASE_REF}'");
     assert_eq!(

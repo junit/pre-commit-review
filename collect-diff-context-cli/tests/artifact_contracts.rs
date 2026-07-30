@@ -279,6 +279,14 @@ fn source_lock_accepts_only_fixed_upstream_release_assets() {
     };
     lock.validate().unwrap();
 
+    let mut gnu_target = lock.clone();
+    gnu_target.assets[2].target_triple = "x86_64-unknown-linux-gnu".to_string();
+    assert_eq!(
+        gnu_target.validate().unwrap_err().code,
+        "platform-target-mismatch",
+        "GNU/Linux must not become a generic Gitleaks target"
+    );
+
     let mut moving = lock.clone();
     moving.upstream_tag = "latest".to_string();
     moving.assets[0].url =
@@ -525,8 +533,8 @@ fn baseline_recomputes_nearest_rank_p95_and_binds_measurements() {
         schema_version: 1,
         kind: "third_party_artifact_baseline".to_string(),
         artifact_id: "rust-analyzer".to_string(),
-        pack_version: "2026.07.27-pcr.1".to_string(),
-        source_lock_sha256: "82ee6473601fba11e01fc37f60ee48f0634bfa1f24f3d01714119cfadf84b742"
+        pack_version: "2026.07.27-pcr.2".to_string(),
+        source_lock_sha256: "38f5f8ea4f9cbec56d8dabb0ac4b992234ae069f76e7cfdeb46388017b3b22c5"
             .to_string(),
         measurements: vec![BaselineMeasurement {
             platform_id: "linux-amd64".to_string(),
@@ -581,6 +589,14 @@ fn core_inventory_is_platform_specific_and_manifest_bound() {
         ],
     };
     core.validate().unwrap();
+
+    let mut gnu_target = core.clone();
+    gnu_target.target_triple = "x86_64-unknown-linux-gnu".to_string();
+    assert_eq!(
+        gnu_target.validate().unwrap_err().code,
+        "platform-target-mismatch",
+        "GNU/Linux must not become a generic core target"
+    );
 
     let mut other_platform = core;
     other_platform.members.push(CorePackFileBinding {

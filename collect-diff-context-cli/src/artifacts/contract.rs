@@ -16,10 +16,10 @@ const MAX_SOURCE_ASSETS: usize = 4;
 const MAX_COMPRESSED_BYTES: u64 = 512 * 1024 * 1024;
 const MAX_EXPANDED_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 const RUST_ANALYZER_SOURCE_LOCK_SHA256: &str =
-    "82ee6473601fba11e01fc37f60ee48f0634bfa1f24f3d01714119cfadf84b742";
+    "38f5f8ea4f9cbec56d8dabb0ac4b992234ae069f76e7cfdeb46388017b3b22c5";
 const RUST_ANALYZER_ARTIFACT_ID: &str = "rust-analyzer";
-const RUST_ANALYZER_PACK_VERSION: &str = "2026.07.27-pcr.1";
-const RUST_ANALYZER_PROJECT_RELEASE_TAG: &str = "artifact-rust-analyzer-2026.07.27-pcr.1";
+const RUST_ANALYZER_PACK_VERSION: &str = "2026.07.27-pcr.2";
+const RUST_ANALYZER_PROJECT_RELEASE_TAG: &str = "artifact-rust-analyzer-2026.07.27-pcr.2";
 const RUST_ANALYZER_REPOSITORY: &str = "rust-lang/rust-analyzer";
 const RUST_ANALYZER_SBOM_COMPONENT: &str = "pkg:github/rust-lang/rust-analyzer@2026-07-27";
 const RUST_ANALYZER_TOOL_VERSION: &str = "2026-07-27";
@@ -64,14 +64,14 @@ const RUST_ANALYZER_SOURCE_ASSETS: [RustAnalyzerSourceAssetPolicy; MAX_SOURCE_AS
     },
     RustAnalyzerSourceAssetPolicy {
         platform_id: "linux-amd64",
-        target_triple: "x86_64-unknown-linux-musl",
-        url: "https://github.com/rust-lang/rust-analyzer/releases/download/2026-07-27/rust-analyzer-x86_64-unknown-linux-musl.gz",
-        archive_name: "rust-analyzer-x86_64-unknown-linux-musl.gz",
-        archive_size: 15_070_124,
-        archive_sha256: "4793930e0fe32f18ed7e8e689df3ebb03b632f76c16625c44754fb42ce39fc72",
+        target_triple: "x86_64-unknown-linux-gnu",
+        url: "https://github.com/rust-lang/rust-analyzer/releases/download/2026-07-27/rust-analyzer-x86_64-unknown-linux-gnu.gz",
+        archive_name: "rust-analyzer-x86_64-unknown-linux-gnu.gz",
+        archive_size: 15_035_345,
+        archive_sha256: "ac4f42ddbbd040d75d847e991894776485783e28beb744b9719a660a99abe115",
         executable_name: "rust-analyzer",
-        executable_size: 44_889_000,
-        executable_sha256: "bf809712906c99b4056e19d05fbd42d51804a045f64bd211df9bc29ad2776eb6",
+        executable_size: 42_570_504,
+        executable_sha256: "f06d56b784d621794290826d28f30345029122f86fb2223d7dda820de8dc8de6",
     },
     RustAnalyzerSourceAssetPolicy {
         platform_id: "windows-amd64",
@@ -225,7 +225,7 @@ impl ArtifactPackRecord {
         validate_source_tag(&self.upstream_tag)?;
         validate_commit(&self.upstream_commit)?;
         validate_sha256(&self.source_lock_sha256)?;
-        validate_platform(&self.platform_id, &self.target_triple)?;
+        validate_artifact_platform(&self.artifact_id, &self.platform_id, &self.target_triple)?;
         validate_text(&self.pack_version)?;
         validate_release_tag(&self.project_release_tag)?;
         validate_filename(&self.project_asset_name)?;
@@ -563,7 +563,7 @@ impl PackManifest {
         validate_identifier(&self.artifact_id)?;
         validate_text(&self.tool_version)?;
         validate_text(&self.pack_version)?;
-        validate_platform(&self.platform_id, &self.target_triple)?;
+        validate_artifact_platform(&self.artifact_id, &self.platform_id, &self.target_triple)?;
         validate_filename(&self.upstream_asset_name)?;
         validate_sha256(&self.upstream_asset_sha256)?;
         validate_sha256(&self.source_lock_sha256)?;
@@ -1198,7 +1198,7 @@ pub struct SourceAssetRecord {
 
 impl SourceAssetRecord {
     fn validate(&self, lock: &SourceLock) -> Result<(), ArtifactError> {
-        validate_platform(&self.platform_id, &self.target_triple)?;
+        validate_artifact_platform(&lock.artifact_id, &self.platform_id, &self.target_triple)?;
         validate_filename(&self.archive_name)?;
         validate_filename(&self.executable_name)?;
         if self.archive_size == 0 || self.archive_size > MAX_COMPRESSED_BYTES {
@@ -1581,6 +1581,23 @@ fn validate_platform(platform_id: &str, target_triple: &str) -> Result<(), Artif
         ));
     }
     Ok(())
+}
+
+fn validate_artifact_platform(
+    artifact_id: &str,
+    platform_id: &str,
+    target_triple: &str,
+) -> Result<(), ArtifactError> {
+    if artifact_id == RUST_ANALYZER_ARTIFACT_ID && platform_id == "linux-amd64" {
+        if target_triple == "x86_64-unknown-linux-gnu" {
+            return Ok(());
+        }
+        return Err(ArtifactError::new(
+            "platform-target-mismatch",
+            "rust-analyzer Linux provider target must use the reviewed GNU ABI",
+        ));
+    }
+    validate_platform(platform_id, target_triple)
 }
 
 fn platform_target(platform_id: &str) -> Result<&'static str, ArtifactError> {

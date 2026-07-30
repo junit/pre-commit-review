@@ -15,13 +15,13 @@ use std::{
     path::{Component, Path, PathBuf},
 };
 
-const PROVIDER_PACK_VERSION: &str = "2026.07.27-pcr.1";
+const PROVIDER_PACK_VERSION: &str = "2026.07.27-pcr.2";
 const PROVIDER_TOOL_VERSION: &str = "2026-07-27";
 const PROVIDER_REPOSITORY: &str = "rust-lang/rust-analyzer";
 const PROVIDER_SOURCE_LOCK_FILENAME: &str = "rust-analyzer-2026-07-27.json";
 const PROVIDER_GENERATOR_CONFIG_FILENAME: &str = "generator-config.json";
 const PROVIDER_SOURCE_LOCK_SHA256: &str =
-    "82ee6473601fba11e01fc37f60ee48f0634bfa1f24f3d01714119cfadf84b742";
+    "38f5f8ea4f9cbec56d8dabb0ac4b992234ae069f76e7cfdeb46388017b3b22c5";
 const MAX_ARCHIVE_BYTES: usize = 512 * 1024 * 1024;
 const MAX_EXECUTABLE_BYTES: usize = 128 * 1024 * 1024;
 const MAX_LICENSE_BYTES: usize = 1024 * 1024;
@@ -556,7 +556,7 @@ fn validate_input(input: &ProviderPackInput) -> Result<(), String> {
     let expected = match input.platform_id.as_str() {
         "darwin-amd64" => ("x86_64-apple-darwin", "rust-analyzer"),
         "darwin-arm64" => ("aarch64-apple-darwin", "rust-analyzer"),
-        "linux-amd64" => ("x86_64-unknown-linux-musl", "rust-analyzer"),
+        "linux-amd64" => ("x86_64-unknown-linux-gnu", "rust-analyzer"),
         "windows-amd64" => ("x86_64-pc-windows-msvc", "rust-analyzer.exe"),
         _ => return Err("provider pack platform is not supported".to_string()),
     };
