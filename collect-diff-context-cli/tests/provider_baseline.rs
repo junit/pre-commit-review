@@ -9,7 +9,7 @@ use std::{
     process::{Command, Output},
 };
 
-const SOURCE_LOCK_SHA256: &str = "38f5f8ea4f9cbec56d8dabb0ac4b992234ae069f76e7cfdeb46388017b3b22c5";
+const SOURCE_LOCK_SHA256: &str = "298bc6c0339fe2c58fd35bfbd53db285ea7ff34e40734a4f0c36ccb3fe60d862";
 const PLATFORMS: [&str; 4] = [
     "darwin-amd64",
     "darwin-arm64",

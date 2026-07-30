@@ -15,13 +15,13 @@ use std::{
     path::{Component, Path, PathBuf},
 };
 
-const PROVIDER_PACK_VERSION: &str = "2026.07.27-pcr.2";
+const PROVIDER_PACK_VERSION: &str = "2026.07.27-pcr.3";
 const PROVIDER_TOOL_VERSION: &str = "2026-07-27";
 const PROVIDER_REPOSITORY: &str = "rust-lang/rust-analyzer";
 const PROVIDER_SOURCE_LOCK_FILENAME: &str = "rust-analyzer-2026-07-27.json";
 const PROVIDER_GENERATOR_CONFIG_FILENAME: &str = "generator-config.json";
 const PROVIDER_SOURCE_LOCK_SHA256: &str =
-    "38f5f8ea4f9cbec56d8dabb0ac4b992234ae069f76e7cfdeb46388017b3b22c5";
+    "298bc6c0339fe2c58fd35bfbd53db285ea7ff34e40734a4f0c36ccb3fe60d862";
 const MAX_ARCHIVE_BYTES: usize = 512 * 1024 * 1024;
 const MAX_EXECUTABLE_BYTES: usize = 128 * 1024 * 1024;
 const MAX_LICENSE_BYTES: usize = 1024 * 1024;

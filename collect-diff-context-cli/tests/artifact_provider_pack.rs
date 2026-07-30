@@ -12,9 +12,10 @@ use serde_json::{json, Value};
 use std::{fs, io::Read, path::PathBuf, process::Command};
 
 const RUST_ANALYZER_SOURCE_LOCK_SHA256: &str =
-    "38f5f8ea4f9cbec56d8dabb0ac4b992234ae069f76e7cfdeb46388017b3b22c5";
-const PROVIDER_PACK_VERSION: &str = "2026.07.27-pcr.2";
+    "298bc6c0339fe2c58fd35bfbd53db285ea7ff34e40734a4f0c36ccb3fe60d862";
+const PROVIDER_PACK_VERSION: &str = "2026.07.27-pcr.3";
 const EXPECTED_VERSION_OUTPUT: &str = "rust-analyzer 0.3.2989-standalone (12c3381f0b 2026-07-26)";
+const LINUX_EXPECTED_VERSION_OUTPUT: &str = "rust-analyzer 0.3.2989-standalone";
 
 fn digest(character: char) -> String {
     std::iter::repeat_n(character, 64).collect()
@@ -40,7 +41,12 @@ fn source_asset(
         executable_name: executable_name.to_string(),
         executable_size,
         executable_sha256: executable_sha256.to_string(),
-        expected_version_output: EXPECTED_VERSION_OUTPUT.to_string(),
+        expected_version_output: if platform_id == "linux-amd64" {
+            LINUX_EXPECTED_VERSION_OUTPUT
+        } else {
+            EXPECTED_VERSION_OUTPUT
+        }
+        .to_string(),
         license_source_paths: vec!["LICENSE-APACHE".to_string(), "LICENSE-MIT".to_string()],
     }
 }
@@ -146,8 +152,8 @@ fn provider_record(source_lock_sha256: &str) -> ArtifactPackRecord {
         target_triple: "x86_64-unknown-linux-gnu".to_string(),
         state: ArtifactState::Active,
         pack_version: PROVIDER_PACK_VERSION.to_string(),
-        project_release_tag: "artifact-rust-analyzer-2026.07.27-pcr.2".to_string(),
-        project_asset_name: "pre-commit-review-rust-analyzer-2026.07.27-pcr.2-linux-amd64.tar.gz"
+        project_release_tag: "artifact-rust-analyzer-2026.07.27-pcr.3".to_string(),
+        project_asset_name: "pre-commit-review-rust-analyzer-2026.07.27-pcr.3-linux-amd64.tar.gz"
             .to_string(),
         expected_compressed_size: 16 * 1024 * 1024,
         max_compressed_size: 32 * 1024 * 1024,
@@ -162,7 +168,7 @@ fn provider_record(source_lock_sha256: &str) -> ArtifactPackRecord {
         },
         version_probe: ProbeId::RustAnalyzerVersionV1,
         capability_probe: ProbeId::RustAnalyzerStdioV1,
-        expected_version: EXPECTED_VERSION_OUTPUT.to_string(),
+        expected_version: LINUX_EXPECTED_VERSION_OUTPUT.to_string(),
         license_component: "rust-analyzer".to_string(),
         license_files: vec![
             ArtifactFileBinding {
@@ -565,7 +571,7 @@ fn quality_baselines_are_provider_specific_and_source_lock_bound() {
         schema_version: 1,
         kind: "third_party_artifact_baseline".to_string(),
         artifact_id: "rust-analyzer".to_string(),
-        pack_version: "2026.07.27-pcr.2".to_string(),
+        pack_version: "2026.07.27-pcr.3".to_string(),
         source_lock_sha256: RUST_ANALYZER_SOURCE_LOCK_SHA256.to_string(),
         measurements: vec![BaselineMeasurement {
             platform_id: "linux-amd64".to_string(),
@@ -792,12 +798,12 @@ fn production_provider_writer_rejects_unreviewed_upstream_bytes_before_output() 
     fs::copy(source_lock_path(), &source_lock).unwrap();
     fs::write(&archive, b"not the reviewed archive").unwrap();
     fs::write(&executable, b"not the reviewed executable").unwrap();
-    fs::write(&version, EXPECTED_VERSION_OUTPUT).unwrap();
+    fs::write(&version, LINUX_EXPECTED_VERSION_OUTPUT).unwrap();
     fs::write(temporary.path().join("LICENSE-APACHE"), b"Apache-2.0").unwrap();
     fs::write(temporary.path().join("LICENSE-MIT"), b"MIT").unwrap();
     fs::write(
         &generator_config,
-        br#"{"compression":"gzip-level-9","gzip_mtime":0,"gzip_os":255,"pack_version":"2026.07.27-pcr.2","platform_id":"linux-amd64","rust_toolchain":"1.95.0","tar_format":"posix-ustar"}"#,
+        br#"{"compression":"gzip-level-9","gzip_mtime":0,"gzip_os":255,"pack_version":"2026.07.27-pcr.3","platform_id":"linux-amd64","rust_toolchain":"1.95.0","tar_format":"posix-ustar"}"#,
     )
     .unwrap();
 
@@ -852,7 +858,7 @@ fn provider_writer_cli_rejects_drifted_generator_configuration_before_output() {
     fs::copy(source_lock_path(), &source_lock).unwrap();
     fs::write(
         &generator_config,
-        br#"{"compression":"gzip-level-8","gzip_mtime":0,"gzip_os":255,"pack_version":"2026.07.27-pcr.2","platform_id":"linux-amd64","rust_toolchain":"1.95.0","tar_format":"posix-ustar"}"#,
+        br#"{"compression":"gzip-level-8","gzip_mtime":0,"gzip_os":255,"pack_version":"2026.07.27-pcr.3","platform_id":"linux-amd64","rust_toolchain":"1.95.0","tar_format":"posix-ustar"}"#,
     )
     .unwrap();
 
@@ -883,8 +889,8 @@ fn provider_writer_cli_rejects_drifted_generator_configuration_before_output() {
 
 #[test]
 fn provider_release_workflow_accepts_only_the_exact_rust_analyzer_tag() {
-    const RELEASE_TAG: &str = "artifact-rust-analyzer-2026.07.27-pcr.2";
-    const RELEASE_REF: &str = "refs/tags/artifact-rust-analyzer-2026.07.27-pcr.2";
+    const RELEASE_TAG: &str = "artifact-rust-analyzer-2026.07.27-pcr.3";
+    const RELEASE_REF: &str = "refs/tags/artifact-rust-analyzer-2026.07.27-pcr.3";
     fn job_condition(job: &str) -> &str {
         job.lines()
             .find_map(|line| line.strip_prefix("    if: "))
@@ -908,7 +914,7 @@ fn provider_release_workflow_accepts_only_the_exact_rust_analyzer_tag() {
         push_lines,
         vec![
             "    tags:",
-            "      - artifact-rust-analyzer-2026.07.27-pcr.2"
+            "      - artifact-rust-analyzer-2026.07.27-pcr.3"
         ]
     );
     assert!(triggers.contains("  workflow_call:\n"));
@@ -916,6 +922,7 @@ fn provider_release_workflow_accepts_only_the_exact_rust_analyzer_tag() {
     assert!(!triggers.contains("branches:"));
     assert!(!triggers.contains("repository_dispatch:"));
     assert!(!workflow.contains("artifact-rust-analyzer-2026.07.27-pcr.1"));
+    assert!(!workflow.contains("artifact-rust-analyzer-2026.07.27-pcr.2"));
 
     let build_start = workflow.find("\n  build:\n").unwrap();
     let rust_build_start = workflow.find("\n  build-rust-analyzer:\n").unwrap();

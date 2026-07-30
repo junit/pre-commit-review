@@ -28,7 +28,7 @@ on:
         type: string
   push:
     tags:
-      - artifact-rust-analyzer-2026.07.27-pcr.2
+      - artifact-rust-analyzer-2026.07.27-pcr.3
 
 permissions:
   contents: write
@@ -38,7 +38,7 @@ permissions:
 env:
   RUST_TOOLCHAIN: 1.95.0
   PACK_VERSION: 8.30.1-pcr.1
-  RUST_ANALYZER_PACK_VERSION: 2026.07.27-pcr.2
+  RUST_ANALYZER_PACK_VERSION: 2026.07.27-pcr.3
 
 jobs:
   build:
@@ -168,7 +168,7 @@ jobs:
 
   build-rust-analyzer:
     name: Build rust-analyzer pack (${{ matrix.platform }})
-    if: inputs.artifact == 'rust-analyzer' || github.ref == 'refs/tags/artifact-rust-analyzer-2026.07.27-pcr.2'
+    if: inputs.artifact == 'rust-analyzer' || github.ref == 'refs/tags/artifact-rust-analyzer-2026.07.27-pcr.3'
     runs-on: ${{ matrix.os }}
     strategy:
       fail-fast: false
@@ -506,7 +506,7 @@ jobs:
   verify-rust-analyzer:
     name: Verify rust-analyzer pack trust material
     needs: build-rust-analyzer
-    if: inputs.artifact == 'rust-analyzer' || github.ref == 'refs/tags/artifact-rust-analyzer-2026.07.27-pcr.2'
+    if: inputs.artifact == 'rust-analyzer' || github.ref == 'refs/tags/artifact-rust-analyzer-2026.07.27-pcr.3'
     runs-on: ubuntu-latest
     steps:
       - name: Checkout verifier
@@ -557,7 +557,7 @@ jobs:
   publish-rust-analyzer:
     name: Publish immutable rust-analyzer assets
     needs: verify-rust-analyzer
-    if: (inputs.artifact == 'rust-analyzer' && (startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch')) || github.ref == 'refs/tags/artifact-rust-analyzer-2026.07.27-pcr.2'
+    if: (inputs.artifact == 'rust-analyzer' && (startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch')) || github.ref == 'refs/tags/artifact-rust-analyzer-2026.07.27-pcr.3'
     runs-on: ubuntu-latest
     steps:
       - name: Download verified provider packs

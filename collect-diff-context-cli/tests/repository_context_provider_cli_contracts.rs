@@ -187,7 +187,7 @@ fn generated_profile_and_registry_keep_exact_cross_contract_bindings() {
     profile.validate().unwrap();
     let registry = ProviderRegistry::rust_analyzer(
         trusted_path("runtime/providers/rust-analyzer.profile.json"),
-        trusted_path("runtime/third-party/rust-analyzer/2026.07.27-pcr.2/bin/rust-analyzer"),
+        trusted_path("runtime/third-party/rust-analyzer/2026.07.27-pcr.3/bin/rust-analyzer"),
         &profile,
     );
     registry.validate().unwrap();
@@ -219,7 +219,7 @@ fn generated_profile_and_registry_keep_exact_cross_contract_bindings() {
     for field in ["kind", "version", "target", "executable", "toolchain"] {
         let mut drifted = ProviderRegistry::rust_analyzer(
             trusted_path("runtime/providers/rust-analyzer.profile.json"),
-            trusted_path("runtime/third-party/rust-analyzer/2026.07.27-pcr.2/bin/rust-analyzer"),
+            trusted_path("runtime/third-party/rust-analyzer/2026.07.27-pcr.3/bin/rust-analyzer"),
             &profile,
         );
         match field {

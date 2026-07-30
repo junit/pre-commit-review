@@ -26,13 +26,12 @@ use std::{
 use tempfile::TempDir;
 
 const BINARY: &str = env!("CARGO_BIN_EXE_collect-diff-context-cli");
-const RUST_ANALYZER_EXPECTED_VERSION: &str =
-    "rust-analyzer 0.3.2989-standalone (12c3381f0b 2026-07-26)";
+const RUST_ANALYZER_EXPECTED_VERSION: &str = "rust-analyzer 0.3.2989-standalone";
 const RUST_ANALYZER_EXECUTABLE_SHA256: &str =
     "f06d56b784d621794290826d28f30345029122f86fb2223d7dda820de8dc8de6";
-const RUST_ANALYZER_PACK_VERSION: &str = "2026.07.27-pcr.2";
+const RUST_ANALYZER_PACK_VERSION: &str = "2026.07.27-pcr.3";
 const RUST_ANALYZER_SOURCE_LOCK_SHA256: &str =
-    "38f5f8ea4f9cbec56d8dabb0ac4b992234ae069f76e7cfdeb46388017b3b22c5";
+    "298bc6c0339fe2c58fd35bfbd53db285ea7ff34e40734a4f0c36ccb3fe60d862";
 
 struct CliFixture {
     _root: TempDir,
@@ -329,9 +328,9 @@ fn install_reviewed_provider_fixture(fixture: &mut CliFixture) -> Result<PathBuf
     record.source_lock_sha256 = RUST_ANALYZER_SOURCE_LOCK_SHA256.to_string();
     record.target_triple = "x86_64-unknown-linux-gnu".to_string();
     record.pack_version = RUST_ANALYZER_PACK_VERSION.to_string();
-    record.project_release_tag = "artifact-rust-analyzer-2026.07.27-pcr.2".to_string();
+    record.project_release_tag = "artifact-rust-analyzer-2026.07.27-pcr.3".to_string();
     record.project_asset_name =
-        "pre-commit-review-rust-analyzer-2026.07.27-pcr.2-linux-amd64.tar.gz".to_string();
+        "pre-commit-review-rust-analyzer-2026.07.27-pcr.3-linux-amd64.tar.gz".to_string();
     record.executable.path = "bin/rust-analyzer".to_string();
     record.executable.size = 42_570_504;
     record.executable.sha256 = RUST_ANALYZER_EXECUTABLE_SHA256.to_string();

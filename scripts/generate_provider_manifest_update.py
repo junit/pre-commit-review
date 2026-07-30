@@ -11,11 +11,11 @@ MAX_JSON_BYTES = 1024 * 1024
 MAX_COMPRESSED_BYTES = 512 * 1024 * 1024
 MAX_EXPANDED_BYTES = 2 * 1024 * 1024 * 1024
 SOURCE_LOCK_SHA256 = (
-    "38f5f8ea4f9cbec56d8dabb0ac4b992234ae069f76e7cfdeb46388017b3b22c5"
+    "298bc6c0339fe2c58fd35bfbd53db285ea7ff34e40734a4f0c36ccb3fe60d862"
 )
-PACK_VERSION = "2026.07.27-pcr.2"
+PACK_VERSION = "2026.07.27-pcr.3"
 TOOL_VERSION = "2026-07-27"
-RELEASE_TAG = "artifact-rust-analyzer-2026.07.27-pcr.2"
+RELEASE_TAG = "artifact-rust-analyzer-2026.07.27-pcr.3"
 REPOSITORY = "junit/pre-commit-review"
 WORKFLOW = ".github/workflows/artifact-pack-release.yml"
 ISSUER = "https://token.actions.githubusercontent.com"

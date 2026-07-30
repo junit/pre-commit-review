@@ -8,10 +8,10 @@
     "schema_version": { "type": "integer", "const": 1 },
     "kind": { "type": "string", "const": "third_party_artifact_baseline" },
     "artifact_id": { "type": "string", "const": "rust-analyzer" },
-    "pack_version": { "type": "string", "const": "2026.07.27-pcr.2" },
+    "pack_version": { "type": "string", "const": "2026.07.27-pcr.3" },
     "source_lock_sha256": {
       "type": "string",
-      "const": "38f5f8ea4f9cbec56d8dabb0ac4b992234ae069f76e7cfdeb46388017b3b22c5"
+      "const": "298bc6c0339fe2c58fd35bfbd53db285ea7ff34e40734a4f0c36ccb3fe60d862"
     },
     "measurements": {
       "type": "array",

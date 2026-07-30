@@ -126,7 +126,7 @@
               "executable_name": "rust-analyzer",
               "executable_size": 42570504,
               "executable_sha256": "f06d56b784d621794290826d28f30345029122f86fb2223d7dda820de8dc8de6",
-              "expected_version_output": "rust-analyzer 0.3.2989-standalone (12c3381f0b 2026-07-26)",
+              "expected_version_output": "rust-analyzer 0.3.2989-standalone",
               "license_source_paths": ["LICENSE-APACHE", "LICENSE-MIT"]
             },
             {

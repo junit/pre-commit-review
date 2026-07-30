@@ -148,7 +148,7 @@ def validate_canonical_artifact_metadata(skill_root, schemas, schema_registry):
     rust_analyzer_lock = loaded['sources/rust-analyzer-2026-07-27.json'][0]
     rust_analyzer_bytes = loaded['sources/rust-analyzer-2026-07-27.json'][1]
     expected_rust_analyzer_sha256 = (
-        '38f5f8ea4f9cbec56d8dabb0ac4b992234ae069f76e7cfdeb46388017b3b22c5'
+        '298bc6c0339fe2c58fd35bfbd53db285ea7ff34e40734a4f0c36ccb3fe60d862'
     )
     if hashlib.sha256(rust_analyzer_bytes).hexdigest() != expected_rust_analyzer_sha256:
         raise ValueError('rust-analyzer source-lock digest does not match the reviewed bytes')

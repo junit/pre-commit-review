@@ -16,16 +16,17 @@ const MAX_SOURCE_ASSETS: usize = 4;
 const MAX_COMPRESSED_BYTES: u64 = 512 * 1024 * 1024;
 const MAX_EXPANDED_BYTES: u64 = 2 * 1024 * 1024 * 1024;
 const RUST_ANALYZER_SOURCE_LOCK_SHA256: &str =
-    "38f5f8ea4f9cbec56d8dabb0ac4b992234ae069f76e7cfdeb46388017b3b22c5";
+    "298bc6c0339fe2c58fd35bfbd53db285ea7ff34e40734a4f0c36ccb3fe60d862";
 const RUST_ANALYZER_ARTIFACT_ID: &str = "rust-analyzer";
-const RUST_ANALYZER_PACK_VERSION: &str = "2026.07.27-pcr.2";
-const RUST_ANALYZER_PROJECT_RELEASE_TAG: &str = "artifact-rust-analyzer-2026.07.27-pcr.2";
+const RUST_ANALYZER_PACK_VERSION: &str = "2026.07.27-pcr.3";
+const RUST_ANALYZER_PROJECT_RELEASE_TAG: &str = "artifact-rust-analyzer-2026.07.27-pcr.3";
 const RUST_ANALYZER_REPOSITORY: &str = "rust-lang/rust-analyzer";
 const RUST_ANALYZER_SBOM_COMPONENT: &str = "pkg:github/rust-lang/rust-analyzer@2026-07-27";
 const RUST_ANALYZER_TOOL_VERSION: &str = "2026-07-27";
 const RUST_ANALYZER_UPSTREAM_COMMIT: &str = "12c3381f0b17b8eec21075d1c72fd010996a9bda";
-const RUST_ANALYZER_EXPECTED_VERSION: &str =
+const RUST_ANALYZER_NON_LINUX_EXPECTED_VERSION: &str =
     "rust-analyzer 0.3.2989-standalone (12c3381f0b 2026-07-26)";
+const RUST_ANALYZER_LINUX_EXPECTED_VERSION: &str = "rust-analyzer 0.3.2989-standalone";
 
 struct RustAnalyzerSourceAssetPolicy {
     platform_id: &'static str,
@@ -37,6 +38,7 @@ struct RustAnalyzerSourceAssetPolicy {
     executable_name: &'static str,
     executable_size: u64,
     executable_sha256: &'static str,
+    expected_version_output: &'static str,
 }
 
 const RUST_ANALYZER_SOURCE_ASSETS: [RustAnalyzerSourceAssetPolicy; MAX_SOURCE_ASSETS] = [
@@ -50,6 +52,7 @@ const RUST_ANALYZER_SOURCE_ASSETS: [RustAnalyzerSourceAssetPolicy; MAX_SOURCE_AS
         executable_name: "rust-analyzer",
         executable_size: 39_729_020,
         executable_sha256: "01ed4388725ef878a8682ab086749b8c9f3dfa76cf9ac9a7b173add6075236b3",
+        expected_version_output: RUST_ANALYZER_NON_LINUX_EXPECTED_VERSION,
     },
     RustAnalyzerSourceAssetPolicy {
         platform_id: "darwin-arm64",
@@ -61,6 +64,7 @@ const RUST_ANALYZER_SOURCE_ASSETS: [RustAnalyzerSourceAssetPolicy; MAX_SOURCE_AS
         executable_name: "rust-analyzer",
         executable_size: 38_192_576,
         executable_sha256: "c4e9a82238092144191799a0631d21927ea75b8cbf245f79b51d1e89ca9fd760",
+        expected_version_output: RUST_ANALYZER_NON_LINUX_EXPECTED_VERSION,
     },
     RustAnalyzerSourceAssetPolicy {
         platform_id: "linux-amd64",
@@ -72,6 +76,7 @@ const RUST_ANALYZER_SOURCE_ASSETS: [RustAnalyzerSourceAssetPolicy; MAX_SOURCE_AS
         executable_name: "rust-analyzer",
         executable_size: 42_570_504,
         executable_sha256: "f06d56b784d621794290826d28f30345029122f86fb2223d7dda820de8dc8de6",
+        expected_version_output: RUST_ANALYZER_LINUX_EXPECTED_VERSION,
     },
     RustAnalyzerSourceAssetPolicy {
         platform_id: "windows-amd64",
@@ -83,6 +88,7 @@ const RUST_ANALYZER_SOURCE_ASSETS: [RustAnalyzerSourceAssetPolicy; MAX_SOURCE_AS
         executable_name: "rust-analyzer.exe",
         executable_size: 38_694_912,
         executable_sha256: "61ad88c3c90a5dece93f590aa31407f69be96023a2536a4f0285bd3def9cb278",
+        expected_version_output: RUST_ANALYZER_NON_LINUX_EXPECTED_VERSION,
     },
 ];
 
@@ -334,7 +340,7 @@ impl ArtifactPackRecord {
             || self.pack_version != RUST_ANALYZER_PACK_VERSION
             || self.project_release_tag != RUST_ANALYZER_PROJECT_RELEASE_TAG
             || self.project_asset_name != expected_project_asset
-            || self.expected_version != RUST_ANALYZER_EXPECTED_VERSION
+            || self.expected_version != expected_asset.expected_version_output
             || self.executable.path != expected_path
             || self.executable.size != expected_asset.executable_size
             || self.executable.sha256 != expected_asset.executable_sha256
@@ -1321,7 +1327,7 @@ impl SourceLock {
                     && asset.executable_name == expected.executable_name
                     && asset.executable_size == expected.executable_size
                     && asset.executable_sha256 == expected.executable_sha256
-                    && asset.expected_version_output == RUST_ANALYZER_EXPECTED_VERSION
+                    && asset.expected_version_output == expected.expected_version_output
                     && asset
                         .license_source_paths
                         .iter()

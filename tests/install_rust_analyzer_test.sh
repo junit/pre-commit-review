@@ -91,7 +91,7 @@ case "${FAKE_PROVIDER_MODE:-success}" in
   *) exit 2 ;;
 esac
 
-pack_version='2026.07.27-pcr.2'
+pack_version='2026.07.27-pcr.3'
 pack_root="$target_root/runtime/third-party/rust-analyzer/$pack_version"
 executable_name='rust-analyzer'
 case "$platform_id" in
@@ -195,7 +195,7 @@ fi
 explicit_skills="$tmp_dir/explicit-skills"
 run_install "$explicit_skills" --with-rust-analyzer >/dev/null
 explicit_target="$explicit_skills/pre-commit-review"
-pack_root="$explicit_target/runtime/third-party/rust-analyzer/2026.07.27-pcr.2"
+pack_root="$explicit_target/runtime/third-party/rust-analyzer/2026.07.27-pcr.3"
 provider_executable='rust-analyzer'
 case "$platform" in
   windows-*) provider_executable='rust-analyzer.exe' ;;
