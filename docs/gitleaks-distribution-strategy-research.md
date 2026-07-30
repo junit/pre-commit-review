@@ -109,9 +109,9 @@ review 继续”。下载失败也不会破坏普通 review。
 ### 发布与测试
 
 CI 在 Linux 集成测试中重新获取固定 Gitleaks 并运行 doctor、分发契约测试和
-安装测试。Release matrix 为四个平台分别获取一个 Gitleaks，随后总包阶段把
-所有 `gitleaks-*` 文件汇入同一个 `pre-commit-review-runtime.tar.gz` 并执行
-doctor。
+安装测试。Release matrix 为四个平台分别获取一个 Gitleaks，生成四个独立的
+sanitizer pack 和四个平台隔离的 core pack；外部 `.sha256` sidecar 与项目
+attestation 在任何归档检查或提取前由独立 verifier 校验。
 [lint workflow](../.github/workflows/lint.yml)、
 [release workflow](../.github/workflows/release.yml)、
 [分发测试](../tests/gitleaks_distribution_test.sh)、
@@ -186,9 +186,10 @@ provider 会迅速产生重复策略。
 
 ### 3. 全平台单包会放大体积
 
-当前 release workflow 最终把四个平台的 Gitleaks 都复制进一个 runtime 包。
-官方 v8.30.1 四个选定归档合计约 31.4 MiB；本地解压后的四个生成二进制合计
-约 84 MiB。每个用户只会执行其中一个。
+当前 release workflow 为每个平台发布一个独立的 Gitleaks sanitizer pack，core
+pack 也只包含对应平台的项目二进制。官方 v8.30.1 四个选定归档合计约
+31.4 MiB；本地解压后的四个生成二进制合计约 84 MiB，但用户只会获取其当前
+平台的 pack，不再安装一个聚合所有平台的 runtime 包。
 [Gitleaks Release API](https://api.github.com/repos/gitleaks/gitleaks/releases/tags/v8.30.1)、
 [release 汇总步骤](../.github/workflows/release.yml)
 

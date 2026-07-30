@@ -51,10 +51,8 @@ for arg in "$@"; do
   fi
 done
 
-# Fallback binary if precompiled not found
-CARGO_RELEASE_BIN="${SCRIPT_DIR}/../collect-diff-context-cli/target/release/collect-diff-context-cli"
-
 TEMP_FILES=''
+LOCAL_RELEASE_BIN="${SCRIPT_DIR}/../collect-diff-context-cli/target/release/collect-diff-context-cli"
 register_temp_file() {
   [ -n "${1:-}" ] || return 0
   TEMP_FILES="${TEMP_FILES}${TEMP_FILES:+
@@ -90,8 +88,8 @@ ensure_sanitizer_bin() {
   if [ -n "${PRE_COMMIT_REVIEW_SANITIZER_BIN:-}" ] \
     && [ -x "$PRE_COMMIT_REVIEW_SANITIZER_BIN" ]; then
     SANITIZER_BIN="$PRE_COMMIT_REVIEW_SANITIZER_BIN"
-  elif [ -x "$CARGO_RELEASE_BIN" ]; then
-    SANITIZER_BIN="$CARGO_RELEASE_BIN"
+  elif [ -x "$LOCAL_RELEASE_BIN" ]; then
+    SANITIZER_BIN="$LOCAL_RELEASE_BIN"
   elif [ -x "$BINARY_PATH" ]; then
     SANITIZER_BIN="$BINARY_PATH"
   else
@@ -211,19 +209,11 @@ release_captured_output() {
 get_rust_binary() {
   if [ -n "${PRE_COMMIT_REVIEW_RUST_BIN:-}" ] && [ -x "$PRE_COMMIT_REVIEW_RUST_BIN" ]; then
     echo "$PRE_COMMIT_REVIEW_RUST_BIN"
-  elif [ -f "$CARGO_RELEASE_BIN" ]; then
-    echo "$CARGO_RELEASE_BIN"
-  elif [ -f "$BINARY_PATH" ]; then
+  elif [ -x "$LOCAL_RELEASE_BIN" ]; then
+    echo "$LOCAL_RELEASE_BIN"
+  elif [ -x "$BINARY_PATH" ]; then
     echo "$BINARY_PATH"
   else
-    # Build it
-    if command -v cargo >/dev/null 2>&1; then
-      (cd "${SCRIPT_DIR}/../collect-diff-context-cli" && cargo build --release >/dev/null 2>&1)
-      if [ -f "$CARGO_RELEASE_BIN" ]; then
-        echo "$CARGO_RELEASE_BIN"
-        return 0
-      fi
-    fi
     return 1
   fi
 }
@@ -257,7 +247,7 @@ run_legacy() {
 run_rust_only() {
   local bin
   if ! bin="$(get_rust_binary)" || [ -z "$bin" ]; then
-    echo "Error: Rust binary not found and cargo build failed." >&2
+    echo "Error: Rust binary not found; provide an explicit binary or packaged target." >&2
     exit 1
   fi
   export PRE_COMMIT_REVIEW_HELPER_PATH="$WRAPPER_SCRIPT"

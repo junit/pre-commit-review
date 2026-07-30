@@ -84,11 +84,12 @@ if command -v cross >/dev/null 2>&1; then
   cp "${CLI_DIR}/target/x86_64-unknown-linux-musl/release/repository-context-cli" "${BIN_DIR}/repository_context-linux-amd64"
   cp "${CLI_DIR}/target/x86_64-unknown-linux-musl/release/repository-context-provider-cli" "${BIN_DIR}/repository_context_provider-linux-amd64"
 else
-  echo "      -> Using Docker musl container"
-  docker run --rm --platform linux/amd64 \
-    -v "${REPO_ROOT}:/volume" \
-    -w /volume/collect-diff-context-cli \
-    rust:latest sh -c "rustup toolchain install 1.95.0 >/dev/null && rustup target add --toolchain 1.95.0 x86_64-unknown-linux-musl >/dev/null && apt-get update -qq && apt-get install -y --no-install-recommends musl-tools >/dev/null && cargo +1.95.0 build --release --locked --target x86_64-unknown-linux-musl --bins >/dev/null"
+  echo "      -> Building with the explicitly installed Rust musl target"
+  (cd "${CLI_DIR}" && cargo +1.95.0 build --release --locked \
+    --target x86_64-unknown-linux-musl --bins >/dev/null) || {
+    echo "Linux musl target is unavailable; install it explicitly or use cross." >&2
+    exit 1
+  }
   cp "${CLI_DIR}/target/x86_64-unknown-linux-musl/release/collect-diff-context-cli" "${BIN_DIR}/collect_diff_context-linux-amd64"
   cp "${CLI_DIR}/target/x86_64-unknown-linux-musl/release/static-analysis-cli" "${BIN_DIR}/static_analysis-linux-amd64"
   cp "${CLI_DIR}/target/x86_64-unknown-linux-musl/release/repository-context-cli" "${BIN_DIR}/repository_context-linux-amd64"

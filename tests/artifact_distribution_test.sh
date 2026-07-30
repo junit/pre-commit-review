@@ -289,6 +289,12 @@ grep -Fq 'artifact-pack-release.yml' "$repo_root/.github/workflows/artifact-pack
   || fail 'provider pack workflow does not bind its own workflow identity'
 grep -Fq 'verify_release_artifacts.sh --fixture' "$repo_root/.github/workflows/artifact-pack-release.yml" \
   || fail 'provider pack workflow does not run the independent verifier'
+grep -Fq 'Record release toolchain and lockfile evidence' "$repo_root/.github/workflows/release.yml" \
+  || fail 'release workflow does not record toolchain evidence'
+grep -Fq 'Cargo.lock' "$repo_root/.github/workflows/release.yml" \
+  || fail 'release workflow does not bind the Cargo lockfile'
+grep -Fq 'release-evidence.json' "$repo_root/.github/workflows/release.yml" \
+  || fail 'release workflow does not publish release evidence'
 if grep -Eq 'uses: [^@]+@(v[0-9]+|master|stable|main)$' \
   "$repo_root/.github/workflows/release.yml" "$repo_root/.github/workflows/artifact-pack-release.yml"; then
   fail 'release trust workflows use a moving action ref'

@@ -367,6 +367,40 @@ jobs:
               raise SystemExit(f'SBOM missing pinned components: {sorted(missing)}')
           PY
 
+      - name: Record release toolchain and lockfile evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import hashlib
+          import json
+          from pathlib import Path
+
+          def digest(path):
+              return hashlib.sha256(path.read_bytes()).hexdigest()
+
+          archives = []
+          for path in sorted(Path('dist').glob('*.tar.gz')):
+              archives.append({
+                  'name': path.name,
+                  'size': path.stat().st_size,
+                  'sha256': digest(path),
+              })
+          evidence = {
+              'schema_version': 1,
+              'kind': 'pre_commit_review_release_evidence',
+              'rust_toolchain': '1.95.0',
+              'cargo_lock_sha256': digest(Path('collect-diff-context-cli/Cargo.lock')),
+              'fuzz_cargo_lock_sha256': digest(Path('collect-diff-context-cli/fuzz/Cargo.lock')),
+              'manifest_sha256': digest(Path('dist/manifest.json')),
+              'cargo_sbom_sha256': digest(Path('dist/pre-commit-review.cdx.json')),
+              'archives': archives,
+          }
+          Path('dist/release-evidence.json').write_text(
+              json.dumps(evidence, separators=(',', ':')), encoding='utf-8'
+          )
+          PY
+
       - name: Upload canonical release inputs
         uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
@@ -377,6 +411,7 @@ jobs:
             dist/*.record.json
             dist/manifest.json
             dist/pre-commit-review.cdx.json
+            dist/release-evidence.json
 
   verify-release-inputs:
     name: Verify external release sidecars
@@ -429,6 +464,7 @@ jobs:
             artifacts/*.tar.gz
             artifacts/manifest.json
             artifacts/pre-commit-review.cdx.json
+            artifacts/release-evidence.json
 
       - name: Publish Gitleaks artifact release
         uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65
@@ -450,5 +486,6 @@ jobs:
             artifacts/core-*.record.json
             artifacts/manifest.json
             artifacts/pre-commit-review.cdx.json
+            artifacts/release-evidence.json
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
