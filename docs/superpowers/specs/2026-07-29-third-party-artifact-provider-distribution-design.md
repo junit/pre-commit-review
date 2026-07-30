@@ -638,16 +638,26 @@ Linux source record selected the dynamically linked upstream musl asset. That
 public tag and its failed run remain immutable historical evidence; they are
 never moved, deleted, or reused.
 
-The corrected bootstrap uses pack version `2026.07.27-pcr.2` and accepts only
-the exact immutable tag `artifact-rust-analyzer-2026.07.27-pcr.2` as a `push`
+The second exact immutable tag
+`artifact-rust-analyzer-2026.07.27-pcr.2` corrected the Linux ABI selection,
+but it also failed before publication. The reviewed GNU/Linux executable emits
+the exact version output `rust-analyzer 0.3.2989-standalone`, while the other
+three assets emit
+`rust-analyzer 0.3.2989-standalone (12c3381f0b 2026-07-26)`. The `pcr.2`
+source record incorrectly reused the longer output for Linux. Its public tag
+and failed run also remain immutable historical evidence.
+
+The corrected bootstrap uses pack version `2026.07.27-pcr.3` and accepts only
+the exact immutable tag `artifact-rust-analyzer-2026.07.27-pcr.3` as a `push`
 trigger. The corrected source lock selects the upstream
 `rust-analyzer-x86_64-unknown-linux-gnu.gz` asset for `linux-amd64`, binds its
-reviewed archive and executable digests, and leaves the other three upstream
-assets unchanged. The exact `pcr.2` tag selects the rust-analyzer build, clean
+reviewed archive and executable digests, records the Linux-specific short
+version output, and leaves the other three upstream assets and version outputs
+unchanged. The exact `pcr.3` tag selects the rust-analyzer build, clean
 verification, and publication jobs without ambient inputs. No wildcard
-provider tag, moving tag, branch push, unrelated tag, or historical `pcr.1`
-tag starts the corrected publication. The resulting release still precedes
-and is independently verified before any core manifest update.
+provider tag, moving tag, branch push, unrelated tag, or historical `pcr.1` or
+`pcr.2` tag starts the corrected publication. The resulting release still
+precedes and is independently verified before any core manifest update.
 
 ## Generated Provider Authorization
 

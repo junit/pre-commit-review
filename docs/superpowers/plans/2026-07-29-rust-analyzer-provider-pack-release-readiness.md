@@ -379,6 +379,60 @@ diff --check`. Independently review specification compliance and code quality.
 Commit the local correction, but do not create or push the new `pcr.2` tag
 until the user explicitly authorizes that new remote action.
 
+## Task 6C: Correct The GNU Version Probe And Retry Immutably
+
+**Files:**
+
+- Modify: `third_party_artifacts/sources/rust-analyzer-2026-07-27.json`
+- Modify: `.github/workflows/artifact-pack-release.yml`
+- Modify: active provider identity constants, schemas, release scripts,
+  fixtures, and digest bindings
+- Test: `collect-diff-context-cli/tests/artifact_provider_pack.rs`
+- Test: `tests/artifact_distribution_test.sh`
+- Test: `tests/provider_release_verifier_test.sh`
+
+- [ ] **Step 1: Preserve the failed `pcr.2` bootstrap as immutable history.**
+
+The exact public tag `artifact-rust-analyzer-2026.07.27-pcr.2` remains fixed at
+its reviewed commit. Its run built and attested the three non-Linux packs, but
+Linux failed before pack creation because its exact GNU version output did not
+match the source lock. Clean verification and publication were skipped, and no
+GitHub Release was created. Do not move, delete, reuse, or rerun that tag as a
+corrected release.
+
+- [ ] **Step 2: Write failing platform-specific version-output tests.**
+
+Assert that the reviewed GNU `linux-amd64` record alone expects exactly
+`rust-analyzer 0.3.2989-standalone`. Assert that Darwin arm64, Darwin amd64,
+and Windows amd64 continue to expect exactly
+`rust-analyzer 0.3.2989-standalone (12c3381f0b 2026-07-26)`. Require the
+workflow trigger and all rust-analyzer job guards to accept only
+`artifact-rust-analyzer-2026.07.27-pcr.3`, with `pcr.1` and `pcr.2` rejected as
+historical tags.
+
+Run the focused provider source-lock/workflow tests and shell distribution
+test. Expected: the Linux version-output assertion and `pcr.3` exact-tag
+assertions fail against the `pcr.2` contract.
+
+- [ ] **Step 3: Implement the minimal `pcr.3` correction.**
+
+Change only the Linux source record's `expected_version_output` to the observed
+short GNU output. Keep its GNU target, URL, archive/executable sizes and
+digests, upstream tag/commit, licenses, and the other three asset records
+unchanged. Recompute the canonical source-lock digest and update every active
+provider-release binding to pack version `2026.07.27-pcr.3`, release tag
+`artifact-rust-analyzer-2026.07.27-pcr.3`, and the new source-lock digest.
+Preserve the glibc 2.28 installer gate. Do not add a relaxed, prefix, regex, or
+cross-platform version comparison.
+
+- [ ] **Step 4: Verify, review, and commit without publishing.**
+
+Run the focused provider Rust tests, artifact distribution shell test,
+provider release verifier test, schema validator, `actionlint`, formatting,
+and `git diff --check`. Independently review specification compliance and code
+quality. Commit locally, but do not create or push the new `pcr.3` tag until
+the user explicitly authorizes that new remote action.
+
 ## Task 7: Add Repository-Owned Real Fixtures And Deterministic Evidence
 
 **Files:**
