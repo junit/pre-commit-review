@@ -42,9 +42,9 @@ pub struct CorePackOptions<'a> {
 }
 
 #[derive(Clone)]
-struct ArchiveFile {
-    bytes: Vec<u8>,
-    mode: u32,
+pub(crate) struct ArchiveFile {
+    pub(crate) bytes: Vec<u8>,
+    pub(crate) mode: u32,
 }
 
 pub fn write_gitleaks_pack(options: &GitleaksPackOptions<'_>) -> WriterResult<ArtifactPackRecord> {
@@ -445,7 +445,9 @@ fn binding(path: &str, bytes: &[u8]) -> ArtifactFileBinding {
     }
 }
 
-fn read_canonical<T: DeserializeOwned + Serialize>(path: &Path) -> WriterResult<(T, Vec<u8>)> {
+pub(crate) fn read_canonical<T: DeserializeOwned + Serialize>(
+    path: &Path,
+) -> WriterResult<(T, Vec<u8>)> {
     let bytes = read_regular(path)?;
     let value: T = serde_json::from_slice(&bytes)
         .map_err(|error| format!("invalid JSON input {}: {error}", path.display()))?;
@@ -456,7 +458,7 @@ fn read_canonical<T: DeserializeOwned + Serialize>(path: &Path) -> WriterResult<
     Ok((value, bytes))
 }
 
-fn read_regular(path: &Path) -> WriterResult<Vec<u8>> {
+pub(crate) fn read_regular(path: &Path) -> WriterResult<Vec<u8>> {
     let metadata = fs::symlink_metadata(path)
         .map_err(|error| format!("missing pack input {}: {error}", path.display()))?;
     if !metadata.file_type().is_file() {
@@ -577,7 +579,7 @@ fn source_mode(source: &Path, archive_path: &str) -> WriterResult<u32> {
     Ok(0o644)
 }
 
-fn normalized_archive(files: &BTreeMap<String, ArchiveFile>) -> WriterResult<Vec<u8>> {
+pub(crate) fn normalized_archive(files: &BTreeMap<String, ArchiveFile>) -> WriterResult<Vec<u8>> {
     let mut directories = BTreeSet::new();
     for path in files.keys() {
         let mut prefix = String::new();
@@ -675,7 +677,7 @@ fn write_octal(field: &mut [u8], value: u64) -> WriterResult<()> {
     Ok(())
 }
 
-fn write_atomic(path: &Path, bytes: &[u8]) -> WriterResult<()> {
+pub(crate) fn write_atomic(path: &Path, bytes: &[u8]) -> WriterResult<()> {
     let parent = path
         .parent()
         .ok_or_else(|| format!("output has no parent: {}", path.display()))?;

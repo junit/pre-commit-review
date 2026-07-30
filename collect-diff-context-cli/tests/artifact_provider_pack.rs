@@ -3,8 +3,13 @@ use collect_diff_context_cli::artifacts::contract::{
     ArtifactPackRecord, ArtifactRole, ArtifactState, BaselineMeasurement, PackFormat, ProbeId,
     SourceAssetRecord, SourceLock,
 };
+use collect_diff_context_cli::artifacts::provider::{
+    build_provider_pack, write_rust_analyzer_pack, ProviderLicenseInput, ProviderPackInput,
+    RustAnalyzerPackOptions,
+};
+use flate2::read::GzDecoder;
 use serde_json::{json, Value};
-use std::{fs, path::PathBuf};
+use std::{fs, io::Read, path::PathBuf, process::Command};
 
 const RUST_ANALYZER_SOURCE_LOCK_SHA256: &str =
     "82ee6473601fba11e01fc37f60ee48f0634bfa1f24f3d01714119cfadf84b742";
@@ -642,4 +647,296 @@ fn source_lock_schema_is_strict_and_provider_specific() {
         baseline_schema["properties"]["source_lock_sha256"]["const"],
         RUST_ANALYZER_SOURCE_LOCK_SHA256
     );
+}
+
+fn fixture_pack_input(
+    platform_id: &str,
+    target_triple: &str,
+    executable_name: &str,
+) -> ProviderPackInput {
+    ProviderPackInput {
+        tool_version: "2026-07-27".to_string(),
+        pack_version: PROVIDER_PACK_VERSION.to_string(),
+        platform_id: platform_id.to_string(),
+        target_triple: target_triple.to_string(),
+        source_lock_sha256: digest('a'),
+        upstream_repository: "rust-lang/rust-analyzer".to_string(),
+        upstream_tag: "2026-07-27".to_string(),
+        upstream_asset_name: format!("rust-analyzer-{target_triple}.fixture"),
+        upstream_archive: format!("fixture archive for {platform_id}\n").into_bytes(),
+        executable_name: executable_name.to_string(),
+        executable: format!("fixture executable for {platform_id}\n").into_bytes(),
+        licenses: vec![
+            ProviderLicenseInput {
+                source_path: "LICENSE-APACHE".to_string(),
+                bytes: b"fixture Apache-2.0 license\n".to_vec(),
+            },
+            ProviderLicenseInput {
+                source_path: "LICENSE-MIT".to_string(),
+                bytes: b"fixture MIT license\n".to_vec(),
+            },
+        ],
+    }
+}
+
+fn regular_members(archive: &[u8]) -> Vec<(String, Vec<u8>)> {
+    let decoder = GzDecoder::new(archive);
+    let mut tar = tar::Archive::new(decoder);
+    let mut members = Vec::new();
+    for entry in tar.entries().unwrap() {
+        let mut entry = entry.unwrap();
+        if !entry.header().entry_type().is_file() {
+            continue;
+        }
+        let path = entry.path().unwrap().to_str().unwrap().to_string();
+        let mut bytes = Vec::new();
+        entry.read_to_end(&mut bytes).unwrap();
+        members.push((path, bytes));
+    }
+    members
+}
+
+#[test]
+fn provider_pack_reproduction_and_sbom_are_byte_stable() {
+    for (platform_id, target_triple, executable_name) in [
+        ("darwin-amd64", "x86_64-apple-darwin", "rust-analyzer"),
+        ("darwin-arm64", "aarch64-apple-darwin", "rust-analyzer"),
+        ("linux-amd64", "x86_64-unknown-linux-musl", "rust-analyzer"),
+        (
+            "windows-amd64",
+            "x86_64-pc-windows-msvc",
+            "rust-analyzer.exe",
+        ),
+    ] {
+        let input = fixture_pack_input(platform_id, target_triple, executable_name);
+        let first = build_provider_pack(&input).unwrap();
+        let second = build_provider_pack(&input).unwrap();
+        assert_eq!(first.archive, second.archive);
+        assert_eq!(first.archive[..3], [0x1f, 0x8b, 8]);
+        assert_eq!(first.archive[3], 0);
+        assert_eq!(&first.archive[4..8], &[0, 0, 0, 0]);
+        assert_eq!(first.archive[8], 2);
+        assert_eq!(first.archive[9], 255);
+
+        let members = regular_members(&first.archive);
+        assert_eq!(
+            members
+                .iter()
+                .map(|(path, _)| path.as_str())
+                .collect::<Vec<_>>(),
+            vec![
+                format!("bin/{executable_name}"),
+                "licenses/LICENSE-APACHE".to_string(),
+                "licenses/LICENSE-MIT".to_string(),
+                "pack-manifest.json".to_string(),
+                "sbom.cdx.json".to_string(),
+            ]
+        );
+        assert_eq!(
+            canonical_json(&first.manifest).unwrap(),
+            first.manifest_bytes
+        );
+        assert_eq!(canonical_json(&first.sbom).unwrap(), first.sbom_bytes);
+        assert!(!first.manifest_bytes.ends_with(b"\n"));
+        assert!(!first.sbom_bytes.ends_with(b"\n"));
+
+        let component = &first.sbom["components"][0];
+        assert_eq!(component["name"], "rust-analyzer");
+        assert_eq!(component["version"], "2026-07-27");
+        assert_eq!(
+            component["purl"],
+            "pkg:github/rust-lang/rust-analyzer@2026-07-27"
+        );
+        assert_eq!(
+            component["hashes"][0]["content"],
+            sha256_bytes(&input.executable)
+        );
+        assert_eq!(
+            component["externalReferences"][0]["hashes"][0]["content"],
+            sha256_bytes(&input.upstream_archive)
+        );
+        assert_eq!(
+            first.sbom["dependencies"][0]["dependsOn"][0],
+            component["bom-ref"]
+        );
+        assert!(component["properties"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .any(|property| {
+                property["name"] == "pre-commit-review:transitive-closure"
+                    && property["value"] == "unknown"
+            }));
+    }
+}
+
+#[test]
+fn production_provider_writer_rejects_unreviewed_upstream_bytes_before_output() {
+    let temporary = tempfile::tempdir().unwrap();
+    let archive = temporary
+        .path()
+        .join("rust-analyzer-x86_64-unknown-linux-musl.gz");
+    let executable = temporary.path().join("rust-analyzer");
+    let version = temporary.path().join("version-output.txt");
+    let source_lock = temporary.path().join("rust-analyzer-2026-07-27.json");
+    let generator_config = temporary.path().join("generator-config.json");
+    let output = temporary.path().join("provider.tar.gz");
+    fs::copy(source_lock_path(), &source_lock).unwrap();
+    fs::write(&archive, b"not the reviewed archive").unwrap();
+    fs::write(&executable, b"not the reviewed executable").unwrap();
+    fs::write(&version, EXPECTED_VERSION_OUTPUT).unwrap();
+    fs::write(temporary.path().join("LICENSE-APACHE"), b"Apache-2.0").unwrap();
+    fs::write(temporary.path().join("LICENSE-MIT"), b"MIT").unwrap();
+    fs::write(
+        &generator_config,
+        br#"{"compression":"gzip-level-9","gzip_mtime":0,"gzip_os":255,"pack_version":"2026.07.27-pcr.1","platform_id":"linux-amd64","rust_toolchain":"1.95.0","tar_format":"posix-ustar"}"#,
+    )
+    .unwrap();
+
+    let error = write_rust_analyzer_pack(&RustAnalyzerPackOptions {
+        platform_id: "linux-amd64",
+        pack_version: PROVIDER_PACK_VERSION,
+        source_lock_path: &source_lock,
+        generator_config_path: &generator_config,
+        output_path: &output,
+        manifest_output: None,
+        sbom_output: None,
+    })
+    .unwrap_err();
+    assert!(error.contains("upstream archive does not match"));
+    assert!(!output.exists());
+}
+
+#[test]
+fn provider_writer_cli_rejects_independently_selected_trust_inputs() {
+    let temporary = tempfile::tempdir().unwrap();
+    let output = temporary.path().join("provider.tar.gz");
+    let result = Command::new(env!("CARGO_BIN_EXE_artifact-pack-writer"))
+        .arg("rust-analyzer")
+        .arg("--platform-id")
+        .arg("linux-amd64")
+        .arg("--pack-version")
+        .arg(PROVIDER_PACK_VERSION)
+        .arg("--source-lock")
+        .arg(source_lock_path())
+        .arg("--upstream-archive")
+        .arg(temporary.path().join("arbitrary-upstream.gz"))
+        .arg("--output")
+        .arg(&output)
+        .output()
+        .unwrap();
+
+    assert!(!result.status.success());
+    assert!(
+        String::from_utf8_lossy(&result.stderr).contains("unknown argument: --upstream-archive"),
+        "stderr: {}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    assert!(!output.exists());
+}
+
+#[test]
+fn provider_writer_cli_rejects_drifted_generator_configuration_before_output() {
+    let temporary = tempfile::tempdir().unwrap();
+    let source_lock = temporary.path().join("rust-analyzer-2026-07-27.json");
+    let generator_config = temporary.path().join("generator-config.json");
+    let output = temporary.path().join("provider.tar.gz");
+    fs::copy(source_lock_path(), &source_lock).unwrap();
+    fs::write(
+        &generator_config,
+        br#"{"compression":"gzip-level-8","gzip_mtime":0,"gzip_os":255,"pack_version":"2026.07.27-pcr.1","platform_id":"linux-amd64","rust_toolchain":"1.95.0","tar_format":"posix-ustar"}"#,
+    )
+    .unwrap();
+
+    let result = Command::new(env!("CARGO_BIN_EXE_artifact-pack-writer"))
+        .arg("rust-analyzer")
+        .arg("--platform-id")
+        .arg("linux-amd64")
+        .arg("--pack-version")
+        .arg(PROVIDER_PACK_VERSION)
+        .arg("--source-lock")
+        .arg(&source_lock)
+        .arg("--generator-config")
+        .arg(&generator_config)
+        .arg("--output")
+        .arg(&output)
+        .output()
+        .unwrap();
+
+    assert!(!result.status.success());
+    assert!(
+        String::from_utf8_lossy(&result.stderr)
+            .contains("provider generator configuration is not canonical"),
+        "stderr: {}",
+        String::from_utf8_lossy(&result.stderr)
+    );
+    assert!(!output.exists());
+}
+
+#[test]
+fn provider_release_workflow_prepares_bound_inputs_before_invoking_writer() {
+    let workflow = include_str!("../../.github/workflows/artifact-pack-release.yml");
+    let prepare_start = workflow
+        .find("- name: Fetch, verify, and extract the reviewed upstream asset")
+        .unwrap();
+    let writer_start = workflow
+        .find("- name: Build normalized rust-analyzer pack")
+        .unwrap();
+    let evidence_start = workflow
+        .find("- name: Generate composition evidence")
+        .unwrap();
+    let attest_start = workflow
+        .find("- name: Attest provider pack subject")
+        .unwrap();
+    let upload_start = workflow
+        .find("- name: Upload provider pack and trust material")
+        .unwrap();
+    let clean_verify_start = workflow.find("verify-rust-analyzer:").unwrap();
+    let publish_start = workflow.find("publish:").unwrap();
+    let prepare = &workflow[prepare_start..writer_start];
+    let writer = &workflow[writer_start..evidence_start];
+    let evidence = &workflow[evidence_start..attest_start];
+    let attest = &workflow[attest_start..upload_start];
+    let clean_verify = &workflow[clean_verify_start..publish_start];
+
+    assert!(prepare.contains("import shutil"));
+    assert!(prepare.contains("output / 'generator-config.json'"));
+    assert!(prepare.contains("shutil.copy2(lock_path, output / lock_path.name)"));
+    assert!(prepare.contains("shutil.copy2(source, output / license_name)"));
+    assert!(writer.contains("--generator-config"));
+    assert!(evidence.contains("(verify_root / f'{subject.name}.attestation.json').write_text"));
+    assert!(!evidence.contains("(root / f'{subject.name}.attestation.json').write_text"));
+    assert!(evidence.contains("composition-predicate.json"));
+    assert!(!evidence.contains("published_upstream"));
+    assert!(!evidence.contains("published_lock"));
+    assert_eq!(
+        attest
+            .matches("actions/attest@daf44fb950173508f38bd2406030372c1d1162b1")
+            .count(),
+        3
+    );
+    assert_eq!(
+        attest
+            .matches("predicate-type: pre-commit-review.artifact-pack/v1")
+            .count(),
+        3
+    );
+    assert_eq!(attest.matches("predicate-path:").count(), 3);
+    assert!(attest.contains("steps.attest-pack.outputs.bundle-path"));
+    assert!(attest.contains("steps.attest-manifest.outputs.bundle-path"));
+    assert!(attest.contains("steps.attest-sbom.outputs.bundle-path"));
+    assert!(!attest.contains("attest-build-provenance"));
+    assert!(clean_verify.contains("--signed-release-root dist"));
+    assert!(clean_verify.contains("GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}"));
+    for legacy in [
+        "--upstream-archive",
+        "--binary",
+        "--version-output",
+        "--license-root",
+    ] {
+        assert!(
+            !writer.contains(legacy),
+            "legacy writer input remains: {legacy}"
+        );
+    }
 }
