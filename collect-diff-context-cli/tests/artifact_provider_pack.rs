@@ -894,6 +894,15 @@ fn provider_release_workflow_accepts_only_the_exact_rust_analyzer_tag() {
     fn exact_input_identity(artifact: &str, release_tag: &str) -> bool {
         artifact == "rust-analyzer" && release_tag == RELEASE_TAG
     }
+    fn publish_guard(
+        event_name: &str,
+        github_ref: &str,
+        artifact: &str,
+        release_tag: &str,
+    ) -> bool {
+        github_ref == RELEASE_REF
+            || (event_name == "workflow_dispatch" && exact_input_identity(artifact, release_tag))
+    }
     fn job_condition(job: &str) -> &str {
         job.lines()
             .find_map(|line| line.strip_prefix("    if: "))
@@ -933,6 +942,72 @@ fn provider_release_workflow_accepts_only_the_exact_rust_analyzer_tag() {
     ] {
         assert!(!exact_input_identity("rust-analyzer", historical_tag));
     }
+    let publish_cases = [
+        ("push", RELEASE_REF, "", "", true),
+        (
+            "workflow_call",
+            RELEASE_REF,
+            "gitleaks",
+            "artifact-rust-analyzer-2026.07.27-pcr.1",
+            true,
+        ),
+        (
+            "workflow_dispatch",
+            "refs/heads/main",
+            "rust-analyzer",
+            RELEASE_TAG,
+            true,
+        ),
+        (
+            "workflow_call",
+            "refs/tags/unrelated",
+            "rust-analyzer",
+            RELEASE_TAG,
+            false,
+        ),
+        (
+            "workflow_call",
+            "refs/heads/main",
+            "rust-analyzer",
+            RELEASE_TAG,
+            false,
+        ),
+        (
+            "workflow_dispatch",
+            "refs/heads/main",
+            "rust-analyzer",
+            "artifact-rust-analyzer-2026.07.27-pcr.1",
+            false,
+        ),
+        (
+            "workflow_dispatch",
+            "refs/heads/main",
+            "rust-analyzer",
+            "artifact-rust-analyzer-2026.07.27-pcr.2",
+            false,
+        ),
+        (
+            "push",
+            "refs/tags/artifact-rust-analyzer-2026.07.27-pcr.1",
+            "",
+            "",
+            false,
+        ),
+        (
+            "push",
+            "refs/tags/artifact-rust-analyzer-2026.07.27-pcr.2",
+            "",
+            "",
+            false,
+        ),
+    ];
+    for (event_name, github_ref, artifact, release_tag, expected) in publish_cases {
+        assert_eq!(
+            publish_guard(event_name, github_ref, artifact, release_tag),
+            expected,
+            "unexpected publish decision for {event_name} {github_ref} {artifact} {release_tag}"
+        );
+    }
 
     let build_start = workflow.find("\n  build:\n").unwrap();
     let rust_build_start = workflow.find("\n  build-rust-analyzer:\n").unwrap();
@@ -966,7 +1041,7 @@ fn provider_release_workflow_accepts_only_the_exact_rust_analyzer_tag() {
     assert_eq!(
         job_condition(rust_publish),
         format!(
-            "(inputs.artifact == 'rust-analyzer' && inputs.release_tag == '{RELEASE_TAG}' && (startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch')) || {tag_selector}"
+            "(inputs.artifact == 'rust-analyzer' && inputs.release_tag == '{RELEASE_TAG}' && github.event_name == 'workflow_dispatch') || {tag_selector}"
         )
     );
     assert_eq!(
