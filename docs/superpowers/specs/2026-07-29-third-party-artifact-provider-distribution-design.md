@@ -607,7 +607,7 @@ the named upstream commit.
 
 Provider packs are published before a core manifest references them:
 
-1. Merge the reviewed upstream source lock and pack-build workflow changes.
+1. Review and commit the upstream source lock and pack-build workflow changes.
 2. Build, verify, SBOM, attest, and publish the four independently versioned
    provider packs in an immutable project release.
 3. Verify the published assets and attestations from a clean workflow.
@@ -621,6 +621,15 @@ Provider packs are published before a core manifest references them:
 
 The core release never consumes an unpublished artifact from the same run and
 never rewrites a manifest digest during release.
+
+The first rust-analyzer project pack may be bootstrapped from its reviewed
+provider-distribution branch without merging that incomplete branch into the
+default branch. The pack workflow accepts only the exact immutable tag
+`artifact-rust-analyzer-2026.07.27-pcr.1` as a `push` trigger. That tag selects
+the rust-analyzer build, clean verification, and publication jobs without
+ambient inputs. No wildcard provider tag, moving tag, branch push, or unrelated
+tag starts publication. The resulting release still precedes and is
+independently verified before any core manifest update.
 
 ## Generated Provider Authorization
 

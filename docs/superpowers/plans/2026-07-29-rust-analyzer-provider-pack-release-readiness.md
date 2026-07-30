@@ -257,6 +257,54 @@ Add a sampler owned by the managed session/runtime that accounts for the child a
 
 Run `rtk cargo +1.95.0 test --manifest-path collect-diff-context-cli/Cargo.toml --locked --features test-fixture --test repository_context_resources --test repository_context_session`, `rtk cargo +1.95.0 clippy --manifest-path collect-diff-context-cli/Cargo.toml --locked --all-targets -- -D warnings`, and `rtk git diff --check`. Expected: over-limit and unavailable-accounting cases fail closed, descendants are reaped, and all prior session tests pass. Commit with `rtk git add collect-diff-context-cli/src/provider_resources.rs collect-diff-context-cli/src/lib.rs collect-diff-context-cli/src/trusted_runtime.rs collect-diff-context-cli/src/process_group.rs collect-diff-context-cli/src/repository_context_provider/session.rs collect-diff-context-cli/src/repository_context_provider/mod.rs collect-diff-context-cli/src/repository_context_provider/contract.rs collect-diff-context-cli/src/bin/repository_context_provider_fixture.rs collect-diff-context-cli/tests/repository_context_resources.rs collect-diff-context-cli/tests/repository_context_session.rs` followed by `rtk git commit -m "feat(provider): enforce sampled process-tree memory"`.
 
+## Task 6A: Enable The Exact Provider Release Tag Trigger
+
+**Files:**
+
+- Modify: `.github/workflows/artifact-pack-release.yml`
+- Test: `collect-diff-context-cli/tests/artifact_provider_pack.rs`
+- Test: `tests/artifact_distribution_test.sh`
+
+- [ ] **Step 1: Write failing exact-tag workflow tests.**
+
+Assert that the workflow declares only
+`artifact-rust-analyzer-2026.07.27-pcr.1` under `push.tags`, that this exact ref
+selects every rust-analyzer build/verify/publish job when workflow inputs are
+absent, and that Gitleaks jobs remain disabled. Reject wildcard provider tags,
+moving aliases, branch pushes, or a tag-derived arbitrary artifact selector.
+Keep the existing `workflow_call` and `workflow_dispatch` paths unchanged.
+
+- [ ] **Step 2: Run focused tests and observe the absent tag entrypoint.**
+
+Run `rtk cargo +1.95.0 test --manifest-path collect-diff-context-cli/Cargo.toml
+--locked --test artifact_provider_pack
+provider_release_workflow_accepts_only_the_exact_rust_analyzer_tag` and
+`rtk bash tests/artifact_distribution_test.sh`. Expected: the new assertion
+fails because the workflow has no `push.tags` entry and rust-analyzer jobs
+depend only on `inputs.artifact`.
+
+- [ ] **Step 3: Implement exact tag selection.**
+
+Add the one literal tag under `on.push.tags`. For rust-analyzer build, clean
+verification, and publication job conditions, accept either the existing
+explicit input or the exact full ref
+`refs/tags/artifact-rust-analyzer-2026.07.27-pcr.1`. Do not parse the tag into
+an artifact name, do not add a wildcard, and continue to use
+`inputs.release_tag || github.ref_name` only for the already-gated release
+name. Gitleaks conditions remain input-only.
+
+- [ ] **Step 4: Verify and commit the trigger.**
+
+Run `rtk cargo +1.95.0 test --manifest-path collect-diff-context-cli/Cargo.toml
+--locked --test artifact_provider_pack`, `rtk bash
+tests/artifact_distribution_test.sh`, `rtk python3
+scripts/validate_schemas.py`, and `rtk git diff --check`. Expected: exact-tag,
+workflow trust, schema, and existing artifact distribution gates pass. Commit
+with `rtk git add .github/workflows/artifact-pack-release.yml
+collect-diff-context-cli/tests/artifact_provider_pack.rs
+tests/artifact_distribution_test.sh` followed by `rtk git commit -m
+"ci(provider): allow exact pack release tag"`.
+
 ## Task 7: Add Repository-Owned Real Fixtures And Deterministic Evidence
 
 **Files:**
