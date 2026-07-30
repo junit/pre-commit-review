@@ -305,6 +305,80 @@ collect-diff-context-cli/tests/artifact_provider_pack.rs
 tests/artifact_distribution_test.sh` followed by `rtk git commit -m
 "ci(provider): allow exact pack release tag"`.
 
+## Task 6B: Correct The Linux Provider Asset And Retry Immutably
+
+**Files:**
+
+- Modify: `third_party_artifacts/sources/rust-analyzer-2026-07-27.json`
+- Modify: `.github/workflows/artifact-pack-release.yml`
+- Modify: `install.sh`
+- Modify: provider artifact contracts, schemas, release scripts, and active
+  provider-release fixtures that bind the pack version or Linux source asset
+- Test: `collect-diff-context-cli/tests/artifact_provider_pack.rs`
+- Test: `collect-diff-context-cli/tests/artifact_contracts.rs`
+- Test: `tests/artifact_distribution_test.sh`
+- Test: `tests/install_rust_analyzer_test.sh`
+- Test: `tests/provider_release_verifier_test.sh`
+
+- [ ] **Step 1: Preserve the failed `pcr.1` bootstrap as immutable history.**
+
+Assert that the corrected workflow accepts only
+`artifact-rust-analyzer-2026.07.27-pcr.2`, never accepts `pcr.1`, and contains
+no wildcard, moving tag, or branch selector. Do not move, delete, or reuse the
+public `artifact-rust-analyzer-2026.07.27-pcr.1` tag. The failed run and its
+three unpublished platform artifacts are historical evidence, not inputs to
+the corrected release.
+
+- [ ] **Step 2: Write failing GNU/Linux source and host-compatibility tests.**
+
+Require the `linux-amd64` rust-analyzer source record to select
+`rust-analyzer-x86_64-unknown-linux-gnu.gz` with target triple
+`x86_64-unknown-linux-gnu`, archive size `15035345`, archive SHA256
+`ac4f42ddbbd040d75d847e991894776485783e28beb744b9719a660a99abe115`,
+executable size `42570504`, and executable SHA256
+`f06d56b784d621794290826d28f30345029122f86fb2223d7dda820de8dc8de6`.
+Keep the pinned upstream tag, commit, version output, licenses, and the other
+three platform assets unchanged.
+
+Add installer tests proving that an explicit Linux rust-analyzer request:
+
+- accepts glibc 2.28 or newer before provisioning;
+- rejects glibc older than 2.28 and musl/unknown libc before provisioning;
+- leaves default installs and non-Linux platforms unchanged;
+- reports a bounded, actionable prerequisite error without attempting package
+  installation or requiring elevated privileges.
+
+Run the focused Rust and shell tests. Expected: they fail against the `pcr.1`
+musl source record, old exact tag, and missing installer compatibility gate.
+
+- [ ] **Step 3: Implement the `pcr.2` release identity and Linux contract.**
+
+Update the canonical source lock and all active provider-release policy,
+fixtures, schemas, generator/verifier constants, target mappings, and digests
+to pack version `2026.07.27-pcr.2` and the reviewed GNU/Linux asset. Preserve
+generic core and Gitleaks `x86_64-unknown-linux-musl` mappings. Artifact-aware
+validation must permit the GNU target only for the rust-analyzer
+`linux-amd64` provider record; it must not silently broaden unrelated artifact
+contracts.
+
+Before provisioning an explicitly requested rust-analyzer provider on Linux,
+detect the host libc without mutating the host. Accept only glibc 2.28 or
+newer, fail closed on missing/unparseable evidence, and never run `apt`,
+`apk`, `sudo`, or another package manager. The release workflow must probe the
+reviewed GNU executable directly on its Ubuntu runner and must not mask host
+requirements by installing musl.
+
+- [ ] **Step 4: Verify locally, review, and commit without publishing.**
+
+Run `rtk bash tests/artifact_distribution_test.sh`, `rtk bash
+tests/provider_release_verifier_test.sh`, `rtk bash
+tests/install_rust_analyzer_test.sh`, `rtk python3
+scripts/validate_schemas.py`, the focused provider artifact Rust tests,
+`rtk actionlint .github/workflows/artifact-pack-release.yml`, and `rtk git
+diff --check`. Independently review specification compliance and code quality.
+Commit the local correction, but do not create or push the new `pcr.2` tag
+until the user explicitly authorizes that new remote action.
+
 ## Task 7: Add Repository-Owned Real Fixtures And Deterministic Evidence
 
 **Files:**

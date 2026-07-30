@@ -564,8 +564,16 @@ repository, tag, and upstream commit for:
 | --- | --- |
 | `darwin-arm64` | `aarch64-apple-darwin` |
 | `darwin-amd64` | `x86_64-apple-darwin` |
-| `linux-amd64` | `x86_64-unknown-linux-musl` |
+| `linux-amd64` | `x86_64-unknown-linux-gnu` |
 | `windows-amd64` | `x86_64-pc-windows-msvc` |
+
+The provider `linux-amd64` pack uses the reviewed GNU/Linux asset and requires
+glibc 2.28 or newer. The upstream musl asset is not self-contained: it requires
+both `/lib/ld-musl-x86_64.so.1` and a musl-compatible `libgcc_s.so.1`, neither
+of which is available on a stock Ubuntu runner or guaranteed by the installer.
+Delivery 5B therefore does not claim Alpine or other musl-host support. The
+installer must reject an explicit rust-analyzer request before provisioning
+when the Linux host cannot prove the required glibc baseline.
 
 The source lock is a strict `third_party_sources/v1` value validated by
 `third-party-source-lock.schema.json`. It contains only bounded records for
@@ -624,12 +632,22 @@ never rewrites a manifest digest during release.
 
 The first rust-analyzer project pack may be bootstrapped from its reviewed
 provider-distribution branch without merging that incomplete branch into the
-default branch. The pack workflow accepts only the exact immutable tag
-`artifact-rust-analyzer-2026.07.27-pcr.1` as a `push` trigger. That tag selects
-the rust-analyzer build, clean verification, and publication jobs without
-ambient inputs. No wildcard provider tag, moving tag, branch push, or unrelated
-tag starts publication. The resulting release still precedes and is
-independently verified before any core manifest update.
+default branch. The initial exact immutable tag
+`artifact-rust-analyzer-2026.07.27-pcr.1` failed before publication because its
+Linux source record selected the dynamically linked upstream musl asset. That
+public tag and its failed run remain immutable historical evidence; they are
+never moved, deleted, or reused.
+
+The corrected bootstrap uses pack version `2026.07.27-pcr.2` and accepts only
+the exact immutable tag `artifact-rust-analyzer-2026.07.27-pcr.2` as a `push`
+trigger. The corrected source lock selects the upstream
+`rust-analyzer-x86_64-unknown-linux-gnu.gz` asset for `linux-amd64`, binds its
+reviewed archive and executable digests, and leaves the other three upstream
+assets unchanged. The exact `pcr.2` tag selects the rust-analyzer build, clean
+verification, and publication jobs without ambient inputs. No wildcard
+provider tag, moving tag, branch push, unrelated tag, or historical `pcr.1`
+tag starts the corrected publication. The resulting release still precedes
+and is independently verified before any core manifest update.
 
 ## Generated Provider Authorization
 
