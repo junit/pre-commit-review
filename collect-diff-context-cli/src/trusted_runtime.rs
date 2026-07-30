@@ -192,6 +192,14 @@ impl ManagedChild {
             .expect("managed child is unavailable after it has been reaped")
     }
 
+    pub(crate) fn resource_scope(&self) -> crate::provider_resources::ProviderProcessScope {
+        let child = self
+            .child
+            .as_ref()
+            .expect("managed child is unavailable after it has been reaped");
+        self.process_group.resource_scope(child.id())
+    }
+
     pub(crate) fn try_wait(&mut self) -> Result<Option<ExitStatus>, TrustedRuntimeError> {
         let Some(child) = self.child.as_mut() else {
             return Ok(None);

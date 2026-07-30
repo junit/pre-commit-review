@@ -26,6 +26,8 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
 use std::time::Instant;
 
+use crate::provider_resources::{ProviderResourcePolicy, ResourceAccountingStatus};
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ProviderError {
     InvalidRequest,
@@ -70,6 +72,21 @@ pub struct ProviderInvocation<'a> {
 pub fn run_repository_context_provider(
     invocation: ProviderInvocation<'_>,
 ) -> Result<RepositoryContextProviderReport, ProviderError> {
+    run_repository_context_provider_with_policy(invocation, ProviderResourcePolicy::production())
+}
+
+#[cfg(feature = "test-fixture")]
+pub fn run_repository_context_provider_with_resource_policy(
+    invocation: ProviderInvocation<'_>,
+    policy: ProviderResourcePolicy,
+) -> Result<RepositoryContextProviderReport, ProviderError> {
+    run_repository_context_provider_with_policy(invocation, policy)
+}
+
+fn run_repository_context_provider_with_policy(
+    invocation: ProviderInvocation<'_>,
+    policy: ProviderResourcePolicy,
+) -> Result<RepositoryContextProviderReport, ProviderError> {
     let started = Instant::now();
     invocation
         .profile
@@ -113,7 +130,29 @@ pub fn run_repository_context_provider(
         limits,
         cancellation: Arc::clone(&invocation.cancellation),
     };
-    let mut session = ManagedLspSession::spawn(launch).map_err(|_| ProviderError::Preflight)?;
+    let mut session = match ManagedLspSession::spawn_with_policy(launch, policy) {
+        Ok(session) => session,
+        Err(error) if error.code == "process-tree-rss-accounting-unavailable" => {
+            let elapsed_ms = started.elapsed().as_millis() as u64;
+            let report = empty_report(
+                invocation.request,
+                invocation.profile,
+                invocation.model,
+                RepositoryContextProviderStatus::Failed,
+                error.code,
+                unavailable_resource_metrics(policy, elapsed_ms),
+                elapsed_ms,
+            )?;
+            postflight(
+                invocation.request,
+                invocation.profile,
+                invocation.model,
+                invocation.snapshot,
+            )?;
+            return Ok(report);
+        }
+        Err(_) => return Err(ProviderError::Preflight),
+    };
     let handshake = match initialize_and_gate(
         &mut session,
         &bound,
@@ -471,6 +510,9 @@ fn report_from_traversal(
             edges: 0,
             report_bytes: 0,
             elapsed_ms,
+            process_tree_peak_rss_bytes: session_metrics.process_tree_peak_rss_bytes,
+            process_tree_sample_interval_ms: session_metrics.process_tree_sample_interval_ms,
+            process_tree_accounting: session_metrics.process_tree_accounting,
         },
     };
     report.metrics.nodes = report.seed_symbols.len() + report.related_symbols.len();
@@ -505,5 +547,32 @@ fn session_metrics(
         edges: 0,
         report_bytes: 0,
         elapsed_ms,
+        process_tree_peak_rss_bytes: metrics.process_tree_peak_rss_bytes,
+        process_tree_sample_interval_ms: metrics.process_tree_sample_interval_ms,
+        process_tree_accounting: metrics.process_tree_accounting,
+    }
+}
+
+fn unavailable_resource_metrics(
+    policy: ProviderResourcePolicy,
+    elapsed_ms: u64,
+) -> ProviderMetrics {
+    ProviderMetrics {
+        requests: 0,
+        messages: 0,
+        notifications: 0,
+        server_requests: 0,
+        invalid_messages: 0,
+        call_ranges: 0,
+        protocol_bytes: 0,
+        stderr_bytes: 0,
+        source_bytes: 0,
+        nodes: 0,
+        edges: 0,
+        report_bytes: 0,
+        elapsed_ms,
+        process_tree_peak_rss_bytes: 0,
+        process_tree_sample_interval_ms: policy.interval_ms(),
+        process_tree_accounting: ResourceAccountingStatus::Unavailable,
     }
 }

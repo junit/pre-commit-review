@@ -19,6 +19,26 @@
     "isolation": { "$ref": "#/$defs/isolation" },
     "metrics": { "$ref": "#/$defs/metrics" }
   },
+  "allOf": [
+    {
+      "if": {
+        "required": ["status"],
+        "properties": { "status": { "enum": ["completed", "partial"] } }
+      },
+      "then": {
+        "required": ["metrics"],
+        "properties": {
+          "metrics": {
+            "required": ["process_tree_accounting"],
+            "properties": {
+              "process_tree_peak_rss_bytes": { "maximum": 2147483648 },
+              "process_tree_accounting": { "const": "available" }
+            }
+          }
+        }
+      }
+    }
+  ],
   "$defs": {
     "sha256": { "type": "string", "pattern": "^[0-9a-f]{64}$" },
     "scopeFingerprint": { "type": "string", "pattern": "^(?:[0-9a-f]{40}|[0-9a-f]{64})$" },
@@ -135,7 +155,7 @@
     },
     "metrics": {
       "type": "object",
-      "required": ["requests", "messages", "notifications", "server_requests", "invalid_messages", "call_ranges", "protocol_bytes", "stderr_bytes", "source_bytes", "nodes", "edges", "report_bytes", "elapsed_ms"],
+      "required": ["requests", "messages", "notifications", "server_requests", "invalid_messages", "call_ranges", "protocol_bytes", "stderr_bytes", "source_bytes", "nodes", "edges", "report_bytes", "elapsed_ms", "process_tree_peak_rss_bytes", "process_tree_sample_interval_ms", "process_tree_accounting"],
       "properties": {
         "requests": { "type": "integer", "minimum": 0, "maximum": 512 },
         "messages": { "type": "integer", "minimum": 0, "maximum": 2048 },
@@ -149,7 +169,10 @@
         "nodes": { "type": "integer", "minimum": 0, "maximum": 5000 },
         "edges": { "type": "integer", "minimum": 0, "maximum": 10000 },
         "report_bytes": { "type": "integer", "minimum": 0, "maximum": 16777216 },
-        "elapsed_ms": { "type": "integer", "minimum": 0, "maximum": 30000 }
+        "elapsed_ms": { "type": "integer", "minimum": 0, "maximum": 30000 },
+        "process_tree_peak_rss_bytes": { "type": "integer", "minimum": 0, "maximum": 2147483649 },
+        "process_tree_sample_interval_ms": { "type": "integer", "minimum": 1, "maximum": 100 },
+        "process_tree_accounting": { "type": "string", "enum": ["available", "unavailable"] }
       },
       "additionalProperties": false
     }

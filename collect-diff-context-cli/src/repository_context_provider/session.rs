@@ -5,6 +5,10 @@ use super::json_rpc::{
     RpcErrorObject, ServerRequestId,
 };
 use super::snapshot::BoundCandidateSnapshot;
+use crate::provider_resources::{
+    ProviderResourceError, ProviderResourceMonitor, ProviderResourcePolicy,
+    ResourceAccountingStatus,
+};
 use crate::review_scope::ReviewSource;
 use crate::trusted_runtime::{
     apply_base_environment, ManagedChild, PrivateRuntime, TrustedRuntimeError,
@@ -37,6 +41,10 @@ impl SessionError {
     fn from_runtime(error: TrustedRuntimeError) -> Self {
         Self::new(error.code, "trusted provider runtime operation failed")
     }
+
+    fn from_resource(error: ProviderResourceError) -> Self {
+        Self::new(error.code, "provider resource accounting failed")
+    }
 }
 
 impl std::fmt::Display for SessionError {
@@ -57,6 +65,9 @@ pub struct SessionMetrics {
     pub stderr_bytes: usize,
     pub stderr_sha256: String,
     pub total_output_bytes: usize,
+    pub process_tree_peak_rss_bytes: u64,
+    pub process_tree_sample_interval_ms: u64,
+    pub process_tree_accounting: ResourceAccountingStatus,
 }
 
 pub struct SessionLaunch<'a> {
@@ -105,6 +116,7 @@ impl OutputBudget {
 pub struct ManagedLspSession {
     _runtime: PrivateRuntime,
     child: ManagedChild,
+    resource_monitor: ProviderResourceMonitor,
     stdin: Option<ChildStdin>,
     stdout_events: Receiver<ReaderEvent>,
     stderr_summary: Receiver<StderrSummary>,
@@ -122,6 +134,21 @@ pub struct ManagedLspSession {
 
 impl ManagedLspSession {
     pub fn spawn(launch: SessionLaunch<'_>) -> Result<Self, SessionError> {
+        Self::spawn_with_policy(launch, ProviderResourcePolicy::production())
+    }
+
+    #[cfg(feature = "test-fixture")]
+    pub fn spawn_with_resource_policy(
+        launch: SessionLaunch<'_>,
+        policy: ProviderResourcePolicy,
+    ) -> Result<Self, SessionError> {
+        Self::spawn_with_policy(launch, policy)
+    }
+
+    pub(crate) fn spawn_with_policy(
+        launch: SessionLaunch<'_>,
+        policy: ProviderResourcePolicy,
+    ) -> Result<Self, SessionError> {
         launch
             .limits
             .validate()
@@ -158,6 +185,9 @@ impl ManagedLspSession {
             .env("RUST_ANALYZER checkOnSave.enable", "false");
 
         let mut child = ManagedChild::spawn(command).map_err(SessionError::from_runtime)?;
+        let resource_monitor = ProviderResourceMonitor::start(child.resource_scope(), policy)
+            .map_err(SessionError::from_resource)?;
+        let resource_snapshot = resource_monitor.snapshot();
         let stdin = child.child_mut().stdin.take().ok_or_else(|| {
             SessionError::new("provider-stdin-missing", "provider stdin unavailable")
         })?;
@@ -211,6 +241,7 @@ impl ManagedLspSession {
         Ok(Self {
             _runtime: runtime,
             child,
+            resource_monitor,
             stdin: Some(stdin),
             stdout_events,
             stderr_summary,
@@ -223,7 +254,12 @@ impl ManagedLspSession {
             correlation,
             cancellation: launch.cancellation,
             deadline: Instant::now() + Duration::from_millis(launch.limits.deadline_ms),
-            metrics: SessionMetrics::default(),
+            metrics: SessionMetrics {
+                process_tree_peak_rss_bytes: resource_snapshot.peak_rss_bytes,
+                process_tree_sample_interval_ms: resource_snapshot.sample_interval_ms,
+                process_tree_accounting: resource_snapshot.accounting,
+                ..SessionMetrics::default()
+            },
         })
     }
 
@@ -305,6 +341,7 @@ impl ManagedLspSession {
                 }
             }
         };
+        self.check_limits()?;
         let body = match event {
             ReaderEvent::Frame(body) => body,
             ReaderEvent::Error(code) => {
@@ -383,8 +420,15 @@ impl ManagedLspSession {
                 .map_err(SessionError::from_runtime)?
                 .is_some()
             {
+                self.resource_monitor.stop();
+                self.refresh_resource_metrics();
+                let resource_error = self.resource_error();
                 self.join_readers();
-                return Ok(());
+                return resource_error.map_or(Ok(()), Err);
+            }
+            if let Err(error) = self.check_limits() {
+                self.terminate();
+                return Err(error);
             }
             if self.cancellation.load(Ordering::Acquire) {
                 self.terminate();
@@ -405,6 +449,8 @@ impl ManagedLspSession {
     }
 
     pub fn terminate(&mut self) {
+        self.resource_monitor.stop();
+        self.refresh_resource_metrics();
         self.stdin.take();
         let _ = self.child.terminate_and_wait();
         self.join_readers();
@@ -460,6 +506,11 @@ impl ManagedLspSession {
     }
 
     fn check_limits(&mut self) -> Result<(), SessionError> {
+        self.refresh_resource_metrics();
+        if let Some(error) = self.resource_error() {
+            self.terminate();
+            return Err(error);
+        }
         if self.cancellation.load(Ordering::Acquire) {
             return Err(SessionError::new(
                 "provider-cancelled",
@@ -495,6 +546,29 @@ impl ManagedLspSession {
             self.metrics.stderr_bytes = summary.bytes;
             self.metrics.stderr_sha256 = summary.sha256;
         }
+    }
+
+    fn refresh_resource_metrics(&mut self) {
+        let resource_snapshot = self.resource_monitor.snapshot();
+        self.metrics.process_tree_peak_rss_bytes = resource_snapshot.peak_rss_bytes;
+        self.metrics.process_tree_sample_interval_ms = resource_snapshot.sample_interval_ms;
+        self.metrics.process_tree_accounting = resource_snapshot.accounting;
+    }
+
+    fn resource_error(&self) -> Option<SessionError> {
+        let resource_snapshot = self.resource_monitor.snapshot();
+        if resource_snapshot.accounting == ResourceAccountingStatus::Unavailable {
+            return Some(SessionError::new(
+                "process-tree-rss-accounting-unavailable",
+                "provider process-tree RSS accounting became unavailable",
+            ));
+        }
+        resource_snapshot.limit_exceeded.then(|| {
+            SessionError::new(
+                "process-tree-rss-limit",
+                "provider process-tree RSS exceeded the limit",
+            )
+        })
     }
 
     fn join_readers(&mut self) {

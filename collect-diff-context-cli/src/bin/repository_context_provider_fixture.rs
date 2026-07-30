@@ -16,6 +16,7 @@ fn main() {
     }
     let result = match scenario.as_str() {
         "lifecycle" => lifecycle(log_path.as_deref(), false),
+        "lifecycle-rss-after-exit" => lifecycle_rss_after_exit(log_path.as_deref()),
         "config-requests" => lifecycle(log_path.as_deref(), true),
         "split-frame" => split_frame(),
         "readiness-ok" => handshake(log_path.as_deref(), "ok", Some("utf-8")),
@@ -37,6 +38,15 @@ fn main() {
         "unknown-id" => unknown_id(),
         "crash" => std::process::exit(9),
         "spawn-descendant" => spawn_descendant(arguments.next()),
+        "spawn-descendant-rss" => spawn_descendant_rss(log_path.as_deref(), arguments.next()),
+        "spawn-detached-descendant-rss" => {
+            spawn_detached_descendant_rss(log_path.as_deref(), arguments.next())
+        }
+        "root-exit-descendant-rss" => {
+            root_exit_descendant_rss(log_path.as_deref(), arguments.next())
+        }
+        "rss-child" => rss_child(arguments.next()),
+        "rss-child-detached" => rss_child_detached(arguments.next()),
         _ => Err(io::Error::new(
             io::ErrorKind::InvalidInput,
             "unknown fixture scenario",
@@ -86,6 +96,11 @@ fn lifecycle(log_path: Option<&str>, configuration_request: bool) -> io::Result<
         }
     }
     Ok(())
+}
+
+fn lifecycle_rss_after_exit(log_path: Option<&str>) -> io::Result<()> {
+    lifecycle(log_path, false)?;
+    rss_child(None)
 }
 
 fn stderr_flood() -> io::Result<()> {
@@ -314,6 +329,7 @@ fn fixture_stdio(log_path: Option<&str>) -> io::Result<()> {
         'd' => std::process::exit(9),
         'e' => graph_with_health(log_path, "warning"),
         'f' => handshake_missing_capability(log_path),
+        '7' => spawn_descendant_rss(log_path, None),
         _ => graph(log_path),
     }
 }
@@ -491,6 +507,80 @@ fn spawn_descendant(marker: Option<String>) -> io::Result<()> {
             .spawn()?;
     }
     thread::sleep(Duration::from_secs(30));
+    Ok(())
+}
+
+fn spawn_descendant_rss(log_path: Option<&str>, marker: Option<String>) -> io::Result<()> {
+    spawn_rss_child(log_path, marker, false)?;
+    thread::sleep(Duration::from_secs(30));
+    Ok(())
+}
+
+fn spawn_detached_descendant_rss(log_path: Option<&str>, marker: Option<String>) -> io::Result<()> {
+    spawn_rss_child(log_path, marker, true)?;
+    thread::sleep(Duration::from_secs(30));
+    Ok(())
+}
+
+fn root_exit_descendant_rss(log_path: Option<&str>, marker: Option<String>) -> io::Result<()> {
+    spawn_rss_child(log_path, marker, false)
+}
+
+fn spawn_rss_child(
+    log_path: Option<&str>,
+    marker: Option<String>,
+    detached: bool,
+) -> io::Result<()> {
+    let executable = env::current_exe()?;
+    let mut command = Command::new(executable);
+    command.args([
+        if detached {
+            "rss-child-detached"
+        } else {
+            "rss-child"
+        },
+        "",
+    ]);
+    if let Some(marker) = marker {
+        command.arg(marker);
+    }
+    let child = command.spawn()?;
+    if let Some(log_path) = log_path {
+        std::fs::write(log_path, child.id().to_string())?;
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn rss_child_detached(marker: Option<String>) -> io::Result<()> {
+    if unsafe { libc::setsid() } == -1 {
+        return Err(io::Error::last_os_error());
+    }
+    rss_child(marker)
+}
+
+#[cfg(not(target_os = "linux"))]
+fn rss_child_detached(_marker: Option<String>) -> io::Result<()> {
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "detached RSS fixture is Linux-only",
+    ))
+}
+
+fn rss_child(marker: Option<String>) -> io::Result<()> {
+    let mut resident = vec![0_u8; 96 * 1024 * 1024];
+    for offset in (0..resident.len()).step_by(4_096) {
+        resident[offset] = u8::try_from((offset / 4_096) % 251).unwrap_or(1);
+    }
+    if marker.is_some() {
+        thread::sleep(Duration::from_millis(500));
+    } else {
+        thread::sleep(Duration::from_secs(30));
+    }
+    if let Some(marker) = marker {
+        std::fs::write(marker, b"descendant survived")?;
+    }
+    std::hint::black_box(resident);
     Ok(())
 }
 

@@ -200,6 +200,10 @@ fn valid_report() -> RepositoryContextProviderReport {
             edges: 1,
             report_bytes: 2048,
             elapsed_ms: 10,
+            process_tree_peak_rss_bytes: 16 * 1024 * 1024,
+            process_tree_sample_interval_ms: 100,
+            process_tree_accounting:
+                collect_diff_context_cli::provider_resources::ResourceAccountingStatus::Available,
         },
     }
 }
@@ -464,6 +468,26 @@ fn report_rejects_invalid_status_completeness_facts_and_semantics() {
         }
         assert!(report.validate().is_err(), "{field}");
     }
+}
+
+#[test]
+fn report_rejects_unavailable_or_unbounded_resource_metrics() {
+    let mut report = valid_report();
+    report.metrics.process_tree_accounting =
+        collect_diff_context_cli::provider_resources::ResourceAccountingStatus::Unavailable;
+    assert!(report.validate().is_err());
+
+    let mut report = valid_report();
+    report.metrics.process_tree_sample_interval_ms = 101;
+    assert!(report.validate().is_err());
+
+    let mut report = valid_report();
+    report.metrics.process_tree_peak_rss_bytes = 2 * 1024 * 1024 * 1024 + 2;
+    assert!(report.validate().is_err());
+
+    let mut report = valid_report();
+    report.metrics.process_tree_peak_rss_bytes = 2 * 1024 * 1024 * 1024 + 1;
+    assert!(report.validate().is_err());
 }
 
 #[test]

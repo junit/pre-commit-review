@@ -1,3 +1,7 @@
+use crate::provider_resources::{
+    ResourceAccountingStatus, MAX_RESOURCE_SAMPLE_INTERVAL_MS,
+    PRODUCTION_PROCESS_TREE_RSS_LIMIT_BYTES,
+};
 use crate::review_scope::ReviewSource;
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -1063,6 +1067,9 @@ pub struct ProviderMetrics {
     pub edges: usize,
     pub report_bytes: usize,
     pub elapsed_ms: u64,
+    pub process_tree_peak_rss_bytes: u64,
+    pub process_tree_sample_interval_ms: u64,
+    pub process_tree_accounting: ResourceAccountingStatus,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -1252,6 +1259,17 @@ impl RepositoryContextProviderReport {
             );
         }
         self.metrics.validate()?;
+        if matches!(
+            self.status,
+            RepositoryContextProviderStatus::Completed | RepositoryContextProviderStatus::Partial
+        ) && (self.metrics.process_tree_accounting != ResourceAccountingStatus::Available
+            || self.metrics.process_tree_peak_rss_bytes > PRODUCTION_PROCESS_TREE_RSS_LIMIT_BYTES)
+        {
+            return contract_error(
+                "provider-report-resource-accounting-invalid",
+                "completed or partial provider reports require in-limit process-tree RSS accounting",
+            );
+        }
         if self.metrics.nodes != symbol_ids.len()
             || self.metrics.edges != self.edges.len()
             || self.metrics.call_ranges != self.edges.len()
@@ -1301,6 +1319,22 @@ impl ProviderMetrics {
             return contract_error(
                 "provider-report-metric-unbounded",
                 "provider elapsed_ms exceeds the contract maximum",
+            );
+        }
+        if self.process_tree_peak_rss_bytes
+            > PRODUCTION_PROCESS_TREE_RSS_LIMIT_BYTES.saturating_add(1)
+        {
+            return contract_error(
+                "provider-report-metric-unbounded",
+                "provider process_tree_peak_rss_bytes exceeds the contract maximum",
+            );
+        }
+        if self.process_tree_sample_interval_ms == 0
+            || self.process_tree_sample_interval_ms > MAX_RESOURCE_SAMPLE_INTERVAL_MS
+        {
+            return contract_error(
+                "provider-report-metric-unbounded",
+                "provider process_tree_sample_interval_ms is outside the contract bounds",
             );
         }
         Ok(())

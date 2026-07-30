@@ -4,6 +4,7 @@ pub mod candidate;
 mod git_policy;
 pub mod impact_context;
 mod process_group;
+pub mod provider_resources;
 pub mod repository_context_provider;
 pub mod review_scope;
 pub mod secret_scan;

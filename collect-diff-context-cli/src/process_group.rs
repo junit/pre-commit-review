@@ -46,6 +46,13 @@ impl ProcessGroup {
         }
         let _ = child.kill();
     }
+
+    pub(crate) fn resource_scope(
+        &self,
+        root_pid: u32,
+    ) -> crate::provider_resources::ProviderProcessScope {
+        crate::provider_resources::ProviderProcessScope::for_unix(root_pid, self.process_group_id)
+    }
 }
 
 #[cfg(windows)]
@@ -63,7 +70,7 @@ impl ProcessGroup {
         use windows_sys::Win32::System::JobObjects::{
             AssignProcessToJobObject, CreateJobObjectW, JobObjectExtendedLimitInformation,
             SetInformationJobObject, JOBOBJECT_EXTENDED_LIMIT_INFORMATION,
-            JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
+            JOB_OBJECT_LIMIT_JOB_MEMORY, JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE,
         };
 
         // SAFETY: handles are checked for null and remain owned until Drop.
@@ -73,7 +80,10 @@ impl ProcessGroup {
                 return Err(std::io::Error::last_os_error());
             }
             let mut information: JOBOBJECT_EXTENDED_LIMIT_INFORMATION = std::mem::zeroed();
-            information.BasicLimitInformation.LimitFlags = JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE;
+            information.BasicLimitInformation.LimitFlags =
+                JOB_OBJECT_LIMIT_KILL_ON_JOB_CLOSE | JOB_OBJECT_LIMIT_JOB_MEMORY;
+            information.JobMemoryLimit =
+                crate::provider_resources::PRODUCTION_PROCESS_TREE_RSS_LIMIT_BYTES as usize;
             if SetInformationJobObject(
                 job,
                 JobObjectExtendedLimitInformation,
@@ -109,6 +119,13 @@ impl ProcessGroup {
             TerminateJobObject(self.job, 1);
         }
         let _ = child.kill();
+    }
+
+    pub(crate) fn resource_scope(
+        &self,
+        root_pid: u32,
+    ) -> crate::provider_resources::ProviderProcessScope {
+        crate::provider_resources::ProviderProcessScope::for_windows(root_pid, self.job as isize)
     }
 }
 
