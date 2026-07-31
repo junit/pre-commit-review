@@ -26,6 +26,12 @@ PLATFORMS = [
     "linux-amd64",
     "windows-amd64",
 ]
+HOSTED_RUNNER_CLASSES = {
+    "darwin-amd64": "github-hosted-macos-15-intel",
+    "darwin-arm64": "github-hosted-macos-14-arm64",
+    "linux-amd64": "github-hosted-ubuntu-24-x64",
+    "windows-amd64": "github-hosted-windows-2025-x64",
+}
 SHA256 = re.compile(r"^[0-9a-f]{64}$")
 COMMIT = re.compile(r"^[0-9a-f]{40}$")
 IDENTIFIER = re.compile(r"^[a-z0-9][a-z0-9-]{0,127}$")
@@ -314,7 +320,7 @@ def validate_platform(platform, publication, asset):
     ):
         fail("publication-contract", "executable binding differs from the source lock")
     validate_license_files(platform.get("license_files"))
-    validate_baseline_binding(platform.get("baseline_binding"))
+    validate_baseline_binding(platform["platform_id"], platform.get("baseline_binding"))
     validate_composition(platform.get("composition"), publication, asset)
     return validate_subjects(platform, platform["composition"])
 
@@ -327,19 +333,39 @@ def validate_license_files(licenses):
         validate_file_binding(license_file, expected_path)
 
 
-def validate_baseline_binding(binding):
+def validate_baseline_binding(platform_id, binding):
     fields = {
         "profile_sha256",
         "fixture_id",
         "fixture_sha256",
         "request_sha256",
+        "runner_sha256",
         "runner_class",
+        "toolchain",
+        "timing_scope",
+        "provisioning_included",
     }
     require_fields(binding, fields, "publication-contract", "baseline binding")
-    for field in ["profile_sha256", "fixture_sha256", "request_sha256"]:
+    for field in [
+        "profile_sha256",
+        "fixture_sha256",
+        "request_sha256",
+        "runner_sha256",
+    ]:
         require_sha256(binding[field], "publication-digest", field)
     require_identifier(binding["fixture_id"], "publication-contract", "fixture id")
     require_identifier(binding["runner_class"], "publication-contract", "runner class")
+    if binding["runner_class"] != HOSTED_RUNNER_CLASSES[platform_id]:
+        fail(
+            "baseline-runner-class-policy",
+            "baseline runner class does not match the authorized hosted runner",
+        )
+    if (
+        binding["toolchain"] != "rust-1.95.0-locked"
+        or binding["timing_scope"] != "provider-run-only-v1"
+        or binding["provisioning_included"] is not False
+    ):
+        fail("publication-contract", "baseline timing policy differs")
 
 
 def validate_publication(publication, assets):
@@ -391,11 +417,15 @@ def validate_measurement(measurement, platform, subjects):
         "platform_id",
         "pack_sha256",
         "executable_sha256",
+        "runner_sha256",
         "profile_sha256",
         "fixture_id",
         "fixture_sha256",
         "request_sha256",
         "runner_class",
+        "toolchain",
+        "timing_scope",
+        "provisioning_included",
         "samples_ms",
         "p95_ms",
         "peak_process_tree_rss_bytes",
@@ -412,6 +442,7 @@ def validate_measurement(measurement, platform, subjects):
     for field in [
         "pack_sha256",
         "executable_sha256",
+        "runner_sha256",
         "profile_sha256",
         "fixture_sha256",
         "request_sha256",

@@ -163,6 +163,25 @@ def validate_canonical_artifact_metadata(skill_root, schemas, schema_registry):
     if [asset['platform_id'] for asset in rust_analyzer_lock['assets']] != expected_platforms:
         raise ValueError('rust-analyzer source-lock assets must cover the sorted platform set')
 
+
+def validate_artifact_baseline_schema_policy(skill_root, schemas, schema_registry):
+    baseline_path = skill_root / 'tests/fixtures/provider-release/reviewed-baseline.json'
+    baseline, _ = _load_canonical_json(baseline_path)
+    validator = jsonschema.Draft202012Validator(
+        schemas['third-party-artifact-baseline.schema.json'],
+        registry=schema_registry,
+    )
+    validator.validate(baseline)
+    for index, measurement in enumerate(baseline['measurements']):
+        local_baseline = json.loads(json.dumps(baseline))
+        platform_id = measurement['platform_id']
+        local_baseline['measurements'][index]['runner_class'] = f'local-{platform_id}'
+        if validator.is_valid(local_baseline):
+            raise ValueError(
+                f'baseline schema accepts non-hosted runner class for {platform_id}'
+            )
+    print(f'  ✅ {baseline_path}: hosted runner policy is schema-enforced')
+
 def validate_control_plane_invariants(payload):
     if not payload.get('authoritative'):
         return
@@ -785,6 +804,7 @@ def main():
     schemas, schema_registry = load_schema_bundle(schema_dir)
     try:
         validate_canonical_artifact_metadata(skill_root, schemas, schema_registry)
+        validate_artifact_baseline_schema_policy(skill_root, schemas, schema_registry)
     except Exception as exc:
         print(f'  ❌ canonical artifact metadata: {exc}', file=sys.stderr)
         errors += 1

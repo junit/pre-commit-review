@@ -932,11 +932,15 @@ pub struct BaselineMeasurement {
     pub platform_id: String,
     pub pack_sha256: String,
     pub executable_sha256: String,
+    pub runner_sha256: String,
     pub profile_sha256: String,
     pub fixture_id: String,
     pub fixture_sha256: String,
     pub request_sha256: String,
     pub runner_class: String,
+    pub toolchain: String,
+    pub timing_scope: String,
+    pub provisioning_included: bool,
     pub samples_ms: Vec<u64>,
     pub p95_ms: u64,
     pub peak_process_tree_rss_bytes: u64,
@@ -947,11 +951,27 @@ impl BaselineMeasurement {
         platform_target(&self.platform_id)?;
         validate_sha256(&self.pack_sha256)?;
         validate_sha256(&self.executable_sha256)?;
+        validate_sha256(&self.runner_sha256)?;
         validate_sha256(&self.profile_sha256)?;
         validate_identifier(&self.fixture_id)?;
         validate_sha256(&self.fixture_sha256)?;
         validate_sha256(&self.request_sha256)?;
         validate_identifier(&self.runner_class)?;
+        if self.runner_class != baseline_runner_class(&self.platform_id)? {
+            return Err(ArtifactError::new(
+                "baseline-runner-class-policy",
+                "baseline runner class does not match the authorized hosted runner",
+            ));
+        }
+        if self.toolchain != "rust-1.95.0-locked"
+            || self.timing_scope != "provider-run-only-v1"
+            || self.provisioning_included
+        {
+            return Err(ArtifactError::new(
+                "baseline-measurement-policy",
+                "baseline toolchain or timing scope is not authorized",
+            ));
+        }
         if !(20..=100).contains(&self.samples_ms.len())
             || self
                 .samples_ms
@@ -1612,6 +1632,19 @@ fn platform_target(platform_id: &str) -> Result<&'static str, ArtifactError> {
         "darwin-arm64" => Ok("aarch64-apple-darwin"),
         "linux-amd64" => Ok("x86_64-unknown-linux-musl"),
         "windows-amd64" => Ok("x86_64-pc-windows-msvc"),
+        _ => Err(ArtifactError::new(
+            "unsupported-platform",
+            "artifact platform is not supported",
+        )),
+    }
+}
+
+fn baseline_runner_class(platform_id: &str) -> Result<&'static str, ArtifactError> {
+    match platform_id {
+        "darwin-amd64" => Ok("github-hosted-macos-15-intel"),
+        "darwin-arm64" => Ok("github-hosted-macos-14-arm64"),
+        "linux-amd64" => Ok("github-hosted-ubuntu-24-x64"),
+        "windows-amd64" => Ok("github-hosted-windows-2025-x64"),
         _ => Err(ArtifactError::new(
             "unsupported-platform",
             "artifact platform is not supported",

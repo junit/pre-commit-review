@@ -1,4 +1,6 @@
 use crate::git_policy::configure_read_only;
+#[cfg(feature = "test-fixture")]
+use crate::git_policy::{output_bounded, GitOutputError};
 use crate::review_scope::ReviewSource;
 use sha2::{Digest, Sha256};
 use std::collections::{HashMap, VecDeque};
@@ -7,6 +9,8 @@ use std::fs::{self, File, OpenOptions};
 use std::io::{BufRead, BufReader, BufWriter, Read, Seek, SeekFrom, Write};
 use std::path::{Component, Path, PathBuf};
 use std::process::{Child, Command, Stdio};
+#[cfg(feature = "test-fixture")]
+use std::time::{Duration, Instant};
 use tempfile::TempDir;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -63,6 +67,32 @@ struct SnapshotInfo {
     modes: HashMap<Vec<u8>, u32>,
 }
 
+#[cfg(feature = "test-fixture")]
+struct ReadOnlySnapshotGuard<'a> {
+    root: &'a Path,
+    armed: bool,
+}
+
+#[cfg(feature = "test-fixture")]
+impl<'a> ReadOnlySnapshotGuard<'a> {
+    fn new(root: &'a Path) -> Self {
+        Self { root, armed: true }
+    }
+
+    fn disarm(&mut self) {
+        self.armed = false;
+    }
+}
+
+#[cfg(feature = "test-fixture")]
+impl Drop for ReadOnlySnapshotGuard<'_> {
+    fn drop(&mut self) {
+        if self.armed {
+            make_snapshot_writable(self.root);
+        }
+    }
+}
+
 impl CandidateSnapshot {
     pub fn materialize(
         repository: &Path,
@@ -103,6 +133,56 @@ impl CandidateSnapshot {
         Ok(Self {
             root,
             source,
+            snapshot_id,
+            sha256: info.sha256,
+            files: info.files,
+            bytes: info.bytes,
+            limits,
+            digest_modes: info.modes,
+        })
+    }
+
+    #[cfg(feature = "test-fixture")]
+    pub fn materialize_staged_bounded(
+        repository: &Path,
+        git_executable: &Path,
+        limits: SnapshotLimits,
+        timeout: Duration,
+    ) -> Result<Self, SnapshotError> {
+        if timeout.is_zero() {
+            return Err(snapshot_deadline_error());
+        }
+        let started = Instant::now();
+        let repository = fs::canonicalize(repository)
+            .map_err(|error| SnapshotError::new(format!("cannot resolve repository: {error}")))?;
+        let root = tempfile::tempdir()
+            .map_err(|error| SnapshotError::new(format!("cannot create snapshot: {error}")))?;
+        let entries = parse_index_entries(&run_git_bounded(
+            &repository,
+            git_executable,
+            &["ls-files", "--stage", "-z"],
+            remaining_snapshot_time(started, timeout)?,
+        )?)?;
+        materialize_blobs_bounded(
+            &repository,
+            git_executable,
+            root.path(),
+            &entries,
+            limits,
+            started,
+            timeout,
+        )?;
+        remaining_snapshot_time(started, timeout)?;
+        let mut read_only_guard = ReadOnlySnapshotGuard::new(root.path());
+        make_snapshot_read_only(root.path())?;
+        let info = snapshot_info(root.path(), limits)?;
+        remaining_snapshot_time(started, timeout)?;
+        let snapshot_id = info.sha256[..16].to_string();
+        read_only_guard.disarm();
+        drop(read_only_guard);
+        Ok(Self {
+            root,
+            source: ReviewSource::Staged,
             snapshot_id,
             sha256: info.sha256,
             files: info.files,
@@ -157,6 +237,48 @@ fn run_git(repository: &Path, arguments: &[&str]) -> Result<Vec<u8>, SnapshotErr
         )));
     }
     Ok(output.stdout)
+}
+
+#[cfg(feature = "test-fixture")]
+fn run_git_bounded(
+    repository: &Path,
+    git_executable: &Path,
+    arguments: &[&str],
+    timeout: Duration,
+) -> Result<Vec<u8>, SnapshotError> {
+    let mut command = Command::new(git_executable);
+    command.args(arguments).current_dir(repository);
+    let output = output_bounded(&mut command, timeout).map_err(|error| match error {
+        GitOutputError::DeadlineExceeded => snapshot_deadline_error(),
+        GitOutputError::OutputLimitExceeded => {
+            SnapshotError::new("Git snapshot output exceeded its byte limit")
+        }
+        GitOutputError::Io(error) => {
+            SnapshotError::new(format!("Git snapshot command failed: {error}"))
+        }
+    })?;
+    if !output.status.success() {
+        return Err(SnapshotError::new(format!(
+            "Git snapshot command failed: {}",
+            bounded_detail(&output.stderr, "unknown Git error")
+        )));
+    }
+    Ok(output.stdout)
+}
+
+#[cfg(feature = "test-fixture")]
+fn remaining_snapshot_time(started: Instant, timeout: Duration) -> Result<Duration, SnapshotError> {
+    let remaining = timeout.saturating_sub(started.elapsed());
+    if remaining.is_zero() {
+        Err(snapshot_deadline_error())
+    } else {
+        Ok(remaining)
+    }
+}
+
+#[cfg(feature = "test-fixture")]
+fn snapshot_deadline_error() -> SnapshotError {
+    SnapshotError::new("Git snapshot command exceeded its deadline")
 }
 
 fn bounded_detail(value: &[u8], fallback: &str) -> String {
@@ -352,6 +474,57 @@ fn materialize_blobs(
             "git cat-file failed while building snapshot: {}",
             bounded_detail(&detail, "unknown Git error")
         )));
+    }
+    Ok(())
+}
+
+#[cfg(feature = "test-fixture")]
+fn materialize_blobs_bounded(
+    repository: &Path,
+    git_executable: &Path,
+    snapshot_root: &Path,
+    entries: &[GitEntry],
+    limits: SnapshotLimits,
+    started: Instant,
+    timeout: Duration,
+) -> Result<(), SnapshotError> {
+    let materialized_files = entries
+        .iter()
+        .filter(|entry| entry.mode != "160000")
+        .count();
+    if materialized_files > limits.max_files {
+        return Err(SnapshotError::new(format!(
+            "analysis snapshot exceeds the {}-file profile limit",
+            limits.max_files
+        )));
+    }
+    let mut total_bytes = 0_u64;
+    for entry in entries {
+        if entry.mode == "160000" {
+            continue;
+        }
+        if !matches!(entry.mode.as_str(), "100644" | "100755" | "120000") {
+            return Err(SnapshotError::new(format!(
+                "unsupported tracked file mode in snapshot: {}",
+                entry.mode
+            )));
+        }
+        let content = run_git_bounded(
+            repository,
+            git_executable,
+            &["cat-file", "blob", &entry.object_id],
+            remaining_snapshot_time(started, timeout)?,
+        )?;
+        total_bytes = checked_snapshot_bytes(total_bytes, content.len() as u64, limits)?;
+        let destination = snapshot_root.join(&entry.path);
+        create_parent(&destination)?;
+        match entry.mode.as_str() {
+            "120000" => create_symlink_from_bytes(&content, &destination)?,
+            "100755" => write_file(&destination, &content, 0o755)?,
+            "100644" => write_file(&destination, &content, 0o644)?,
+            _ => unreachable!(),
+        }
+        remaining_snapshot_time(started, timeout)?;
     }
     Ok(())
 }

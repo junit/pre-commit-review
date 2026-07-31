@@ -734,6 +734,128 @@ pub(crate) fn open_regular_file_no_follow(path: &Path) -> std::io::Result<File> 
     Ok(file)
 }
 
+#[cfg(unix)]
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct RegularFileFingerprint {
+    device: u64,
+    inode: u64,
+    size: u64,
+    mode: u32,
+    modified_seconds: i64,
+    modified_nanoseconds: i64,
+    changed_seconds: i64,
+    changed_nanoseconds: i64,
+}
+
+#[cfg(unix)]
+impl RegularFileFingerprint {
+    pub(crate) fn size(&self) -> u64 {
+        self.size
+    }
+}
+
+#[cfg(unix)]
+pub(crate) fn opened_regular_file_fingerprint(
+    file: &File,
+) -> std::io::Result<RegularFileFingerprint> {
+    use std::os::unix::fs::MetadataExt;
+
+    let metadata = file.metadata()?;
+    if !metadata.is_file() {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "opened path is not a regular file",
+        ));
+    }
+    Ok(RegularFileFingerprint {
+        device: metadata.dev(),
+        inode: metadata.ino(),
+        size: metadata.len(),
+        mode: metadata.mode(),
+        modified_seconds: metadata.mtime(),
+        modified_nanoseconds: metadata.mtime_nsec(),
+        changed_seconds: metadata.ctime(),
+        changed_nanoseconds: metadata.ctime_nsec(),
+    })
+}
+
+#[cfg(windows)]
+#[derive(Debug, PartialEq, Eq)]
+pub(crate) struct RegularFileFingerprint {
+    volume: u32,
+    index: u64,
+    size: u64,
+    attributes: u32,
+    modified: i64,
+    created: i64,
+    changed: i64,
+}
+
+#[cfg(windows)]
+impl RegularFileFingerprint {
+    pub(crate) fn size(&self) -> u64 {
+        self.size
+    }
+}
+
+#[cfg(windows)]
+pub(crate) fn opened_regular_file_fingerprint(
+    file: &File,
+) -> std::io::Result<RegularFileFingerprint> {
+    use std::os::windows::io::AsRawHandle;
+    use windows_sys::Win32::Storage::FileSystem::{
+        FileBasicInfo, GetFileInformationByHandle, GetFileInformationByHandleEx,
+        BY_HANDLE_FILE_INFORMATION, FILE_ATTRIBUTE_REPARSE_POINT, FILE_BASIC_INFO,
+    };
+
+    let handle = file.as_raw_handle() as _;
+    let mut information = std::mem::MaybeUninit::<BY_HANDLE_FILE_INFORMATION>::zeroed();
+    // SAFETY: `file` owns a valid handle for this call and `information` points to writable,
+    // correctly sized storage that is initialized only after the API reports success.
+    let succeeded = unsafe { GetFileInformationByHandle(handle, information.as_mut_ptr()) };
+    if succeeded == 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    // SAFETY: the successful API call initialized the complete output structure.
+    let information = unsafe { information.assume_init() };
+    let mut basic_information = std::mem::MaybeUninit::<FILE_BASIC_INFO>::zeroed();
+    let basic_information_size = u32::try_from(std::mem::size_of::<FILE_BASIC_INFO>())
+        .expect("FILE_BASIC_INFO size fits in a Windows DWORD");
+    // SAFETY: `handle` remains owned by `file`; the class and buffer size match
+    // `FILE_BASIC_INFO`, and the buffer is only assumed initialized after success.
+    let succeeded = unsafe {
+        GetFileInformationByHandleEx(
+            handle,
+            FileBasicInfo,
+            basic_information.as_mut_ptr().cast(),
+            basic_information_size,
+        )
+    };
+    if succeeded == 0 {
+        return Err(std::io::Error::last_os_error());
+    }
+    // SAFETY: the successful API call initialized the complete output structure.
+    let basic_information = unsafe { basic_information.assume_init() };
+    if information.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT != 0
+        || basic_information.FileAttributes & FILE_ATTRIBUTE_REPARSE_POINT != 0
+    {
+        return Err(std::io::Error::new(
+            std::io::ErrorKind::InvalidData,
+            "opened path is a reparse point",
+        ));
+    }
+    let combine = |high: u32, low: u32| (u64::from(high) << 32) | u64::from(low);
+    Ok(RegularFileFingerprint {
+        volume: information.dwVolumeSerialNumber,
+        index: combine(information.nFileIndexHigh, information.nFileIndexLow),
+        size: combine(information.nFileSizeHigh, information.nFileSizeLow),
+        attributes: basic_information.FileAttributes,
+        modified: basic_information.LastWriteTime,
+        created: basic_information.CreationTime,
+        changed: basic_information.ChangeTime,
+    })
+}
+
 #[cfg(windows)]
 pub(crate) fn open_regular_file_no_follow(path: &Path) -> std::io::Result<File> {
     use std::os::windows::fs::OpenOptionsExt;

@@ -1,4 +1,7 @@
 use crate::candidate::snapshot::{CandidateSnapshot, SnapshotLimits};
+use crate::impact_context::cache::file_facts::{
+    open_regular_file_no_follow, opened_regular_file_fingerprint,
+};
 use crate::repository_context_provider::cli_contract::{
     ProviderRegistry, ProviderRegistryEntry, ProviderRunRequest,
 };
@@ -25,7 +28,7 @@ use serde::Serialize;
 use sha2::{Digest, Sha256};
 use std::collections::BTreeSet;
 use std::env;
-use std::fs::{self, File};
+use std::fs;
 use std::io::Read;
 use std::path::{Path, PathBuf};
 use std::sync::atomic::AtomicBool;
@@ -625,14 +628,25 @@ pub fn read_json_once<T: DeserializeOwned>(
             "JSON byte maximum must be positive",
         ));
     }
-    let canonical = canonical_regular_file(path)?;
-    let metadata = fs::metadata(&canonical).map_err(|_| {
+    validate_absolute_path(path, "CLI input path").map_err(|_| {
+        CliError::new(
+            "provider-cli-path-invalid",
+            "CLI input path must be absolute and normalized",
+        )
+    })?;
+    let mut file = open_regular_file_no_follow(path).map_err(|_| {
+        CliError::new(
+            "provider-cli-json-invalid",
+            "JSON input cannot be opened as a regular file",
+        )
+    })?;
+    let before = opened_regular_file_fingerprint(&file).map_err(|_| {
         CliError::new(
             "provider-cli-json-invalid",
             "JSON input metadata cannot be read",
         )
     })?;
-    let expected_bytes = usize::try_from(metadata.len()).map_err(|_| {
+    let expected_bytes = usize::try_from(before.size()).map_err(|_| {
         CliError::new(
             "provider-cli-json-invalid",
             "JSON input length exceeds this platform",
@@ -647,14 +661,20 @@ pub fn read_json_once<T: DeserializeOwned>(
     let maximum_read = u64::try_from(maximum_bytes)
         .unwrap_or(u64::MAX)
         .saturating_add(1);
-    let mut input = File::open(&canonical)
-        .map_err(|_| CliError::new("provider-cli-json-invalid", "JSON input cannot be opened"))?
-        .take(maximum_read);
     let mut bytes = Vec::with_capacity(expected_bytes);
-    input
-        .read_to_end(&mut bytes)
-        .map_err(|_| CliError::new("provider-cli-json-invalid", "JSON input cannot be read"))?;
-    if bytes.len() != expected_bytes || bytes.len() > maximum_bytes {
+    {
+        let mut input = (&mut file).take(maximum_read);
+        input
+            .read_to_end(&mut bytes)
+            .map_err(|_| CliError::new("provider-cli-json-invalid", "JSON input cannot be read"))?;
+    }
+    let after = opened_regular_file_fingerprint(&file).map_err(|_| {
+        CliError::new(
+            "provider-cli-json-invalid",
+            "JSON input metadata cannot be revalidated",
+        )
+    })?;
+    if before != after || bytes.len() != expected_bytes || bytes.len() > maximum_bytes {
         return Err(CliError::new(
             "provider-cli-json-invalid",
             "JSON input changed while it was read",
@@ -687,12 +707,7 @@ pub(crate) fn validate_provider_installation(
             "authorized provider profile digest does not match the registry",
         ));
     }
-    let profile_path = canonical_regular_file(&entry.profile_path).map_err(|_| {
-        CliError::new(
-            "provider-cli-profile-invalid",
-            "authorized provider profile path is invalid",
-        )
-    })?;
+    let profile_path = entry.profile_path.clone();
     let (executable_path, executable_sha256) =
         read_file_sha256(&entry.executable_path, MAX_EXECUTABLE_BYTES).map_err(|_| {
             CliError::new(
@@ -722,7 +737,8 @@ pub(crate) fn validate_provider_installation(
     Ok(ValidatedProviderInstallation { entry, profile })
 }
 
-fn build_provider_request(
+#[cfg_attr(feature = "test-fixture", allow(dead_code))]
+pub(crate) fn build_provider_request(
     scope: &AuthoritativeScope,
     registry: &ProviderRegistry,
     entry: &ProviderRegistryEntry,
@@ -874,86 +890,31 @@ fn candidate_digest(scope: &AuthoritativeScope, snapshot: &CandidateSnapshot) ->
     })
 }
 
-fn canonical_regular_file(path: &Path) -> Result<PathBuf, CliError> {
+fn read_file_sha256(path: &Path, maximum_bytes: usize) -> Result<(PathBuf, String), CliError> {
     validate_absolute_path(path, "CLI input path").map_err(|_| {
         CliError::new(
             "provider-cli-path-invalid",
             "CLI input path must be absolute and normalized",
         )
     })?;
-    let lexical_metadata = fs::symlink_metadata(path).map_err(|_| {
+    let mut input = open_regular_file_no_follow(path).map_err(|_| {
         CliError::new(
-            "provider-cli-path-invalid",
-            "CLI input path cannot be inspected",
+            "provider-cli-file-invalid",
+            "authorized file cannot be opened as a regular file",
         )
     })?;
-    if lexical_metadata.file_type().is_dir() {
-        return Err(CliError::new(
-            "provider-cli-path-invalid",
-            "CLI input path must name a regular file",
-        ));
-    }
-    let parent = path.parent().ok_or_else(|| {
+    let before = opened_regular_file_fingerprint(&input).map_err(|_| {
         CliError::new(
-            "provider-cli-path-invalid",
-            "CLI input path has no trusted parent",
+            "provider-cli-file-invalid",
+            "authorized file metadata cannot be read",
         )
     })?;
-    let canonical_parent = fs::canonicalize(parent).map_err(|_| {
-        CliError::new(
-            "provider-cli-path-invalid",
-            "CLI input parent cannot be canonicalized",
-        )
-    })?;
-    let canonical = fs::canonicalize(path).map_err(|_| {
-        CliError::new(
-            "provider-cli-path-invalid",
-            "CLI input path cannot be canonicalized",
-        )
-    })?;
-    if canonical == canonical_parent || !canonical.starts_with(&canonical_parent) {
-        return Err(CliError::new(
-            "provider-cli-path-invalid",
-            "CLI input symlink escapes its trusted parent",
-        ));
-    }
-    let metadata = fs::symlink_metadata(&canonical).map_err(|_| {
-        CliError::new(
-            "provider-cli-path-invalid",
-            "canonical CLI input cannot be inspected",
-        )
-    })?;
-    if !metadata.file_type().is_file() {
-        return Err(CliError::new(
-            "provider-cli-path-invalid",
-            "canonical CLI input is not a regular file",
-        ));
-    }
-    Ok(canonical)
-}
-
-fn read_file_sha256(path: &Path, maximum_bytes: usize) -> Result<(PathBuf, String), CliError> {
-    let canonical = canonical_regular_file(path)?;
-    let expected_bytes = fs::metadata(&canonical)
-        .map_err(|_| {
-            CliError::new(
-                "provider-cli-file-invalid",
-                "authorized file metadata cannot be read",
-            )
-        })?
-        .len();
-    if expected_bytes > maximum_bytes as u64 {
+    if before.size() > maximum_bytes as u64 {
         return Err(CliError::new(
             "provider-cli-file-invalid",
             "authorized file exceeds its byte maximum",
         ));
     }
-    let mut input = File::open(&canonical).map_err(|_| {
-        CliError::new(
-            "provider-cli-file-invalid",
-            "authorized file cannot be opened",
-        )
-    })?;
     let mut digest = Sha256::new();
     let mut observed_bytes = 0_u64;
     let mut buffer = [0_u8; 16 * 1024];
@@ -981,13 +942,19 @@ fn read_file_sha256(path: &Path, maximum_bytes: usize) -> Result<(PathBuf, Strin
         }
         digest.update(&buffer[..read]);
     }
-    if observed_bytes != expected_bytes {
+    let after = opened_regular_file_fingerprint(&input).map_err(|_| {
+        CliError::new(
+            "provider-cli-file-invalid",
+            "authorized file metadata cannot be revalidated",
+        )
+    })?;
+    if before != after || observed_bytes != before.size() {
         return Err(CliError::new(
             "provider-cli-file-invalid",
             "authorized file changed while it was read",
         ));
     }
-    Ok((canonical, format!("{:x}", digest.finalize())))
+    Ok((path.to_path_buf(), format!("{:x}", digest.finalize())))
 }
 
 fn ensure_executable(path: &Path) -> Result<(), CliError> {
@@ -1024,6 +991,10 @@ fn provider_failure(error: ProviderError) -> RunFailure {
         ProviderError::Cancelled => {
             runtime_failure("provider-cli-cancelled", "provider execution was cancelled")
         }
+        ProviderError::DeadlineExceeded => runtime_failure(
+            "provider-cli-deadline-exceeded",
+            "provider execution exceeded its authorized deadline",
+        ),
         ProviderError::Preflight | ProviderError::Session | ProviderError::ReportInvalid => {
             runtime_failure(
                 "provider-cli-execution-failed",

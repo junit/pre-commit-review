@@ -540,11 +540,15 @@ fn baseline_recomputes_nearest_rank_p95_and_binds_measurements() {
             platform_id: "linux-amd64".to_string(),
             pack_sha256: digest('2'),
             executable_sha256: digest('3'),
+            runner_sha256: digest('7'),
             profile_sha256: digest('4'),
             fixture_id: "single-crate".to_string(),
             fixture_sha256: digest('5'),
             request_sha256: digest('6'),
-            runner_class: "github-hosted-linux-x64".to_string(),
+            runner_class: "github-hosted-ubuntu-24-x64".to_string(),
+            toolchain: "rust-1.95.0-locked".to_string(),
+            timing_scope: "provider-run-only-v1".to_string(),
+            provisioning_included: false,
             samples_ms,
             p95_ms: 190,
             peak_process_tree_rss_bytes: 256 * 1024 * 1024,
@@ -555,6 +559,41 @@ fn baseline_recomputes_nearest_rank_p95_and_binds_measurements() {
     let mut wrong_p95 = baseline;
     wrong_p95.measurements[0].p95_ms = 180;
     assert_eq!(wrong_p95.validate().unwrap_err().code, "baseline-p95");
+}
+
+#[test]
+fn baseline_rejects_a_non_hosted_runner_class_for_its_platform() {
+    let samples_ms: Vec<u64> = (1..=20).map(|value| value * 10).collect();
+    let baseline = ArtifactBaseline {
+        schema_version: 1,
+        kind: "third_party_artifact_baseline".to_string(),
+        artifact_id: "rust-analyzer".to_string(),
+        pack_version: "2026.07.27-pcr.3".to_string(),
+        source_lock_sha256: "298bc6c0339fe2c58fd35bfbd53db285ea7ff34e40734a4f0c36ccb3fe60d862"
+            .to_string(),
+        measurements: vec![BaselineMeasurement {
+            platform_id: "linux-amd64".to_string(),
+            pack_sha256: digest('2'),
+            executable_sha256: digest('3'),
+            runner_sha256: digest('7'),
+            profile_sha256: digest('4'),
+            fixture_id: "single-crate".to_string(),
+            fixture_sha256: digest('5'),
+            request_sha256: digest('6'),
+            runner_class: "local-linux-amd64".to_string(),
+            toolchain: "rust-1.95.0-locked".to_string(),
+            timing_scope: "provider-run-only-v1".to_string(),
+            provisioning_included: false,
+            samples_ms,
+            p95_ms: 190,
+            peak_process_tree_rss_bytes: 256 * 1024 * 1024,
+        }],
+    };
+
+    assert_eq!(
+        baseline.validate().unwrap_err().code,
+        "baseline-runner-class-policy"
+    );
 }
 
 #[test]

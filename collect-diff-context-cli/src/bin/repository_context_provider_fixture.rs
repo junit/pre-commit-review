@@ -10,6 +10,12 @@ use std::time::Duration;
 fn main() {
     let mut arguments = env::args().skip(1);
     let scenario = arguments.next().unwrap_or_default();
+    if matches!(scenario.as_str(), "ls-files" | "cat-file") {
+        if snapshot_git(&scenario, arguments).is_err() {
+            std::process::exit(2);
+        }
+        return;
+    }
     let log_path = arguments.next();
     if let Some(path) = log_path.as_deref() {
         let _ = std::fs::File::create(path);
@@ -54,6 +60,49 @@ fn main() {
     };
     if result.is_err() {
         std::process::exit(2);
+    }
+}
+
+fn snapshot_git(command: &str, mut arguments: impl Iterator<Item = String>) -> io::Result<()> {
+    let repository = env::current_dir()?;
+    match command {
+        "ls-files"
+            if matches!(
+                (
+                    arguments.next().as_deref(),
+                    arguments.next().as_deref(),
+                    arguments.next()
+                ),
+                (Some("--stage"), Some("-z"), None)
+            ) =>
+        {
+            io::stdout().write_all(&std::fs::read(repository.join(".snapshot-index-records"))?)
+        }
+        "cat-file"
+            if matches!(
+                (
+                    arguments.next().as_deref(),
+                    arguments.next(),
+                    arguments.next()
+                ),
+                (Some("blob"), Some(_), None)
+            ) =>
+        {
+            let first_blob = repository.join("first-blob-complete");
+            let observer = repository.join("snapshot-observer-ready");
+            if first_blob.exists() {
+                while !observer.exists() {
+                    thread::sleep(Duration::from_millis(1));
+                }
+            } else {
+                std::fs::write(first_blob, b"")?;
+            }
+            io::stdout().write_all(b"snapshot-deadline-cleanup-token")
+        }
+        _ => Err(io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "unsupported snapshot Git fixture command",
+        )),
     }
 }
 
@@ -273,6 +322,13 @@ fn graph_with_health(log_path: Option<&str>, health: &str) -> io::Result<()> {
         &json!({"jsonrpc":"2.0","method":"experimental/serverStatus","params":{"health":health,"quiescent":true}}),
     )?;
     let uri = format!("{root_uri}src/lib.rs");
+    let prepared_seed_name = if env::var("PRE_COMMIT_REVIEW_SCOPE_FINGERPRINT")
+        .is_ok_and(|value| value.starts_with('8'))
+    {
+        "large-seed"
+    } else {
+        "seed"
+    };
     loop {
         let message = read_json_frame(&mut input)?;
         let method = message.get("method").and_then(Value::as_str);
@@ -281,7 +337,7 @@ fn graph_with_health(log_path: Option<&str>, health: &str) -> io::Result<()> {
         match method {
             Some("textDocument/prepareCallHierarchy") => write_frame(
                 &mut output,
-                &json!({"jsonrpc":"2.0","id":id,"result":[graph_item(&uri, "seed")]}),
+                &json!({"jsonrpc":"2.0","id":id,"result":[graph_item(&uri, prepared_seed_name)]}),
             )?,
             Some("callHierarchy/incomingCalls") => {
                 let name = message
@@ -361,6 +417,22 @@ fn graph_call(uri: &str, name: &str, start: u32, end: u32) -> Value {
 
 fn graph_incoming(uri: &str, name: &str) -> Value {
     match name {
+        "large-seed" => Value::Array(
+            (0..500)
+                .map(|index| {
+                    json!({
+                        "from": graph_item(
+                            uri,
+                            &format!("incoming-related-{index:04}-{}", "x".repeat(512)),
+                        ),
+                        "fromRanges": [{
+                            "start": {"line": 0, "character": 7},
+                            "end": {"line": 0, "character": 11}
+                        }]
+                    })
+                })
+                .collect(),
+        ),
         "seed" => json!([
             graph_call(uri, "caller", 18, 22),
             graph_call(uri, "caller", 18, 22)
@@ -372,6 +444,22 @@ fn graph_incoming(uri: &str, name: &str) -> Value {
 
 fn graph_outgoing(uri: &str, name: &str) -> Value {
     match name {
+        "large-seed" => Value::Array(
+            (0..500)
+                .map(|index| {
+                    json!({
+                        "to": graph_item(
+                            uri,
+                            &format!("outgoing-related-{index:04}-{}", "x".repeat(512)),
+                        ),
+                        "fromRanges": [{
+                            "start": {"line": 0, "character": 7},
+                            "end": {"line": 0, "character": 11}
+                        }]
+                    })
+                })
+                .collect(),
+        ),
         "seed" => json!([
             {"to": graph_item(uri, "caller"), "fromRanges": [{"start": {"line": 0, "character": 16}, "end": {"line": 0, "character": 22}}]},
             {"to": graph_item(uri, "caller"), "fromRanges": [{"start": {"line": 0, "character": 16}, "end": {"line": 0, "character": 22}}]},
@@ -493,14 +581,20 @@ fn validate_initialize_request(value: &Value) -> io::Result<()> {
 }
 
 fn hang() -> io::Result<()> {
+    let mut input = io::stdin().lock();
+    let _ = read_frame(&mut input)?;
     thread::sleep(Duration::from_secs(30));
     Ok(())
 }
 
 fn malformed_frame() -> io::Result<()> {
+    let mut input = io::stdin().lock();
+    let _ = read_frame(&mut input)?;
     let mut stdout = io::stdout().lock();
     stdout.write_all(b"Content-Length: nope\r\n\r\n")?;
-    stdout.flush()
+    stdout.flush()?;
+    thread::sleep(Duration::from_secs(30));
+    Ok(())
 }
 
 fn unknown_id() -> io::Result<()> {

@@ -16,7 +16,8 @@ use collect_diff_context_cli::repository_context_provider::session::{
 };
 use collect_diff_context_cli::repository_context_provider::snapshot::BoundCandidateSnapshot;
 use collect_diff_context_cli::repository_context_provider::{
-    run_repository_context_provider, ProviderInvocation,
+    run_repository_context_provider, run_repository_context_provider_measured,
+    run_repository_context_provider_with_postflight_elapsed_ms, ProviderInvocation,
 };
 use collect_diff_context_cli::review_scope::ReviewSource;
 use serde_json::json;
@@ -27,7 +28,41 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 use std::sync::atomic::AtomicBool;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 use tempfile::TempDir;
+
+static RESOURCE_INTENSIVE_RUNNER_TEST: std::sync::Mutex<()> = std::sync::Mutex::new(());
+
+fn lock_resource_intensive_runner_test() -> std::sync::MutexGuard<'static, ()> {
+    RESOURCE_INTENSIVE_RUNNER_TEST
+        .lock()
+        .unwrap_or_else(std::sync::PoisonError::into_inner)
+}
+
+#[test]
+fn public_runner_measurement_is_observed_after_final_validation() {
+    let _guard = lock_resource_intensive_runner_test();
+    let fixture = Fixture::new();
+    let (mut request, profile) = fixture.runner_input();
+    request.candidate.scope_fingerprint = digest('b');
+    request.limits.deadline_ms = 5_000;
+
+    let measured = run_repository_context_provider_measured(ProviderInvocation {
+        snapshot: &fixture.snapshot,
+        model: &fixture.model,
+        request: &request,
+        profile: &profile,
+        cancellation: Arc::new(AtomicBool::new(false)),
+    })
+    .unwrap();
+
+    assert_eq!(measured.elapsed_ms, measured.report.metrics.elapsed_ms);
+    assert_eq!(
+        measured.report.metrics.report_bytes,
+        serde_json::to_vec(&measured.report).unwrap().len()
+    );
+    measured.report.validate().unwrap();
+}
 
 fn digest(character: char) -> String {
     std::iter::repeat_n(character, 64).collect()
@@ -54,6 +89,10 @@ struct Fixture {
 
 impl Fixture {
     fn new() -> Self {
+        Self::new_with_snapshot_noise(0)
+    }
+
+    fn new_with_snapshot_noise(snapshot_noise_files: usize) -> Self {
         let repository = TempDir::new().unwrap();
         git(repository.path(), &["init", "-q"]);
         fs::create_dir_all(repository.path().join("src")).unwrap();
@@ -62,12 +101,19 @@ impl Fixture {
             b"pub fn seed() { caller(); }\npub fn caller() { seed(); }\npub fn callee() {}\n",
         )
         .unwrap();
+        if snapshot_noise_files > 0 {
+            let noise = repository.path().join("postflight-noise");
+            fs::create_dir(&noise).unwrap();
+            for index in 0..snapshot_noise_files {
+                fs::write(noise.join(format!("{index:04}")), b"").unwrap();
+            }
+        }
         git(repository.path(), &["add", "--", "."]);
         let snapshot = CandidateSnapshot::materialize(
             repository.path(),
             ReviewSource::Staged,
             SnapshotLimits {
-                max_files: 10,
+                max_files: snapshot_noise_files.saturating_add(10),
                 max_bytes: 10_000,
             },
         )
@@ -360,6 +406,23 @@ fn graph_limits() -> ProviderLimits {
     }
 }
 
+fn configure_large_report_request(request: &mut RepositoryContextProviderRequest) {
+    request.candidate.scope_fingerprint = digest('8');
+    request.seeds[0].name = "large-seed".to_string();
+    request.directions = vec![CallDirection::Incoming, CallDirection::Outgoing];
+    request.limits.deadline_ms = 20_000;
+    request.limits.max_depth = 1;
+    request.limits.max_requests = 16;
+    request.limits.max_messages = 64;
+    request.limits.max_call_ranges = 1_000;
+    request.limits.max_frame_bytes = 4 * 1024 * 1024;
+    request.limits.max_protocol_bytes = 16 * 1024 * 1024;
+    request.limits.max_total_output_bytes = 16 * 1024 * 1024;
+    request.limits.max_nodes = 1_001;
+    request.limits.max_edges = 1_000;
+    request.limits.max_report_bytes = 16 * 1024 * 1024;
+}
+
 #[test]
 fn handshake_accepts_ready_server_and_uses_utf8_encoding() {
     let result = Fixture::new().run("readiness-ok").unwrap();
@@ -469,12 +532,490 @@ fn public_runner_returns_bound_completed_report() {
     assert!(!serde_json::to_string(&report)
         .unwrap()
         .contains(fixture.snapshot.path().to_str().unwrap()));
+    assert_eq!(
+        report.metrics.report_bytes,
+        serde_json::to_vec(&report).unwrap().len()
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn public_runner_elapsed_includes_final_report_processing() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let _guard = lock_resource_intensive_runner_test();
+    let fixture = Fixture::new();
+    let (mut request, profile) = fixture.runner_input();
+    configure_large_report_request(&mut request);
+
+    let baseline_executable = fixture.tools.path().join("large-report-preflight-only");
+    fs::copy(&fixture.executable, &baseline_executable).unwrap();
+    fs::set_permissions(&baseline_executable, fs::Permissions::from_mode(0o600)).unwrap();
+    let mut baseline_request = request.clone();
+    baseline_request.provider.executable_path = baseline_executable;
+    let preflight_started = Instant::now();
+    let preflight_error = run_repository_context_provider(ProviderInvocation {
+        snapshot: &fixture.snapshot,
+        model: &fixture.model,
+        request: &baseline_request,
+        profile: &profile,
+        cancellation: Arc::new(AtomicBool::new(false)),
+    })
+    .unwrap_err();
+    let preflight_elapsed = preflight_started.elapsed();
+    assert_eq!(
+        preflight_error,
+        collect_diff_context_cli::repository_context_provider::ProviderError::Preflight
+    );
+
+    let started = Instant::now();
+    let report = run_repository_context_provider(ProviderInvocation {
+        snapshot: &fixture.snapshot,
+        model: &fixture.model,
+        request: &request,
+        profile: &profile,
+        cancellation: Arc::new(AtomicBool::new(false)),
+    })
+    .unwrap();
+    let wall_elapsed = started.elapsed();
+
+    assert_eq!(
+        report.status,
+        RepositoryContextProviderStatus::Completed,
+        "limitations: {:?}",
+        report.limitations
+    );
+    report.validate().unwrap();
+    assert_eq!(report.related_symbols.len(), 1_000);
+    assert_eq!(report.edges.len(), 1_000);
+    assert_eq!(
+        report.metrics.report_bytes,
+        serde_json::to_vec(&report).unwrap().len()
+    );
+    let unaccounted = wall_elapsed
+        .saturating_sub(preflight_elapsed)
+        .saturating_sub(Duration::from_millis(report.metrics.elapsed_ms));
+    assert!(
+        unaccounted < Duration::from_millis(50),
+        "final report work was not timed: wall={wall_elapsed:?} preflight={preflight_elapsed:?} report={}ms unaccounted={unaccounted:?}",
+        report.metrics.elapsed_ms
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn public_runner_honors_cancellation_during_final_report_processing() {
+    use std::os::unix::fs::PermissionsExt;
+    use std::sync::atomic::Ordering;
+
+    let _guard = lock_resource_intensive_runner_test();
+    let fixture = Fixture::new();
+    let (mut request, mut profile) = fixture.runner_input();
+    configure_large_report_request(&mut request);
+    let wrapper = fixture.tools.path().join("final-report-provider");
+    let marker = fixture.tools.path().join("final-report-started");
+    fs::write(
+        &wrapper,
+        format!(
+            "#!/bin/sh\n'{}' \"$@\"\nstatus=$?\nprintf done > '{}'\nexit $status\n",
+            fixture.executable.display(),
+            marker.display()
+        ),
+    )
+    .unwrap();
+    fs::set_permissions(&wrapper, fs::Permissions::from_mode(0o700)).unwrap();
+    let executable_sha256 = format!("{:x}", Sha256::digest(fs::read(&wrapper).unwrap()));
+    profile.executable_sha256 = executable_sha256.clone();
+    request.provider.executable_path = wrapper;
+    request.provider.executable_sha256 = executable_sha256;
+    request.provider.profile_sha256 = profile.sha256();
+    fs::write(
+        &request.provider.profile_path,
+        serde_json::to_vec(&profile).unwrap(),
+    )
+    .unwrap();
+
+    let cancellation = Arc::new(AtomicBool::new(false));
+    let watched_cancellation = Arc::clone(&cancellation);
+    let watcher = std::thread::spawn(move || {
+        while !marker.exists() {
+            std::thread::yield_now();
+        }
+        std::thread::sleep(Duration::from_millis(50));
+        watched_cancellation.store(true, Ordering::Release);
+    });
+    let result = run_repository_context_provider(ProviderInvocation {
+        snapshot: &fixture.snapshot,
+        model: &fixture.model,
+        request: &request,
+        profile: &profile,
+        cancellation,
+    });
+    watcher.join().unwrap();
+
+    assert_eq!(
+        result.unwrap_err(),
+        collect_diff_context_cli::repository_context_provider::ProviderError::Cancelled
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn public_runner_rejects_a_symlinked_provider_profile() {
+    use std::os::unix::fs::symlink;
+
+    let fixture = Fixture::new();
+    let (mut request, profile) = fixture.runner_input();
+    let profile_link = fixture.tools.path().join("runner-profile-link.json");
+    symlink(&request.provider.profile_path, &profile_link).unwrap();
+    request.provider.profile_path = profile_link;
+
+    let error = run_repository_context_provider(ProviderInvocation {
+        snapshot: &fixture.snapshot,
+        model: &fixture.model,
+        request: &request,
+        profile: &profile,
+        cancellation: Arc::new(AtomicBool::new(false)),
+    })
+    .unwrap_err();
+
+    assert_eq!(
+        error,
+        collect_diff_context_cli::repository_context_provider::ProviderError::Preflight
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn public_runner_rejects_an_oversized_provider_executable_without_streaming_it() {
+    let fixture = Fixture::new();
+    let (mut request, profile) = fixture.runner_input();
+    let oversized_executable = fixture.tools.path().join("oversized-provider");
+    let file = fs::File::create(&oversized_executable).unwrap();
+    file.set_len(512 * 1024 * 1024 + 1).unwrap();
+    request.provider.executable_path = oversized_executable;
+
+    let started = Instant::now();
+    let error = run_repository_context_provider(ProviderInvocation {
+        snapshot: &fixture.snapshot,
+        model: &fixture.model,
+        request: &request,
+        profile: &profile,
+        cancellation: Arc::new(AtomicBool::new(false)),
+    })
+    .unwrap_err();
+    let elapsed = started.elapsed();
+
+    assert_eq!(
+        error,
+        collect_diff_context_cli::repository_context_provider::ProviderError::Preflight
+    );
+    assert!(
+        elapsed < Duration::from_millis(500),
+        "oversized executable was streamed for {elapsed:?}"
+    );
+}
+
+#[test]
+fn public_runner_rejects_provider_metadata_changes_during_a_bounded_read() {
+    use std::io::{Seek, SeekFrom, Write};
+    #[cfg(unix)]
+    use std::os::unix::fs::PermissionsExt;
+    use std::sync::atomic::Ordering;
+    use std::sync::Barrier;
+
+    let _guard = lock_resource_intensive_runner_test();
+    let fixture = Fixture::new();
+    let (mut request, mut profile) = fixture.runner_input();
+    let wrapper = fixture.tools.path().join(if cfg!(windows) {
+        "mutable-provider.exe"
+    } else {
+        "mutable-provider"
+    });
+    #[cfg(unix)]
+    {
+        fs::write(
+            &wrapper,
+            format!("#!/bin/sh\nexec '{}'\n", fixture.executable.display()),
+        )
+        .unwrap();
+        fs::set_permissions(&wrapper, fs::Permissions::from_mode(0o700)).unwrap();
+    }
+    #[cfg(windows)]
+    fs::copy(&fixture.executable, &wrapper).unwrap();
+    let file = fs::OpenOptions::new().write(true).open(&wrapper).unwrap();
+    file.set_len(file.metadata().unwrap().len().max(8 * 1024 * 1024))
+        .unwrap();
+    let executable_sha256 = format!("{:x}", Sha256::digest(fs::read(&wrapper).unwrap()));
+    profile.executable_sha256 = executable_sha256.clone();
+    request.provider.executable_path = wrapper.clone();
+    request.provider.executable_sha256 = executable_sha256;
+    request.provider.profile_sha256 = profile.sha256();
+    request.limits.deadline_ms = 5_000;
+    fs::write(
+        &request.provider.profile_path,
+        serde_json::to_vec(&profile).unwrap(),
+    )
+    .unwrap();
+
+    let barrier = Arc::new(Barrier::new(2));
+    let mutator_barrier = Arc::clone(&barrier);
+    let stop = Arc::new(AtomicBool::new(false));
+    let mutator_stop = Arc::clone(&stop);
+    let mutator = std::thread::spawn(move || {
+        let mut file = fs::OpenOptions::new().write(true).open(wrapper).unwrap();
+        mutator_barrier.wait();
+        while !mutator_stop.load(Ordering::Acquire) {
+            file.seek(SeekFrom::End(-1)).unwrap();
+            file.write_all(&[0]).unwrap();
+        }
+    });
+    barrier.wait();
+    let result = run_repository_context_provider(ProviderInvocation {
+        snapshot: &fixture.snapshot,
+        model: &fixture.model,
+        request: &request,
+        profile: &profile,
+        cancellation: Arc::new(AtomicBool::new(false)),
+    });
+    stop.store(true, Ordering::Release);
+    mutator.join().unwrap();
+
+    assert_eq!(
+        result.unwrap_err(),
+        collect_diff_context_cli::repository_context_provider::ProviderError::Preflight
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn public_runner_honors_cancellation_during_postflight_provider_reads() {
+    use std::os::unix::fs::PermissionsExt;
+    use std::sync::atomic::Ordering;
+
+    let _guard = lock_resource_intensive_runner_test();
+    let fixture = Fixture::new();
+    let (mut request, mut profile) = fixture.runner_input();
+    let wrapper = fixture.tools.path().join("postflight-provider");
+    let marker = fixture.tools.path().join("postflight-started");
+    fs::write(
+        &wrapper,
+        format!(
+            "#!/bin/sh\n'{}' \"$@\"\nprintf done > '{}'\n",
+            fixture.executable.display(),
+            marker.display()
+        ),
+    )
+    .unwrap();
+    let file = fs::OpenOptions::new().write(true).open(&wrapper).unwrap();
+    file.set_len(8 * 1024 * 1024).unwrap();
+    fs::set_permissions(&wrapper, fs::Permissions::from_mode(0o700)).unwrap();
+    let executable_sha256 = format!("{:x}", Sha256::digest(fs::read(&wrapper).unwrap()));
+    profile.executable_sha256 = executable_sha256.clone();
+    request.provider.executable_path = wrapper;
+    request.provider.executable_sha256 = executable_sha256;
+    request.provider.profile_sha256 = profile.sha256();
+    request.limits.deadline_ms = 5_000;
+    fs::write(
+        &request.provider.profile_path,
+        serde_json::to_vec(&profile).unwrap(),
+    )
+    .unwrap();
+
+    let cancellation = Arc::new(AtomicBool::new(false));
+    let watched_cancellation = Arc::clone(&cancellation);
+    let watcher = std::thread::spawn(move || {
+        while !marker.exists() {
+            std::thread::yield_now();
+        }
+        std::thread::sleep(Duration::from_millis(50));
+        watched_cancellation.store(true, Ordering::Release);
+    });
+    let result = run_repository_context_provider(ProviderInvocation {
+        snapshot: &fixture.snapshot,
+        model: &fixture.model,
+        request: &request,
+        profile: &profile,
+        cancellation,
+    });
+    watcher.join().unwrap();
+
+    assert_eq!(
+        result.unwrap_err(),
+        collect_diff_context_cli::repository_context_provider::ProviderError::Cancelled
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn public_runner_prioritizes_cancellation_after_stale_snapshot_validation() {
+    use std::os::unix::fs::PermissionsExt;
+    use std::sync::atomic::Ordering;
+
+    let _guard = lock_resource_intensive_runner_test();
+    let fixture = Fixture::new_with_snapshot_noise(5_000);
+    let (mut request, mut profile) = fixture.runner_input();
+    let wrapper = fixture.tools.path().join("stale-snapshot-provider");
+    let mutation_marker = fixture.tools.path().join("stale-snapshot-mutation-ready");
+    let exit_marker = fixture.tools.path().join("stale-snapshot-provider-exiting");
+    fs::write(
+        &wrapper,
+        format!(
+            "#!/bin/sh\n'{}' \"$@\"\nprintf ready > '{}'\nsleep 0.2\nprintf exiting > '{}'\n",
+            fixture.executable.display(),
+            mutation_marker.display(),
+            exit_marker.display()
+        ),
+    )
+    .unwrap();
+    fs::set_permissions(&wrapper, fs::Permissions::from_mode(0o700)).unwrap();
+    let executable_sha256 = format!("{:x}", Sha256::digest(fs::read(&wrapper).unwrap()));
+    profile.executable_sha256 = executable_sha256.clone();
+    request.provider.executable_path = wrapper;
+    request.provider.executable_sha256 = executable_sha256;
+    request.provider.profile_sha256 = profile.sha256();
+    request.limits.deadline_ms = 30_000;
+    fs::write(
+        &request.provider.profile_path,
+        serde_json::to_vec(&profile).unwrap(),
+    )
+    .unwrap();
+
+    let cancellation = Arc::new(AtomicBool::new(false));
+    let watched_cancellation = Arc::clone(&cancellation);
+    let stale_file = fixture.snapshot.path().join("postflight-noise/0000");
+    let watcher = std::thread::spawn(move || {
+        while !mutation_marker.exists() {
+            std::thread::yield_now();
+        }
+        fs::set_permissions(&stale_file, fs::Permissions::from_mode(0o644)).unwrap();
+        fs::write(&stale_file, b"changed").unwrap();
+        fs::set_permissions(&stale_file, fs::Permissions::from_mode(0o444)).unwrap();
+        while !exit_marker.exists() {
+            std::thread::yield_now();
+        }
+        std::thread::sleep(Duration::from_millis(20));
+        watched_cancellation.store(true, Ordering::Release);
+    });
+    let result = run_repository_context_provider(ProviderInvocation {
+        snapshot: &fixture.snapshot,
+        model: &fixture.model,
+        request: &request,
+        profile: &profile,
+        cancellation,
+    });
+    watcher.join().unwrap();
+
+    assert_eq!(
+        result.unwrap_err(),
+        collect_diff_context_cli::repository_context_provider::ProviderError::Cancelled
+    );
+}
+
+#[cfg(unix)]
+#[test]
+fn public_runner_timing_excludes_regular_file_preflight() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let _guard = lock_resource_intensive_runner_test();
+    let fixture = Fixture::new();
+    let (mut request, mut profile) = fixture.runner_input();
+    let executable = fixture.tools.path().join("timed-provider");
+    fs::copy(&fixture.executable, &executable).unwrap();
+    let file = fs::OpenOptions::new()
+        .write(true)
+        .open(&executable)
+        .unwrap();
+    file.set_len(8 * 1024 * 1024).unwrap();
+    fs::set_permissions(&executable, fs::Permissions::from_mode(0o700)).unwrap();
+    let executable_sha256 = format!("{:x}", Sha256::digest(fs::read(&executable).unwrap()));
+    profile.executable_sha256 = executable_sha256.clone();
+    request.provider.executable_path = executable;
+    request.provider.executable_sha256 = executable_sha256;
+    request.provider.profile_sha256 = profile.sha256();
+    request.limits.deadline_ms = 10_000;
+    fs::write(
+        &request.provider.profile_path,
+        serde_json::to_vec(&profile).unwrap(),
+    )
+    .unwrap();
+
+    let started = Instant::now();
+    let report = run_repository_context_provider(ProviderInvocation {
+        snapshot: &fixture.snapshot,
+        model: &fixture.model,
+        request: &request,
+        profile: &profile,
+        cancellation: Arc::new(AtomicBool::new(false)),
+    })
+    .unwrap();
+    let wall_elapsed_ms = u64::try_from(started.elapsed().as_millis()).unwrap();
+
+    assert_eq!(report.status, RepositoryContextProviderStatus::Completed);
+    assert!(
+        wall_elapsed_ms >= report.metrics.elapsed_ms.saturating_add(20),
+        "preflight leaked into provider timing: wall={wall_elapsed_ms}ms report={}ms",
+        report.metrics.elapsed_ms
+    );
+    assert_eq!(
+        report.metrics.report_bytes,
+        serde_json::to_vec(&report).unwrap().len()
+    );
+}
+
+#[test]
+fn public_runner_rejects_a_postflight_deadline_overrun() {
+    let _guard = lock_resource_intensive_runner_test();
+    let fixture = Fixture::new();
+    let (mut request, profile) = fixture.runner_input();
+    request.candidate.scope_fingerprint = digest('b');
+    request.limits.deadline_ms = 5_000;
+
+    let error = run_repository_context_provider_with_postflight_elapsed_ms(
+        ProviderInvocation {
+            snapshot: &fixture.snapshot,
+            model: &fixture.model,
+            request: &request,
+            profile: &profile,
+            cancellation: Arc::new(AtomicBool::new(false)),
+        },
+        request.limits.deadline_ms + 1,
+    )
+    .unwrap_err();
+
+    assert_eq!(
+        error,
+        collect_diff_context_cli::repository_context_provider::ProviderError::DeadlineExceeded
+    );
 }
 
 #[test]
 fn public_runner_status_matrix_retains_no_facts_on_terminal_failures() {
+    let fixture = Fixture::new();
+    let (mut request, profile) = fixture.runner_input();
+    request.candidate.scope_fingerprint = digest('a');
+    request.limits.deadline_ms = 1_000;
+    let report = run_repository_context_provider(ProviderInvocation {
+        snapshot: &fixture.snapshot,
+        model: &fixture.model,
+        request: &request,
+        profile: &profile,
+        cancellation: Arc::new(AtomicBool::new(false)),
+    })
+    .unwrap();
+    assert_eq!(report.status, RepositoryContextProviderStatus::Timeout);
+    report.validate().unwrap();
+    assert!(report.seed_symbols.is_empty());
+    assert!(report.related_symbols.is_empty());
+    assert!(report.edges.is_empty());
+    assert!(
+        report.metrics.elapsed_ms > request.limits.deadline_ms,
+        "timeout elapsed time was truncated: report={}ms deadline={}ms",
+        report.metrics.elapsed_ms,
+        request.limits.deadline_ms
+    );
+
     for (scenario, expected) in [
-        ('a', RepositoryContextProviderStatus::Timeout),
         ('b', RepositoryContextProviderStatus::InvalidOutput),
         ('c', RepositoryContextProviderStatus::InvalidOutput),
         ('d', RepositoryContextProviderStatus::Failed),
@@ -484,7 +1025,7 @@ fn public_runner_status_matrix_retains_no_facts_on_terminal_failures() {
         let fixture = Fixture::new();
         let (mut request, profile) = fixture.runner_input();
         request.candidate.scope_fingerprint = digest(scenario);
-        request.limits.deadline_ms = 1_000;
+        request.limits.deadline_ms = 5_000;
         let report = run_repository_context_provider(ProviderInvocation {
             snapshot: &fixture.snapshot,
             model: &fixture.model,

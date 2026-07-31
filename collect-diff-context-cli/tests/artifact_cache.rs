@@ -6,9 +6,10 @@ mod support;
 use artifact_fixture::{fixture_pack, fixture_pack_with_version, manifest, probes, verified};
 use collect_diff_context_cli::artifacts::{
     cache::{
-        open_cache, provision_from_cache, publish_cache, verify_target_receipt,
-        ArtifactCacheBoundaries, ArtifactCacheLayout, CachePublishStatus,
+        open_cache, provision_from_cache, publish_cache, read_target_receipt,
+        verify_target_receipt, ArtifactCacheBoundaries, ArtifactCacheLayout, CachePublishStatus,
     },
+    contract::{canonical_json, ArtifactFileBinding, ArtifactReceipt, MAX_MANIFEST_BYTES},
     transport::{
         HttpBackend, HttpBackendError, HttpRequest, HttpResponse, Transport, TransportLimits,
     },
@@ -16,9 +17,12 @@ use collect_diff_context_cli::artifacts::{
 use std::{
     collections::VecDeque,
     fs,
-    io::{self, Cursor, Read},
+    io::{self, Cursor, Read, Seek, SeekFrom, Write},
     path::{Path, PathBuf},
-    sync::{Arc, Barrier, Mutex},
+    sync::{
+        atomic::{AtomicBool, Ordering},
+        Arc, Barrier, Mutex,
+    },
 };
 use support::GitRepo;
 use tempfile::TempDir;
@@ -331,6 +335,152 @@ fn target_copy_has_no_cache_path_dependency() {
     assert_eq!(
         fs::read(target.executable_path()).unwrap(),
         b"fixture-gitleaks-binary\n"
+    );
+}
+
+#[test]
+fn target_receipt_reader_rejects_metadata_changes_during_a_bounded_read() {
+    let fixture = fixture_pack();
+    let cache_root = TempDir::new().unwrap();
+    let target_root = TempDir::new().unwrap();
+    let cache_layout = layout(
+        cache_root.path(),
+        ArtifactCacheBoundaries {
+            target_root: Some(target_root.path().to_path_buf()),
+            ..ArtifactCacheBoundaries::default()
+        },
+    );
+    let publication = publish_cache(
+        &cache_layout,
+        &verified(&fixture),
+        &fixture.record,
+        &probes(),
+    )
+    .unwrap();
+    let target = provision_from_cache(
+        publication.entry(),
+        target_root.path(),
+        &manifest(&fixture.record),
+    )
+    .unwrap();
+
+    let mut receipt: ArtifactReceipt =
+        serde_json::from_slice(&fs::read(target.receipt_path()).unwrap()).unwrap();
+    receipt
+        .installed_files
+        .extend((0..1_700).map(|index| ArtifactFileBinding {
+            path: format!("zzzz/{index:04}-{}", "x".repeat(450)),
+            size: 1,
+            sha256: "a".repeat(64),
+        }));
+    receipt
+        .installed_files
+        .sort_by(|left, right| left.path.cmp(&right.path));
+    receipt.validate().unwrap();
+    let receipt_bytes = canonical_json(&receipt).unwrap();
+    assert!(receipt_bytes.len() > MAX_MANIFEST_BYTES / 2);
+    fs::write(target.receipt_path(), &receipt_bytes).unwrap();
+
+    let barrier = Arc::new(Barrier::new(2));
+    let mutator_barrier = Arc::clone(&barrier);
+    let stop = Arc::new(AtomicBool::new(false));
+    let mutator_stop = Arc::clone(&stop);
+    let receipt_path = target.receipt_path().to_path_buf();
+    let mutator = std::thread::spawn(move || {
+        let mut file = fs::OpenOptions::new()
+            .write(true)
+            .open(receipt_path)
+            .unwrap();
+        file.seek(SeekFrom::End(-1)).unwrap();
+        file.write_all(b"}").unwrap();
+        mutator_barrier.wait();
+        while !mutator_stop.load(Ordering::Acquire) {
+            file.seek(SeekFrom::End(-1)).unwrap();
+            file.write_all(b"}").unwrap();
+        }
+    });
+    barrier.wait();
+    let result = read_target_receipt(target_root.path(), &fixture.record.artifact_id);
+    stop.store(true, Ordering::Release);
+    mutator.join().unwrap();
+
+    assert_eq!(result.unwrap_err().code, "artifact-file-metadata");
+}
+
+#[test]
+fn target_verifier_rejects_pack_manifest_metadata_changes_during_a_bounded_read() {
+    let fixture = fixture_pack();
+    let cache_root = TempDir::new().unwrap();
+    let target_root = TempDir::new().unwrap();
+    let cache_layout = layout(
+        cache_root.path(),
+        ArtifactCacheBoundaries {
+            target_root: Some(target_root.path().to_path_buf()),
+            ..ArtifactCacheBoundaries::default()
+        },
+    );
+    let publication = publish_cache(
+        &cache_layout,
+        &verified(&fixture),
+        &fixture.record,
+        &probes(),
+    )
+    .unwrap();
+    let target = provision_from_cache(
+        publication.entry(),
+        target_root.path(),
+        &manifest(&fixture.record),
+    )
+    .unwrap();
+    let pack_manifest_path = target
+        .executable_path()
+        .parent()
+        .unwrap()
+        .parent()
+        .unwrap()
+        .join("pack-manifest.json");
+
+    let barrier = Arc::new(Barrier::new(2));
+    let mutator_barrier = Arc::clone(&barrier);
+    let stop = Arc::new(AtomicBool::new(false));
+    let mutator_stop = Arc::clone(&stop);
+    let mutator = std::thread::spawn(move || {
+        let mut file = fs::OpenOptions::new()
+            .write(true)
+            .open(pack_manifest_path)
+            .unwrap();
+        file.seek(SeekFrom::End(-1)).unwrap();
+        file.write_all(b"}").unwrap();
+        mutator_barrier.wait();
+        while !mutator_stop.load(Ordering::Acquire) {
+            file.seek(SeekFrom::End(-1)).unwrap();
+            file.write_all(b"}").unwrap();
+        }
+    });
+    barrier.wait();
+    let distribution_manifest = manifest(&fixture.record);
+    let mut observed_error = None;
+    for _ in 0..64 {
+        match verify_target_receipt(
+            target_root.path(),
+            &fixture.record.artifact_id,
+            &distribution_manifest,
+        ) {
+            Ok(_) => {}
+            Err(error) => {
+                observed_error = Some(error);
+                break;
+            }
+        }
+    }
+    stop.store(true, Ordering::Release);
+    mutator.join().unwrap();
+
+    assert_eq!(
+        observed_error
+            .expect("unstable pack manifest was accepted")
+            .code,
+        "artifact-file-metadata"
     );
 }
 

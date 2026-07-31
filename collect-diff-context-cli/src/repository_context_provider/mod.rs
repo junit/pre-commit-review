@@ -1,3 +1,5 @@
+#[cfg(feature = "test-fixture")]
+pub mod baseline_fixture;
 pub mod cli;
 pub mod cli_contract;
 pub mod contract;
@@ -8,6 +10,9 @@ pub mod session;
 pub mod snapshot;
 
 use crate::candidate::snapshot::CandidateSnapshot;
+use crate::impact_context::cache::file_facts::{
+    open_regular_file_no_follow, opened_regular_file_fingerprint,
+};
 use crate::repository_context_provider::contract::{
     AuthorizedProviderProfile, ProviderCompleteness, ProviderExecutionRecord, ProviderIsolation,
     ProviderLimitation, ProviderMetrics, ProviderNetworkIsolation, RepositoryContextProviderReport,
@@ -21,7 +26,7 @@ use crate::repository_context_provider::rust_analyzer::{
 use crate::repository_context_provider::session::{ManagedLspSession, SessionLaunch};
 use crate::repository_context_provider::snapshot::BoundCandidateSnapshot;
 use sha2::{Digest, Sha256};
-use std::fs::{self, File};
+use std::fs;
 use std::io::Read;
 use std::sync::atomic::{AtomicBool, Ordering};
 use std::sync::Arc;
@@ -29,12 +34,16 @@ use std::time::Instant;
 
 use crate::provider_resources::{ProviderResourcePolicy, ResourceAccountingStatus};
 
+const MAX_PROVIDER_PROFILE_BYTES: u64 = 1024 * 1024;
+const MAX_PROVIDER_EXECUTABLE_BYTES: u64 = 512 * 1024 * 1024;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub enum ProviderError {
     InvalidRequest,
     ProfileMismatch,
     StaleBinding,
     Cancelled,
+    DeadlineExceeded,
     Preflight,
     Session,
     ReportInvalid,
@@ -47,6 +56,7 @@ impl ProviderError {
             Self::ProfileMismatch => "provider-profile-mismatch",
             Self::StaleBinding => "provider-stale-binding",
             Self::Cancelled => "provider-cancelled",
+            Self::DeadlineExceeded => "provider-deadline-exceeded",
             Self::Preflight => "provider-preflight-failed",
             Self::Session => "provider-session-failed",
             Self::ReportInvalid => "provider-report-invalid",
@@ -70,10 +80,44 @@ pub struct ProviderInvocation<'a> {
     pub cancellation: Arc<AtomicBool>,
 }
 
+pub struct ProviderRunMeasurement {
+    pub report: RepositoryContextProviderReport,
+    pub elapsed_ms: u64,
+}
+
 pub fn run_repository_context_provider(
     invocation: ProviderInvocation<'_>,
 ) -> Result<RepositoryContextProviderReport, ProviderError> {
-    run_repository_context_provider_with_policy(invocation, ProviderResourcePolicy::production())
+    run_repository_context_provider_with_policy(
+        invocation,
+        ProviderResourcePolicy::production(),
+        None,
+    )
+    .map(|measurement| measurement.report)
+}
+
+#[cfg(feature = "test-fixture")]
+pub fn run_repository_context_provider_measured(
+    invocation: ProviderInvocation<'_>,
+) -> Result<ProviderRunMeasurement, ProviderError> {
+    run_repository_context_provider_with_policy(
+        invocation,
+        ProviderResourcePolicy::production(),
+        None,
+    )
+}
+
+#[cfg(feature = "test-fixture")]
+pub fn run_repository_context_provider_with_postflight_elapsed_ms(
+    invocation: ProviderInvocation<'_>,
+    elapsed_ms: u64,
+) -> Result<RepositoryContextProviderReport, ProviderError> {
+    run_repository_context_provider_with_policy(
+        invocation,
+        ProviderResourcePolicy::production(),
+        Some(elapsed_ms),
+    )
+    .map(|measurement| measurement.report)
 }
 
 #[cfg(feature = "test-fixture")]
@@ -85,7 +129,9 @@ pub fn run_repository_context_provider_with_position_encoding_preference(
         invocation,
         ProviderResourcePolicy::production(),
         PositionEncodingPreference::preferred(preferred_encoding),
+        None,
     )
+    .map(|measurement| measurement.report)
 }
 
 #[cfg(feature = "test-fixture")]
@@ -93,17 +139,20 @@ pub fn run_repository_context_provider_with_resource_policy(
     invocation: ProviderInvocation<'_>,
     policy: ProviderResourcePolicy,
 ) -> Result<RepositoryContextProviderReport, ProviderError> {
-    run_repository_context_provider_with_policy(invocation, policy)
+    run_repository_context_provider_with_policy(invocation, policy, None)
+        .map(|measurement| measurement.report)
 }
 
 fn run_repository_context_provider_with_policy(
     invocation: ProviderInvocation<'_>,
     policy: ProviderResourcePolicy,
-) -> Result<RepositoryContextProviderReport, ProviderError> {
+    postflight_elapsed_floor_ms: Option<u64>,
+) -> Result<ProviderRunMeasurement, ProviderError> {
     run_repository_context_provider_with_policy_and_position_encoding_preference(
         invocation,
         policy,
         PositionEncodingPreference::default(),
+        postflight_elapsed_floor_ms,
     )
 }
 
@@ -111,8 +160,8 @@ fn run_repository_context_provider_with_policy_and_position_encoding_preference(
     invocation: ProviderInvocation<'_>,
     policy: ProviderResourcePolicy,
     position_encoding_preference: PositionEncodingPreference,
-) -> Result<RepositoryContextProviderReport, ProviderError> {
-    let started = Instant::now();
+    postflight_elapsed_floor_ms: Option<u64>,
+) -> Result<ProviderRunMeasurement, ProviderError> {
     invocation
         .profile
         .validate()
@@ -155,6 +204,7 @@ fn run_repository_context_provider_with_policy_and_position_encoding_preference(
         limits,
         cancellation: Arc::clone(&invocation.cancellation),
     };
+    let started = Instant::now();
     let mut session = match ManagedLspSession::spawn_with_policy(launch, policy) {
         Ok(session) => session,
         Err(error) if error.code == "process-tree-rss-accounting-unavailable" => {
@@ -173,8 +223,18 @@ fn run_repository_context_provider_with_policy_and_position_encoding_preference(
                 invocation.profile,
                 invocation.model,
                 invocation.snapshot,
+                &invocation.cancellation,
+                started,
+                limits.deadline_ms,
+                false,
+                postflight_elapsed_floor_ms,
             )?;
-            return Ok(report);
+            return finalize_report(
+                report,
+                &invocation.cancellation,
+                started,
+                limits.deadline_ms,
+            );
         }
         Err(_) => return Err(ProviderError::Preflight),
     };
@@ -205,8 +265,18 @@ fn run_repository_context_provider_with_policy_and_position_encoding_preference(
                 invocation.profile,
                 invocation.model,
                 invocation.snapshot,
+                &invocation.cancellation,
+                started,
+                limits.deadline_ms,
+                status == RepositoryContextProviderStatus::Timeout,
+                postflight_elapsed_floor_ms,
             )?;
-            return Ok(report);
+            return finalize_report(
+                report,
+                &invocation.cancellation,
+                started,
+                limits.deadline_ms,
+            );
         }
     };
 
@@ -233,11 +303,12 @@ fn run_repository_context_provider_with_policy_and_position_encoding_preference(
             }
             check_cancelled(&invocation.cancellation)?;
             let elapsed_ms = elapsed_ms(started);
+            let status = status_for_session_error(error.code);
             let report = empty_report(
                 invocation.request,
                 invocation.profile,
                 invocation.model,
-                status_for_session_error(error.code),
+                status,
                 error.code,
                 session_metrics(&session, 0, elapsed_ms),
                 elapsed_ms,
@@ -247,8 +318,18 @@ fn run_repository_context_provider_with_policy_and_position_encoding_preference(
                 invocation.profile,
                 invocation.model,
                 invocation.snapshot,
+                &invocation.cancellation,
+                started,
+                limits.deadline_ms,
+                status == RepositoryContextProviderStatus::Timeout,
+                postflight_elapsed_floor_ms,
             )?;
-            return Ok(report);
+            return finalize_report(
+                report,
+                &invocation.cancellation,
+                started,
+                limits.deadline_ms,
+            );
         }
     };
     if let Err(error) = session.shutdown_and_reap() {
@@ -256,11 +337,12 @@ fn run_repository_context_provider_with_policy_and_position_encoding_preference(
             return Err(ProviderError::Cancelled);
         }
         let elapsed_ms = elapsed_ms(started);
+        let status = status_for_session_error(error.code);
         let report = empty_report(
             invocation.request,
             invocation.profile,
             invocation.model,
-            status_for_session_error(error.code),
+            status,
             error.code,
             session_metrics(&session, 0, elapsed_ms),
             elapsed_ms,
@@ -270,8 +352,18 @@ fn run_repository_context_provider_with_policy_and_position_encoding_preference(
             invocation.profile,
             invocation.model,
             invocation.snapshot,
+            &invocation.cancellation,
+            started,
+            limits.deadline_ms,
+            status == RepositoryContextProviderStatus::Timeout,
+            postflight_elapsed_floor_ms,
         )?;
-        return Ok(report);
+        return finalize_report(
+            report,
+            &invocation.cancellation,
+            started,
+            limits.deadline_ms,
+        );
     }
     check_cancelled(&invocation.cancellation)?;
     postflight(
@@ -279,6 +371,11 @@ fn run_repository_context_provider_with_policy_and_position_encoding_preference(
         invocation.profile,
         invocation.model,
         invocation.snapshot,
+        &invocation.cancellation,
+        started,
+        limits.deadline_ms,
+        false,
+        postflight_elapsed_floor_ms,
     )?;
 
     let report = report_from_traversal(
@@ -292,7 +389,12 @@ fn run_repository_context_provider_with_policy_and_position_encoding_preference(
         &session,
         started,
     )?;
-    Ok(report)
+    finalize_report(
+        report,
+        &invocation.cancellation,
+        started,
+        limits.deadline_ms,
+    )
 }
 
 fn check_cancelled(cancellation: &Arc<AtomicBool>) -> Result<(), ProviderError> {
@@ -318,13 +420,21 @@ fn preflight_files(
             return Err(ProviderError::Preflight);
         }
     }
-    let profile_bytes =
-        read_file_digest(&request.provider.profile_path).map_err(|_| ProviderError::Preflight)?;
+    let profile_bytes = read_file_digest(
+        &request.provider.profile_path,
+        MAX_PROVIDER_PROFILE_BYTES,
+        || Ok(()),
+        ProviderError::Preflight,
+    )?;
     if profile_bytes != profile.sha256() || request.provider.profile_sha256 != profile_bytes {
         return Err(ProviderError::ProfileMismatch);
     }
-    let executable_bytes = read_file_digest(&request.provider.executable_path)
-        .map_err(|_| ProviderError::Preflight)?;
+    let executable_bytes = read_file_digest(
+        &request.provider.executable_path,
+        MAX_PROVIDER_EXECUTABLE_BYTES,
+        || Ok(()),
+        ProviderError::Preflight,
+    )?;
     if executable_bytes != request.provider.executable_sha256
         || executable_bytes != profile.executable_sha256
     {
@@ -333,44 +443,131 @@ fn preflight_files(
     Ok(())
 }
 
-fn read_file_digest(path: &std::path::Path) -> Result<String, std::io::Error> {
-    let mut file = File::open(path)?;
+fn read_file_digest(
+    path: &std::path::Path,
+    maximum_bytes: u64,
+    mut check_runtime: impl FnMut() -> Result<(), ProviderError>,
+    read_error: ProviderError,
+) -> Result<String, ProviderError> {
+    check_runtime()?;
+    let opened = open_regular_file_no_follow(path);
+    check_runtime()?;
+    let mut file = opened.map_err(|_| read_error.clone())?;
+    let fingerprint = opened_regular_file_fingerprint(&file);
+    check_runtime()?;
+    let before = fingerprint.map_err(|_| read_error.clone())?;
+    if before.size() > maximum_bytes {
+        return Err(read_error);
+    }
+    let mut input = (&mut file).take(maximum_bytes.saturating_add(1));
     let mut digest = Sha256::new();
+    let mut size = 0_u64;
     let mut buffer = [0_u8; 16 * 1024];
     loop {
-        let read = file.read(&mut buffer)?;
+        check_runtime()?;
+        let read_result = input.read(&mut buffer);
+        check_runtime()?;
+        let read = read_result.map_err(|_| read_error.clone())?;
         if read == 0 {
             break;
         }
+        size = size.saturating_add(read as u64);
+        if size > maximum_bytes {
+            return Err(read_error);
+        }
         digest.update(&buffer[..read]);
+    }
+    check_runtime()?;
+    let fingerprint = opened_regular_file_fingerprint(&file);
+    check_runtime()?;
+    let after = fingerprint.map_err(|_| read_error.clone())?;
+    if before != after || size != before.size() {
+        return Err(read_error);
     }
     Ok(format!("{:x}", digest.finalize()))
 }
 
+#[allow(clippy::too_many_arguments)]
 fn postflight(
     request: &RepositoryContextProviderRequest,
     profile: &AuthorizedProviderProfile,
     model: &RustAnalyzerProjectModel,
     snapshot: &CandidateSnapshot,
+    cancellation: &Arc<AtomicBool>,
+    started: Instant,
+    deadline_ms: u64,
+    internal_timeout: bool,
+    elapsed_floor_ms: Option<u64>,
 ) -> Result<(), ProviderError> {
-    snapshot
-        .verify_unchanged()
-        .map_err(|_| ProviderError::StaleBinding)?;
-    model.validate().map_err(|_| ProviderError::StaleBinding)?;
+    let check_runtime = || {
+        check_runtime_deadline(cancellation, started, deadline_ms, internal_timeout)?;
+        elapsed_floor_ms.map_or(Ok(()), |elapsed_ms| {
+            ensure_elapsed_within_deadline(elapsed_ms, deadline_ms, internal_timeout)
+        })
+    };
+    check_runtime()?;
+    let snapshot_validation = snapshot.verify_unchanged();
+    check_runtime()?;
+    snapshot_validation.map_err(|_| ProviderError::StaleBinding)?;
+    let model_validation = model.validate();
+    check_runtime()?;
+    model_validation.map_err(|_| ProviderError::StaleBinding)?;
     if model.digest != request.candidate.project_model_digest {
+        check_runtime()?;
         return Err(ProviderError::StaleBinding);
     }
-    let profile_digest = read_file_digest(&request.provider.profile_path)
-        .map_err(|_| ProviderError::StaleBinding)?;
+    let profile_digest = read_file_digest(
+        &request.provider.profile_path,
+        MAX_PROVIDER_PROFILE_BYTES,
+        check_runtime,
+        ProviderError::StaleBinding,
+    );
+    check_runtime()?;
+    let profile_digest = profile_digest?;
     if profile_digest != profile.sha256() {
+        check_runtime()?;
         return Err(ProviderError::StaleBinding);
     }
-    let executable = read_file_digest(&request.provider.executable_path)
-        .map_err(|_| ProviderError::StaleBinding)?;
+    let executable = read_file_digest(
+        &request.provider.executable_path,
+        MAX_PROVIDER_EXECUTABLE_BYTES,
+        check_runtime,
+        ProviderError::StaleBinding,
+    );
+    check_runtime()?;
+    let executable = executable?;
     if executable != profile.executable_sha256 {
+        check_runtime()?;
         return Err(ProviderError::StaleBinding);
     }
     Ok(())
+}
+
+fn check_runtime_deadline(
+    cancellation: &Arc<AtomicBool>,
+    started: Instant,
+    deadline_ms: u64,
+    internal_timeout: bool,
+) -> Result<(), ProviderError> {
+    check_cancelled(cancellation)?;
+    ensure_elapsed_within_deadline(unbounded_elapsed_ms(started), deadline_ms, internal_timeout)
+}
+
+fn ensure_elapsed_within_deadline(
+    elapsed_ms: u64,
+    deadline_ms: u64,
+    internal_timeout: bool,
+) -> Result<(), ProviderError> {
+    let hard_deadline_ms = if internal_timeout {
+        MAX_DEADLINE_MS
+    } else {
+        deadline_ms
+    };
+    if elapsed_ms > hard_deadline_ms {
+        Err(ProviderError::DeadlineExceeded)
+    } else {
+        Ok(())
+    }
 }
 
 fn status_for_handshake_error(
@@ -556,6 +753,96 @@ fn report_from_traversal(
     Ok(report)
 }
 
+fn finalize_report(
+    mut report: RepositoryContextProviderReport,
+    cancellation: &Arc<AtomicBool>,
+    started: Instant,
+    deadline_ms: u64,
+) -> Result<ProviderRunMeasurement, ProviderError> {
+    let internal_timeout = report.status == RepositoryContextProviderStatus::Timeout;
+    let hard_deadline_ms = if internal_timeout {
+        MAX_DEADLINE_MS
+    } else {
+        deadline_ms
+    };
+    check_runtime_deadline(cancellation, started, deadline_ms, internal_timeout)?;
+    let observed_elapsed_ms = unbounded_elapsed_ms(started);
+    report.metrics.elapsed_ms = observed_elapsed_ms.min(hard_deadline_ms);
+    stabilize_report_size(
+        &mut report,
+        cancellation,
+        started,
+        deadline_ms,
+        internal_timeout,
+    )?;
+
+    let validation = report.validate();
+    check_runtime_deadline(cancellation, started, deadline_ms, internal_timeout)?;
+    validation.map_err(|_| ProviderError::ReportInvalid)?;
+
+    loop {
+        let observed_elapsed_ms = unbounded_elapsed_ms(started);
+        check_runtime_deadline(cancellation, started, deadline_ms, internal_timeout)?;
+        report.metrics.elapsed_ms = observed_elapsed_ms.min(hard_deadline_ms);
+        let serialized = serde_json::to_vec(&report);
+        check_runtime_deadline(cancellation, started, deadline_ms, internal_timeout)?;
+        let serialized_bytes = serialized.map_err(|_| ProviderError::ReportInvalid)?.len();
+        if serialized_bytes > contract::MAX_REPORT_BYTES {
+            return Err(ProviderError::ReportInvalid);
+        }
+        if serialized_bytes != report.metrics.report_bytes {
+            report.metrics.report_bytes = serialized_bytes;
+            continue;
+        }
+
+        let finalized_elapsed_ms = unbounded_elapsed_ms(started);
+        check_runtime_deadline(cancellation, started, deadline_ms, internal_timeout)?;
+        if decimal_digits(finalized_elapsed_ms) != decimal_digits(report.metrics.elapsed_ms) {
+            continue;
+        }
+        report.metrics.elapsed_ms = finalized_elapsed_ms;
+        let validation = report.validate();
+        check_runtime_deadline(cancellation, started, deadline_ms, internal_timeout)?;
+        validation.map_err(|_| ProviderError::ReportInvalid)?;
+        let measured_elapsed_ms = unbounded_elapsed_ms(started);
+        ensure_elapsed_within_deadline(measured_elapsed_ms, deadline_ms, internal_timeout)?;
+        if decimal_digits(measured_elapsed_ms) != decimal_digits(finalized_elapsed_ms) {
+            continue;
+        }
+        report.metrics.elapsed_ms = measured_elapsed_ms;
+        return Ok(ProviderRunMeasurement {
+            report,
+            elapsed_ms: measured_elapsed_ms,
+        });
+    }
+}
+
+fn decimal_digits(value: u64) -> u32 {
+    value.checked_ilog10().unwrap_or(0) + 1
+}
+
+fn stabilize_report_size(
+    report: &mut RepositoryContextProviderReport,
+    cancellation: &Arc<AtomicBool>,
+    started: Instant,
+    deadline_ms: u64,
+    internal_timeout: bool,
+) -> Result<(), ProviderError> {
+    report.metrics.report_bytes = 0;
+    loop {
+        let serialized = serde_json::to_vec(report);
+        check_runtime_deadline(cancellation, started, deadline_ms, internal_timeout)?;
+        let serialized_bytes = serialized.map_err(|_| ProviderError::ReportInvalid)?.len();
+        if serialized_bytes > contract::MAX_REPORT_BYTES {
+            return Err(ProviderError::ReportInvalid);
+        }
+        if serialized_bytes == report.metrics.report_bytes {
+            return Ok(());
+        }
+        report.metrics.report_bytes = serialized_bytes;
+    }
+}
+
 fn session_metrics(
     session: &ManagedLspSession,
     source_bytes: usize,
@@ -607,8 +894,11 @@ fn unavailable_resource_metrics(
 }
 
 fn elapsed_ms(started: Instant) -> u64 {
-    let elapsed = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
-    bounded_elapsed_ms(elapsed)
+    bounded_elapsed_ms(unbounded_elapsed_ms(started))
+}
+
+fn unbounded_elapsed_ms(started: Instant) -> u64 {
+    u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX)
 }
 
 fn bounded_elapsed_ms(elapsed_ms: u64) -> u64 {

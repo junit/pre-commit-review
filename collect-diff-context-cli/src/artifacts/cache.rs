@@ -11,7 +11,8 @@ use super::{
 use crate::impact_context::cache::file_facts::set_private_file_permissions;
 use crate::impact_context::cache::file_facts::{
     create_private_directory, is_symlink_or_reparse, open_regular_file_no_follow,
-    platform_default_cache_root, resolve_absolute_path, sync_directory, CacheLayout,
+    opened_regular_file_fingerprint, platform_default_cache_root, resolve_absolute_path,
+    sync_directory, CacheLayout,
 };
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -1035,31 +1036,28 @@ fn verify_binding(root: &Path, expected: &ArtifactFileBinding) -> Result<(), Art
 }
 
 fn read_bounded(path: &Path, maximum: usize) -> Result<Vec<u8>, ArtifactError> {
-    let file = open_regular_file_no_follow(path).map_err(|_| {
+    let mut file = open_regular_file_no_follow(path).map_err(|_| {
         error(
             "artifact-file-open",
             "artifact metadata file could not be opened safely",
         )
     })?;
     let maximum_u64 = maximum as u64;
-    if file
-        .metadata()
-        .map_err(|_| {
-            error(
-                "artifact-file-metadata",
-                "artifact metadata file could not be inspected",
-            )
-        })?
-        .len()
-        > maximum_u64
-    {
+    let before = opened_regular_file_fingerprint(&file).map_err(|_| {
+        error(
+            "artifact-file-metadata",
+            "artifact metadata file could not be inspected",
+        )
+    })?;
+    if before.size() > maximum_u64 {
         return Err(error(
             "artifact-file-size-limit",
             "artifact metadata file exceeds its byte limit",
         ));
     }
     let mut bytes = Vec::new();
-    file.take(maximum_u64.saturating_add(1))
+    (&mut file)
+        .take(maximum_u64.saturating_add(1))
         .read_to_end(&mut bytes)
         .map_err(|_| {
             error(
@@ -1071,6 +1069,18 @@ fn read_bounded(path: &Path, maximum: usize) -> Result<Vec<u8>, ArtifactError> {
         return Err(error(
             "artifact-file-size-limit",
             "artifact metadata file exceeds its byte limit",
+        ));
+    }
+    let after = opened_regular_file_fingerprint(&file).map_err(|_| {
+        error(
+            "artifact-file-metadata",
+            "artifact metadata file could not be inspected",
+        )
+    })?;
+    if before != after || bytes.len() as u64 != before.size() {
+        return Err(error(
+            "artifact-file-metadata",
+            "artifact metadata file changed while it was being read",
         ));
     }
     Ok(bytes)

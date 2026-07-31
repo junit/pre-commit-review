@@ -54,17 +54,12 @@ impl std::fmt::Display for RustAnalyzerHandshakeError {
 
 impl std::error::Error for RustAnalyzerHandshakeError {}
 
-#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+#[derive(Debug, Clone, Copy, Default, PartialEq, Eq)]
 pub(super) enum PositionEncodingPreference {
+    #[default]
     ProductionDefault,
     #[cfg(feature = "test-fixture")]
     Exclusive(PositionEncoding),
-}
-
-impl Default for PositionEncodingPreference {
-    fn default() -> Self {
-        Self::ProductionDefault
-    }
 }
 
 impl PositionEncodingPreference {

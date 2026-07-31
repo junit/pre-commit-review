@@ -17,7 +17,7 @@ Execute after Delivery 5A is accepted, from `feature/provider-artifact-distribut
 Create:
 
 - `third_party_artifacts/sources/rust-analyzer-2026-07-27.json`: strict `third_party_sources/v1` source lock.
-- `third_party_artifacts/baselines/rust-analyzer-2026.07.27-pcr.1.json`: reviewed canonical latency baseline.
+- `third_party_artifacts/baselines/rust-analyzer-2026.07.27-pcr.3.json`: reviewed canonical latency baseline, created only after four-platform collection.
 - `collect-diff-context-cli/src/artifacts/provider.rs`: provider-pack selection, generated profile/registry values, and manifest-update data.
 - `collect-diff-context-cli/src/provider_resources.rs`: platform process-tree RSS accounting and sampled threshold state.
 - `collect-diff-context-cli/schemas/third-party-source-lock.schema.json` and `third-party-artifact-baseline.schema.json` if not already created by 5A.
@@ -472,7 +472,7 @@ Run `rtk cargo +1.95.0 test --manifest-path collect-diff-context-cli/Cargo.toml 
 **Files:**
 
 - Create: `scripts/measure_provider_baseline.py`
-- Create: `third_party_artifacts/baselines/rust-analyzer-2026.07.27-pcr.1.json`
+- Create after four-platform collection: `third_party_artifacts/baselines/rust-analyzer-2026.07.27-pcr.3.json`
 - Modify: `third_party_artifacts/manifest.json`, `scripts/generate_provider_manifest_update.py`, `collect-diff-context-cli/tests/provider_baseline.rs`, `collect-diff-context-cli/src/artifacts/provider.rs`
 
 - [ ] **Step 1: Write failing baseline acceptance tests.**
@@ -483,13 +483,55 @@ Assert fewer than 20 samples, wrong runner class, mismatched pack/executable/sou
 
 Run one unmeasured warm-up followed by at least 20 isolated runs on the same hosted-runner class, exact pack, fixture, request, profile, and environment. Start timing immediately before the Delivery 4 run command spawns the server and stop after report validation and postflight; exclude pack download/extraction/provisioning. Record raw milliseconds, nearest-rank p95, observed peak RSS, pack/executable/source-lock/profile/fixture/request/runner digests, and toolchain identity in the strict baseline.
 
+For reviewed measurements, the expected runner digest comes from the
+feature-gated Cargo build step through the measurement process environment as
+`PCR_PROVIDER_BASELINE_EXPECTED_RUNNER_SHA256`. The runner contract and its
+child environment cannot declare or override that value. Task 8A prevents a
+contract from substituting a same-name executable, but a local operator can
+control local files and process environment; only Task 9's reviewed hosted
+workflow and attestation establish the runner digest's external provenance.
+
+Task 8A implements and tests this harness and records a current-platform real
+measurement. A non-hosted run must use `local-<platform>` and emit only a
+`provider_baseline_local_evidence` envelope with `baseline_eligible: false`; it
+cannot enter the reviewed baseline. Do not fabricate the other three platform
+measurements or label a local host as a GitHub hosted runner.
+Task 9's four-platform jobs run the same harness on their matching hosted
+runner classes. Task 8B then assembles the four reviewed measurements into the
+single canonical pcr.3 baseline and binds its digest into the manifest.
+
 - [ ] **Step 3: Bind baseline digest and acceptance calculation.**
 
 Compute `ceil(p95_ms * 5 / 4) + 250` in checked integer arithmetic and require the canonical baseline file SHA256 to equal `quality_baseline_sha256` in every active provider record. Baselines are reviewed data and cannot be generated or accepted inside the core release job.
 
-- [ ] **Step 4: Run baseline tests and commit reviewed data.**
+- [ ] **Step 4A: Run harness tests, record local evidence, and commit Task 8A.**
 
-Run `rtk cargo +1.95.0 test --manifest-path collect-diff-context-cli/Cargo.toml --locked --test provider_baseline`, `rtk python3 scripts/measure_provider_baseline.py --fixture single_crate --samples 20`, `rtk python3 scripts/generate_provider_manifest_update.py --fixture tests/fixtures/provider-release --baseline third_party_artifacts/baselines/rust-analyzer-2026.07.27-pcr.1.json`, `rtk python3 scripts/validate_schemas.py`, and `rtk git diff --check`. Expected: the real baseline digest matches the manifest update and threshold tests reject one millisecond above the computed limit. Then run `rtk git add scripts/measure_provider_baseline.py third_party_artifacts/baselines/rust-analyzer-2026.07.27-pcr.1.json third_party_artifacts/manifest.json scripts/generate_provider_manifest_update.py collect-diff-context-cli/tests/provider_baseline.rs collect-diff-context-cli/src/artifacts/provider.rs` and `rtk git commit -m "test(provider): establish pack-versioned latency baselines"`.
+Build the feature-gated `provider-baseline-sample-runner`, run its `contract`
+subcommand against an already-provisioned exact pcr.3 target, source lock, and
+`single_crate` fixture, then run
+`rtk python3 scripts/measure_provider_baseline.py --runner <absolute-runner-contract> --samples 20 --evidence-only-local`.
+Store the contract and resulting local-only evidence under `.scratch/`; never
+stage them. Run
+`rtk cargo +1.95.0 test --manifest-path collect-diff-context-cli/Cargo.toml --locked --test provider_baseline`,
+`rtk cargo +1.95.0 test --manifest-path collect-diff-context-cli/Cargo.toml --locked --features test-fixture --test provider_baseline_runner`,
+`rtk python3 scripts/validate_schemas.py`, and `rtk git diff --check`. Expected:
+the harness rejects runner/digest/timing drift, uses one unmeasured warm-up plus
+20 isolated samples, and local evidence is compact/no-newline and explicitly
+ineligible for the reviewed baseline. Commit only the Task 8A contract, runner,
+tests, synthetic fixtures, schema, generator policy, and plan changes; do not
+create or stage the formal baseline or modify the manifest.
+
+- [ ] **Step 4B: After Task 9, commit the reviewed four-platform baseline.**
+
+After Task 9 supplies all four reviewed hosted-runner measurements, assemble
+`third_party_artifacts/baselines/rust-analyzer-2026.07.27-pcr.3.json`, run
+`rtk python3 scripts/generate_provider_manifest_update.py --fixture tests/fixtures/provider-release --baseline third_party_artifacts/baselines/rust-analyzer-2026.07.27-pcr.3.json`,
+and bind the canonical baseline digest into all four active manifest records.
+Expected: the real baseline digest matches the manifest update and threshold
+tests reject one millisecond above the computed limit. Do not run the generator
+against a partial one-platform measurement. Commit with
+`rtk git add third_party_artifacts/baselines/rust-analyzer-2026.07.27-pcr.3.json third_party_artifacts/manifest.json scripts/generate_provider_manifest_update.py collect-diff-context-cli/tests/provider_baseline.rs collect-diff-context-cli/src/artifacts/provider.rs`
+followed by `rtk git commit -m "test(provider): establish pack-versioned latency baselines"`.
 
 ## Task 9: Add Four-Platform CI, Fuzz Tiers, And Release Trust Gates
 
@@ -502,11 +544,11 @@ Run `rtk cargo +1.95.0 test --manifest-path collect-diff-context-cli/Cargo.toml 
 
 - [ ] **Step 1: Write workflow fixture assertions.**
 
-Assert the PR matrix names `darwin-arm64`, `darwin-amd64`, `linux-amd64`, and `windows-amd64`, consumes an already-published exact pack selected by the candidate manifest, and checks version/capability/readiness/known edge/determinism/offline/cleanup/RSS. Assert scheduled/release jobs run the full fixture suite and p95 gates. Assert fuzz jobs use exactly 256 iterations per existing frame/messages target in PR, 15 minutes per target on schedule, and 30 minutes per target on provider/core release; generated hash-named corpus files are never committed.
+Assert the PR matrix names `darwin-arm64`, `darwin-amd64`, `linux-amd64`, and `windows-amd64`, consumes an already-published exact pack selected by the candidate manifest, and checks version/capability/readiness/known edge/determinism/offline/cleanup/RSS. Assert every hosted measurement builds the feature-gated `provider-baseline-sample-runner` with Cargo, hashes that exact build output in a separate step, injects the digest only into the measurement process environment, rejects any contract copy of the trust input, and records the same digest in the measurement evidence. Assert scheduled/release jobs run the full fixture suite and p95 gates. Assert fuzz jobs use exactly 256 iterations per existing frame/messages target in PR, 15 minutes per target on schedule, and 30 minutes per target on provider/core release; generated hash-named corpus files are never committed.
 
 - [ ] **Step 2: Implement pinned actions and Rust 1.95 locked jobs.**
 
-Pin checkout, toolchain, cache, upload, attestation, and release actions to reviewed commit SHAs. Replace moving `stable` and unlocked release builds with Rust `1.95.0` and `--locked`; record toolchain and lockfile digests in evidence. Keep `nightly` limited to cargo-fuzz and record its exact toolchain in fuzz evidence. Do not use `real-host-smoke.yml` as the provider matrix; it is a separate self-hosted host-readiness workflow.
+Pin checkout, toolchain, cache, upload, attestation, and release actions to reviewed commit SHAs. Replace moving `stable` and unlocked release builds with Rust `1.95.0` and `--locked`; record toolchain and lockfile digests in evidence. Build `provider-baseline-sample-runner` with `--locked --features test-fixture --bin provider-baseline-sample-runner`, hash `CARGO_BIN_EXE_provider-baseline-sample-runner` (or the workflow's exact Cargo build output), and expose the digest as a read-only step output used only to set `PCR_PROVIDER_BASELINE_EXPECTED_RUNNER_SHA256` on `measure_provider_baseline.py`. Attest the hosted measurement, runner digest, repository/workflow/ref/commit, runner image, and toolchain together; never treat a contract-declared digest as provenance. Keep `nightly` limited to cargo-fuzz and record its exact toolchain in fuzz evidence. Do not use `real-host-smoke.yml` as the provider matrix; it is a separate self-hosted host-readiness workflow.
 
 - [ ] **Step 3: Implement clean-consumer trust and publication order.**
 

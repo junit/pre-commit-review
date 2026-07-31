@@ -1,9 +1,11 @@
 #[allow(dead_code)]
 mod support;
 
+use collect_diff_context_cli::repository_context_provider::cli::read_json_once;
 use collect_diff_context_cli::repository_context_provider::contract::RustAnalyzerProjectModel;
 use collect_diff_context_cli::review_scope::ReviewSource;
 use std::error::Error;
+use std::fs;
 use std::process::{Command, Output};
 use support::GitRepo;
 
@@ -25,8 +27,6 @@ use collect_diff_context_cli::repository_context_provider::model::{
 };
 #[cfg(all(feature = "test-fixture", unix))]
 use sha2::{Digest, Sha256};
-#[cfg(all(feature = "test-fixture", unix))]
-use std::fs;
 #[cfg(all(feature = "test-fixture", unix))]
 use std::os::unix::fs::PermissionsExt;
 #[cfg(all(feature = "test-fixture", unix))]
@@ -238,6 +238,61 @@ fn model_rejects_scope_drift_without_stdout() -> Result<(), Box<dyn Error>> {
     Ok(())
 }
 
+#[test]
+fn json_input_reader_rejects_metadata_drift_during_one_bounded_read() -> Result<(), Box<dyn Error>>
+{
+    use serde_json::Value;
+    use std::io::{Seek, SeekFrom, Write};
+    use std::sync::atomic::{AtomicBool, Ordering};
+    use std::sync::{Arc, Barrier};
+
+    let temporary = tempfile::tempdir()?;
+    let path = temporary.path().join("large.json");
+    let mut bytes = Vec::with_capacity(900 * 1024);
+    bytes.extend_from_slice(b"{\"padding\":\"");
+    bytes.resize(900 * 1024 - 2, b'x');
+    bytes.extend_from_slice(b"\"}");
+    fs::write(&path, bytes)?;
+
+    let barrier = Arc::new(Barrier::new(2));
+    let mutator_barrier = Arc::clone(&barrier);
+    let stop = Arc::new(AtomicBool::new(false));
+    let mutator_stop = Arc::clone(&stop);
+    let mutated_path = path.clone();
+    let mutator = std::thread::spawn(move || {
+        let mut file = fs::OpenOptions::new()
+            .write(true)
+            .open(mutated_path)
+            .unwrap();
+        mutator_barrier.wait();
+        while !mutator_stop.load(Ordering::Acquire) {
+            file.seek(SeekFrom::End(-3)).unwrap();
+            file.write_all(b"x").unwrap();
+        }
+    });
+    barrier.wait();
+    let mut observed_error = None;
+    for _ in 0..64 {
+        match read_json_once::<Value>(&path, 1024 * 1024) {
+            Ok(_) => {}
+            Err(error) => {
+                observed_error = Some(error);
+                break;
+            }
+        }
+    }
+    stop.store(true, Ordering::Release);
+    mutator.join().unwrap();
+
+    assert_eq!(
+        observed_error
+            .expect("unstable JSON input was accepted")
+            .code,
+        "provider-cli-json-invalid"
+    );
+    Ok(())
+}
+
 #[cfg(all(feature = "test-fixture", unix))]
 struct CliRunFixture {
     repository: GitRepo,
@@ -415,6 +470,50 @@ impl CliRunFixture {
     fn run(&self) -> Result<Output, Box<dyn Error>> {
         run_provider_arguments(&self.repository, &self.arguments())
     }
+}
+
+#[cfg(all(feature = "test-fixture", unix))]
+#[test]
+fn run_rejects_a_symlinked_registry_input() -> Result<(), Box<dyn Error>> {
+    use std::os::unix::fs::symlink;
+
+    let fixture = CliRunFixture::new("graph", 2_000)?;
+    let registry_link = fixture.assets.path().join("registry-link.json");
+    symlink(&fixture.registry_path, &registry_link)?;
+    let mut arguments = fixture.arguments();
+    let registry_index = arguments
+        .iter()
+        .position(|argument| argument == "--registry")
+        .unwrap()
+        + 1;
+    arguments[registry_index] = registry_link.display().to_string();
+
+    assert_authorization_rejected(&fixture, arguments, "provider-cli-registry-invalid")
+}
+
+#[cfg(all(feature = "test-fixture", unix))]
+#[test]
+fn run_rejects_a_symlinked_provider_executable() -> Result<(), Box<dyn Error>> {
+    use std::os::unix::fs::symlink;
+
+    let fixture = CliRunFixture::new("graph", 2_000)?;
+    let executable_link = fixture.assets.path().join("fake-rust-analyzer-link");
+    symlink(&fixture.executable_path, &executable_link)?;
+    let mut registry: ProviderRegistry =
+        serde_json::from_slice(&fs::read(&fixture.registry_path)?)?;
+    registry.entries[0].executable_path = executable_link;
+    registry.validate()?;
+    let registry_bytes = serde_json::to_vec(&registry)?;
+    fs::write(&fixture.registry_path, &registry_bytes)?;
+    let mut arguments = fixture.arguments();
+    let digest_index = arguments
+        .iter()
+        .position(|argument| argument == "--expect-registry-sha256")
+        .unwrap()
+        + 1;
+    arguments[digest_index] = sha256(&registry_bytes);
+
+    assert_authorization_rejected(&fixture, arguments, "provider-cli-executable-invalid")
 }
 
 #[cfg(all(feature = "test-fixture", unix))]
