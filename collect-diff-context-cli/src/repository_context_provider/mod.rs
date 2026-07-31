@@ -12,10 +12,11 @@ use crate::repository_context_provider::contract::{
     AuthorizedProviderProfile, ProviderCompleteness, ProviderExecutionRecord, ProviderIsolation,
     ProviderLimitation, ProviderMetrics, ProviderNetworkIsolation, RepositoryContextProviderReport,
     RepositoryContextProviderRequest, RepositoryContextProviderStatus, RustAnalyzerProjectModel,
+    MAX_DEADLINE_MS,
 };
 use crate::repository_context_provider::rust_analyzer::{
-    initialize_and_gate, traverse_call_hierarchy, CallHierarchyTraversal, Readiness,
-    RustAnalyzerHandshakeError,
+    initialize_and_gate_with_position_encoding_preference, traverse_call_hierarchy,
+    CallHierarchyTraversal, PositionEncodingPreference, Readiness, RustAnalyzerHandshakeError,
 };
 use crate::repository_context_provider::session::{ManagedLspSession, SessionLaunch};
 use crate::repository_context_provider::snapshot::BoundCandidateSnapshot;
@@ -76,6 +77,18 @@ pub fn run_repository_context_provider(
 }
 
 #[cfg(feature = "test-fixture")]
+pub fn run_repository_context_provider_with_position_encoding_preference(
+    invocation: ProviderInvocation<'_>,
+    preferred_encoding: contract::PositionEncoding,
+) -> Result<RepositoryContextProviderReport, ProviderError> {
+    run_repository_context_provider_with_policy_and_position_encoding_preference(
+        invocation,
+        ProviderResourcePolicy::production(),
+        PositionEncodingPreference::preferred(preferred_encoding),
+    )
+}
+
+#[cfg(feature = "test-fixture")]
 pub fn run_repository_context_provider_with_resource_policy(
     invocation: ProviderInvocation<'_>,
     policy: ProviderResourcePolicy,
@@ -86,6 +99,18 @@ pub fn run_repository_context_provider_with_resource_policy(
 fn run_repository_context_provider_with_policy(
     invocation: ProviderInvocation<'_>,
     policy: ProviderResourcePolicy,
+) -> Result<RepositoryContextProviderReport, ProviderError> {
+    run_repository_context_provider_with_policy_and_position_encoding_preference(
+        invocation,
+        policy,
+        PositionEncodingPreference::default(),
+    )
+}
+
+fn run_repository_context_provider_with_policy_and_position_encoding_preference(
+    invocation: ProviderInvocation<'_>,
+    policy: ProviderResourcePolicy,
+    position_encoding_preference: PositionEncodingPreference,
 ) -> Result<RepositoryContextProviderReport, ProviderError> {
     let started = Instant::now();
     invocation
@@ -133,7 +158,7 @@ fn run_repository_context_provider_with_policy(
     let mut session = match ManagedLspSession::spawn_with_policy(launch, policy) {
         Ok(session) => session,
         Err(error) if error.code == "process-tree-rss-accounting-unavailable" => {
-            let elapsed_ms = started.elapsed().as_millis() as u64;
+            let elapsed_ms = elapsed_ms(started);
             let report = empty_report(
                 invocation.request,
                 invocation.profile,
@@ -153,25 +178,27 @@ fn run_repository_context_provider_with_policy(
         }
         Err(_) => return Err(ProviderError::Preflight),
     };
-    let handshake = match initialize_and_gate(
+    let handshake = match initialize_and_gate_with_position_encoding_preference(
         &mut session,
         &bound,
         invocation.model,
         &invocation.profile.target_triple,
+        position_encoding_preference,
     ) {
         Ok(handshake) => handshake,
         Err(error) => {
             session.terminate();
             check_cancelled(&invocation.cancellation)?;
             let status = status_for_handshake_error(&error);
+            let elapsed_ms = elapsed_ms(started);
             let report = empty_report(
                 invocation.request,
                 invocation.profile,
                 invocation.model,
                 status,
                 error.code,
-                session_metrics(&session, 0, started.elapsed().as_millis() as u64),
-                started.elapsed().as_millis() as u64,
+                session_metrics(&session, 0, elapsed_ms),
+                elapsed_ms,
             )?;
             postflight(
                 invocation.request,
@@ -205,14 +232,15 @@ fn run_repository_context_provider_with_policy(
                 return Err(ProviderError::Cancelled);
             }
             check_cancelled(&invocation.cancellation)?;
+            let elapsed_ms = elapsed_ms(started);
             let report = empty_report(
                 invocation.request,
                 invocation.profile,
                 invocation.model,
                 status_for_session_error(error.code),
                 error.code,
-                session_metrics(&session, 0, started.elapsed().as_millis() as u64),
-                started.elapsed().as_millis() as u64,
+                session_metrics(&session, 0, elapsed_ms),
+                elapsed_ms,
             )?;
             postflight(
                 invocation.request,
@@ -227,14 +255,15 @@ fn run_repository_context_provider_with_policy(
         if error.code == "provider-cancelled" {
             return Err(ProviderError::Cancelled);
         }
+        let elapsed_ms = elapsed_ms(started);
         let report = empty_report(
             invocation.request,
             invocation.profile,
             invocation.model,
             status_for_session_error(error.code),
             error.code,
-            session_metrics(&session, 0, started.elapsed().as_millis() as u64),
-            started.elapsed().as_millis() as u64,
+            session_metrics(&session, 0, elapsed_ms),
+            elapsed_ms,
         )?;
         postflight(
             invocation.request,
@@ -477,7 +506,7 @@ fn report_from_traversal(
     } else {
         ProviderCompleteness::Partial
     };
-    let elapsed_ms = started.elapsed().as_millis() as u64;
+    let elapsed_ms = elapsed_ms(started);
     let session_metrics = session.metrics();
     let mut report = RepositoryContextProviderReport {
         schema_version: 1,
@@ -574,5 +603,26 @@ fn unavailable_resource_metrics(
         process_tree_peak_rss_bytes: 0,
         process_tree_sample_interval_ms: policy.interval_ms(),
         process_tree_accounting: ResourceAccountingStatus::Unavailable,
+    }
+}
+
+fn elapsed_ms(started: Instant) -> u64 {
+    let elapsed = u64::try_from(started.elapsed().as_millis()).unwrap_or(u64::MAX);
+    bounded_elapsed_ms(elapsed)
+}
+
+fn bounded_elapsed_ms(elapsed_ms: u64) -> u64 {
+    elapsed_ms.min(MAX_DEADLINE_MS)
+}
+
+#[cfg(test)]
+mod tests {
+    use super::bounded_elapsed_ms;
+    use crate::repository_context_provider::contract::MAX_DEADLINE_MS;
+
+    #[test]
+    fn elapsed_metrics_are_bounded_for_safe_timeout_reports() {
+        assert_eq!(bounded_elapsed_ms(MAX_DEADLINE_MS + 5_000), MAX_DEADLINE_MS);
+        assert_eq!(bounded_elapsed_ms(123), 123);
     }
 }

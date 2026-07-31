@@ -130,7 +130,10 @@ impl ProviderFixture {
 fn bound_view_requires_the_exact_materialized_snapshot_and_model() {
     let fixture = ProviderFixture::new();
     let bound = fixture.bound();
-    assert_eq!(bound.root(), fixture.snapshot.path());
+    assert_eq!(
+        bound.root(),
+        fs::canonicalize(fixture.snapshot.path()).unwrap()
+    );
     assert_eq!(bound.model().digest, fixture.model.digest);
     assert_eq!(
         bound.reported_binding().snapshot_sha256,

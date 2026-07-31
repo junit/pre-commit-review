@@ -13,7 +13,10 @@ use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
+use tree_sitter::Parser;
 use url::Url;
+
+const MAX_SEMANTIC_SCAN_NODES: usize = 100_000;
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Readiness {
@@ -51,24 +54,81 @@ impl std::fmt::Display for RustAnalyzerHandshakeError {
 
 impl std::error::Error for RustAnalyzerHandshakeError {}
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub(super) enum PositionEncodingPreference {
+    ProductionDefault,
+    #[cfg(feature = "test-fixture")]
+    Exclusive(PositionEncoding),
+}
+
+impl Default for PositionEncodingPreference {
+    fn default() -> Self {
+        Self::ProductionDefault
+    }
+}
+
+impl PositionEncodingPreference {
+    #[cfg(feature = "test-fixture")]
+    pub(super) fn preferred(encoding: PositionEncoding) -> Self {
+        Self::Exclusive(encoding)
+    }
+
+    fn protocol_names(self) -> Vec<&'static str> {
+        let offered = match self {
+            Self::ProductionDefault => vec![PositionEncoding::Utf8, PositionEncoding::Utf16],
+            #[cfg(feature = "test-fixture")]
+            Self::Exclusive(encoding) => vec![encoding],
+        };
+        offered
+            .into_iter()
+            .map(|encoding| match encoding {
+                PositionEncoding::Utf8 => "utf-8",
+                PositionEncoding::Utf16 => "utf-16",
+            })
+            .collect()
+    }
+}
+
 pub fn initialize_and_gate(
     session: &mut ManagedLspSession,
     snapshot: &BoundCandidateSnapshot<'_>,
     model: &RustAnalyzerProjectModel,
     target_triple: &str,
 ) -> Result<RustAnalyzerHandshake, RustAnalyzerHandshakeError> {
+    initialize_and_gate_with_position_encoding_preference(
+        session,
+        snapshot,
+        model,
+        target_triple,
+        PositionEncodingPreference::default(),
+    )
+}
+
+pub(super) fn initialize_and_gate_with_position_encoding_preference(
+    session: &mut ManagedLspSession,
+    snapshot: &BoundCandidateSnapshot<'_>,
+    model: &RustAnalyzerProjectModel,
+    target_triple: &str,
+    position_encoding_preference: PositionEncodingPreference,
+) -> Result<RustAnalyzerHandshake, RustAnalyzerHandshakeError> {
     let root_uri = Url::from_directory_path(snapshot.root()).map_err(|_| {
         RustAnalyzerHandshakeError::new("provider-uri-invalid", "snapshot root URI is invalid")
     })?;
-    let linked_project = model.linked_project_value().map_err(|_| {
-        RustAnalyzerHandshakeError::new("provider-model-invalid", "linked project model invalid")
-    })?;
+    let linked_project = model
+        .linked_project_value_at(snapshot.root())
+        .map_err(|_| {
+            RustAnalyzerHandshakeError::new(
+                "provider-model-invalid",
+                "linked project model invalid",
+            )
+        })?;
+    let position_encodings = position_encoding_preference.protocol_names();
     let initialize_params = json!({
         "processId": Value::Null,
         "rootUri": root_uri.clone(),
         "workspaceFolders": [{"uri": root_uri, "name": "candidate"}],
         "capabilities": {
-            "general": {"positionEncodings": ["utf-8", "utf-16"]},
+            "general": {"positionEncodings": position_encodings},
             "workspace": {"configuration": true},
             "textDocument": {"callHierarchy": {"dynamicRegistration": false}},
             "experimental": {"serverStatusNotification": true}
@@ -128,6 +188,17 @@ pub fn initialize_and_gate(
         ));
     }
     let position_encoding = parse_position_encoding(capabilities.get("positionEncoding"))?;
+    let (readiness, limitations) = wait_for_quiescent(session)?;
+    Ok(RustAnalyzerHandshake {
+        position_encoding,
+        readiness,
+        limitations,
+    })
+}
+
+fn wait_for_quiescent(
+    session: &mut ManagedLspSession,
+) -> Result<(Readiness, Vec<String>), RustAnalyzerHandshakeError> {
     let mut limitations = Vec::new();
     let readiness = loop {
         match session.next_message().map_err(session_error)? {
@@ -178,11 +249,7 @@ pub fn initialize_and_gate(
             InboundMessage::Notification(_) | InboundMessage::Response(_) => {}
         }
     };
-    Ok(RustAnalyzerHandshake {
-        position_encoding,
-        readiness,
-        limitations,
-    })
+    Ok((readiness, limitations))
 }
 
 fn parse_position_encoding(
@@ -422,6 +489,7 @@ pub fn traverse_call_hierarchy(
             "call hierarchy traversal requires seeds and directions",
         ));
     }
+    let mut output = CallHierarchyTraversal::default();
     let mut cache = SourceCache::new(snapshot, limits)?;
     let mut opened = BTreeSet::new();
     for seed in seeds {
@@ -440,6 +508,12 @@ pub fn traverse_call_hierarchy(
                     "seed source is not valid UTF-8",
                 )
             })?;
+            add_source_semantic_limitations(
+                &mut output.limitations,
+                seed,
+                text,
+                MAX_SEMANTIC_SCAN_NODES,
+            );
             session
                 .send_notification(
                     "textDocument/didOpen",
@@ -456,7 +530,6 @@ pub fn traverse_call_hierarchy(
         }
     }
 
-    let mut output = CallHierarchyTraversal::default();
     let mut nodes = BTreeMap::<String, TraversalNode>::new();
     let mut seed_ids = BTreeSet::new();
     let mut frontiers = Vec::new();
@@ -484,7 +557,7 @@ pub fn traverse_call_hierarchy(
                 &mut output.limitations,
                 "seed-unresolved",
                 "call hierarchy seed could not be resolved",
-                Some(&seed.changed_symbol_id),
+                None,
                 Some(&seed.path),
             );
             continue;
@@ -504,7 +577,7 @@ pub fn traverse_call_hierarchy(
                         &mut output.limitations,
                         error.code,
                         "call hierarchy item was outside the candidate snapshot",
-                        Some(&seed.changed_symbol_id),
+                        None,
                         Some(&seed.path),
                     );
                     continue;
@@ -524,7 +597,7 @@ pub fn traverse_call_hierarchy(
                 &mut output.limitations,
                 "seed-unresolved",
                 "call hierarchy seed did not resolve to exactly one symbol",
-                Some(&seed.changed_symbol_id),
+                None,
                 Some(&seed.path),
             );
             continue;
@@ -534,7 +607,7 @@ pub fn traverse_call_hierarchy(
                 &mut output.limitations,
                 "seed-ambiguous",
                 "call hierarchy seed matched multiple symbols",
-                Some(&seed.changed_symbol_id),
+                None,
                 Some(&seed.path),
             );
             continue;
@@ -545,7 +618,7 @@ pub fn traverse_call_hierarchy(
                 &mut output.limitations,
                 "seed-symbol-duplicate",
                 "multiple seeds resolved to one provider symbol",
-                Some(&seed.changed_symbol_id),
+                None,
                 Some(&seed.path),
             );
             continue;
@@ -784,6 +857,120 @@ pub fn traverse_call_hierarchy(
     output.limitations.dedup();
     output.source_bytes = cache.consumed_bytes(limits.max_source_bytes);
     Ok(output)
+}
+
+fn add_source_semantic_limitations(
+    limitations: &mut Vec<ProviderLimitation>,
+    seed: &SeedSymbol,
+    source: &str,
+    maximum_nodes: usize,
+) {
+    let language: tree_sitter::Language = tree_sitter_rust::LANGUAGE.into();
+    let mut parser = Parser::new();
+    if parser.set_language(&language).is_err() {
+        add_limitation(
+            limitations,
+            "source-syntax-partial",
+            "seed source could not be configured for bounded syntax analysis",
+            None,
+            Some(&seed.path),
+        );
+        return;
+    }
+    let Some(tree) = parser.parse(source, None) else {
+        add_limitation(
+            limitations,
+            "source-syntax-partial",
+            "seed source could not be parsed for bounded syntax analysis",
+            None,
+            Some(&seed.path),
+        );
+        return;
+    };
+    let root = tree.root_node();
+    let Some(mut seed_node) =
+        root.descendant_for_byte_range(seed.query_byte, seed.query_byte.saturating_add(1))
+    else {
+        add_limitation(
+            limitations,
+            "source-syntax-partial",
+            "seed syntax could not be located in the bounded source",
+            None,
+            Some(&seed.path),
+        );
+        return;
+    };
+    while seed_node.kind() != "function_item" {
+        let Some(parent) = seed_node.parent() else {
+            add_limitation(
+                limitations,
+                "source-syntax-partial",
+                "seed function syntax could not be located in the bounded source",
+                None,
+                Some(&seed.path),
+            );
+            return;
+        };
+        seed_node = parent;
+    }
+
+    let mut saw_dynamic_type = false;
+    let mut saw_macro_invocation = false;
+    let mut observed_nodes = 0_usize;
+    let mut cursor = seed_node.walk();
+    loop {
+        observed_nodes = observed_nodes.saturating_add(1);
+        match cursor.node().kind() {
+            "dynamic_type" => saw_dynamic_type = true,
+            "macro_invocation" => saw_macro_invocation = true,
+            _ => {}
+        }
+        if observed_nodes >= maximum_nodes {
+            add_limitation(
+                limitations,
+                "semantic-scan-budget-exhausted",
+                "seed syntax exceeded the bounded semantic scan budget",
+                None,
+                Some(&seed.path),
+            );
+            break;
+        }
+        if cursor.goto_first_child() {
+            continue;
+        }
+        while !cursor.goto_next_sibling() {
+            if !cursor.goto_parent() {
+                if saw_dynamic_type {
+                    add_limitation(
+                        limitations,
+                        "dynamic-dispatch-partial",
+                        "dynamic dispatch prevents a complete call hierarchy",
+                        None,
+                        Some(&seed.path),
+                    );
+                }
+                if saw_macro_invocation {
+                    add_limitation(
+                        limitations,
+                        "macro-invocation-partial",
+                        "macro expansion prevents a complete call hierarchy",
+                        None,
+                        Some(&seed.path),
+                    );
+                }
+                if tree.root_node().has_error() {
+                    add_limitation(
+                        limitations,
+                        "source-syntax-partial",
+                        "seed source contains syntax errors",
+                        None,
+                        Some(&seed.path),
+                    );
+                }
+                return;
+            }
+        }
+    }
 }
 
 fn request_calls(

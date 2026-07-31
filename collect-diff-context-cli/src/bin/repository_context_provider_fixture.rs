@@ -9,7 +9,7 @@ use std::time::Duration;
 
 fn main() {
     let mut arguments = env::args().skip(1);
-    let scenario = arguments.next().unwrap_or_else(|| "lifecycle".to_string());
+    let scenario = arguments.next().unwrap_or_default();
     let log_path = arguments.next();
     if let Some(path) = log_path.as_deref() {
         let _ = std::fs::File::create(path);
@@ -31,7 +31,7 @@ fn main() {
         "unknown-encoding" => handshake(log_path.as_deref(), "ok", Some("utf-32")),
         "graph" => graph(log_path.as_deref()),
         "graph-warning" => graph_with_health(log_path.as_deref(), "warning"),
-        "--stdio" => fixture_stdio(log_path.as_deref()),
+        "" => fixture_stdio(log_path.as_deref()),
         "stderr-flood" => stderr_flood(),
         "hang" => hang(),
         "malformed-frame" => malformed_frame(),
@@ -456,6 +456,19 @@ fn validate_initialize_request(value: &Value) -> io::Result<()> {
         return Err(io::Error::new(
             io::ErrorKind::InvalidData,
             "linked projects must be single",
+        ));
+    }
+    let root_module = linked_projects[0]
+        .get("crates")
+        .and_then(Value::as_array)
+        .and_then(|crates| crates.first())
+        .and_then(|crate_value| crate_value.get("root_module"))
+        .and_then(Value::as_str)
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidData, "root module missing"))?;
+    if !std::path::Path::new(root_module).is_absolute() {
+        return Err(io::Error::new(
+            io::ErrorKind::InvalidData,
+            "inline linked-project root module must be absolute",
         ));
     }
     let options = value.get("initializationOptions").unwrap();

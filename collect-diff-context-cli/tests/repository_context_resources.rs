@@ -165,7 +165,7 @@ impl Fixture {
             configuration_sha256: digest('0'),
             target_triple: self.model.target_triple.clone(),
             toolchain_mode: "none".to_string(),
-            arguments: vec!["--stdio".to_string()],
+            arguments: Vec::new(),
             hardening: ProviderHardening {
                 cargo_build_scripts: false,
                 cargo_no_deps: true,

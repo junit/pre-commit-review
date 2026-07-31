@@ -1,10 +1,11 @@
 use super::{
     contract::{
         canonical_json, sha256_bytes, ArtifactError, ArtifactFileBinding, ArtifactManifest,
-        ArtifactPackRecord, ArtifactReceipt, PackFileRecord, PackFileRole, PackManifest,
-        ProbeResult, MAX_MANIFEST_BYTES,
+        ArtifactPackRecord, ArtifactReceipt, ArtifactRole, PackFileRecord, PackFileRole,
+        PackManifest, ProbeResult, MAX_MANIFEST_BYTES,
     },
     pack::VerifiedPack,
+    provider::{generate_provider_authorization, VerifiedProvider},
 };
 #[cfg(windows)]
 use crate::impact_context::cache::file_facts::set_private_file_permissions;
@@ -371,6 +372,7 @@ pub fn provision_from_cache(
     }
     installed_files.sort_by(|left, right| left.path.cmp(&right.path));
     license_files.sort_by(|left, right| left.path.cmp(&right.path));
+    provision_provider_authorization(&target_root, &relative_pack_root, record)?;
     let receipt = ArtifactReceipt {
         schema_version: 1,
         kind: "third_party_artifact_receipt".to_string(),
@@ -400,6 +402,56 @@ pub fn provision_from_cache(
         executable_path: pack_root.join(&record.executable.path),
         receipt_path,
     })
+}
+
+fn provision_provider_authorization(
+    target_root: &Path,
+    relative_pack_root: &Path,
+    record: &ArtifactPackRecord,
+) -> Result<(), ArtifactError> {
+    if record.artifact_role != ArtifactRole::RepositoryContextProvider {
+        return Ok(());
+    }
+    let executable_relative_path = relative_pack_root.join(&record.executable.path);
+    let generated = generate_provider_authorization(
+        target_root,
+        &VerifiedProvider {
+            staging_target: target_root.to_path_buf(),
+            provider_version: record.tool_version.clone(),
+            executable_relative_path,
+            executable_sha256: record.executable.sha256.clone(),
+            target_triple: record.target_triple.clone(),
+        },
+    )?;
+    let providers_root = target_root.join("runtime/providers");
+    ensure_private_path(&providers_root)?;
+    let profile_path = providers_root.join("rust-analyzer.profile.json");
+    let registry_path = providers_root.join("provider-registry.json");
+    write_new_file(&profile_path, &generated.profile_bytes, false, false)?;
+    if let Err(error) = write_new_file(&registry_path, &generated.registry_bytes, false, false) {
+        let _ = fs::remove_file(&profile_path);
+        return Err(error);
+    }
+    sync_directory(&providers_root).map_err(map_cache_io_error)?;
+    let profile_bytes = fs::read(&profile_path).map_err(|_| {
+        error(
+            "provider-authorization-read",
+            "target provider profile could not be read after writing",
+        )
+    })?;
+    let registry_bytes = fs::read(&registry_path).map_err(|_| {
+        error(
+            "provider-authorization-read",
+            "target provider registry could not be read after writing",
+        )
+    })?;
+    if profile_bytes != generated.profile_bytes || registry_bytes != generated.registry_bytes {
+        return Err(error(
+            "provider-authorization-write",
+            "target provider authorization bytes changed while being written",
+        ));
+    }
+    Ok(())
 }
 
 pub fn verify_target_receipt(

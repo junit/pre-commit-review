@@ -103,7 +103,7 @@ fn generated_authorization_uses_final_paths_and_delivery_four_bindings() {
     assert_eq!(generated.profile.executable_sha256, first.executable_sha256);
     assert_eq!(generated.profile.target_triple, first.target_triple);
     assert_eq!(generated.profile.toolchain_mode, "none");
-    assert_eq!(generated.profile.arguments, ["--stdio"]);
+    assert!(generated.profile.arguments.is_empty());
     assert_eq!(generated.profile.maximum_limits, ProviderLimits::maximum());
     assert_eq!(
         generated.profile.configuration_sha256,

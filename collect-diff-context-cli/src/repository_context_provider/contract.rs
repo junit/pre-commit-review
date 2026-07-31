@@ -557,7 +557,7 @@ impl AuthorizedProviderProfile {
             configuration_sha256: String::new(),
             target_triple,
             toolchain_mode: "none".to_string(),
-            arguments: vec!["--stdio".to_string()],
+            arguments: Vec::new(),
             hardening: ProviderHardening {
                 cargo_build_scripts: false,
                 cargo_no_deps: true,
@@ -613,10 +613,10 @@ impl AuthorizedProviderProfile {
                 "profile toolchain mode must equal none",
             );
         }
-        if self.arguments != ["--stdio"] {
+        if !self.arguments.is_empty() {
             return profile_error(
                 "provider-profile-arguments-invalid",
-                "profile arguments must be the fixed stdio argument list",
+                "profile arguments must use rust-analyzer's default stdio mode",
             );
         }
         let hardening = &self.hardening;
@@ -858,6 +858,26 @@ impl RustAnalyzerProjectModel {
     }
 
     pub fn linked_project_value(&self) -> Result<serde_json::Value, ProjectModelError> {
+        self.linked_project_value_with_root(None)
+    }
+
+    pub fn linked_project_value_at(
+        &self,
+        snapshot_root: &Path,
+    ) -> Result<serde_json::Value, ProjectModelError> {
+        if !snapshot_root.is_absolute() {
+            return project_model_error(
+                "provider-model-root-invalid",
+                "linked-project snapshot root must be absolute",
+            );
+        }
+        self.linked_project_value_with_root(Some(snapshot_root))
+    }
+
+    fn linked_project_value_with_root(
+        &self,
+        snapshot_root: Option<&Path>,
+    ) -> Result<serde_json::Value, ProjectModelError> {
         self.validate()?;
         let crate_indices = self
             .crates
@@ -867,6 +887,17 @@ impl RustAnalyzerProjectModel {
             .collect::<BTreeMap<_, _>>();
         let mut crates = Vec::with_capacity(self.crates.len());
         for item in &self.crates {
+            let absolute_root_module = snapshot_root
+                .map(|root| root.join(&item.root_module))
+                .map(|path| {
+                    path.into_os_string().into_string().map_err(|_| {
+                        ProjectModelError::new(
+                            "provider-model-root-invalid",
+                            "linked-project root module is not valid UTF-8",
+                        )
+                    })
+                })
+                .transpose()?;
             let mut dependencies = Vec::with_capacity(item.dependencies.len());
             for dependency in &item.dependencies {
                 let Some(crate_index) = crate_indices.get(dependency.crate_id.as_str()) else {
@@ -881,7 +912,7 @@ impl RustAnalyzerProjectModel {
                 }));
             }
             crates.push(serde_json::json!({
-                "root_module": item.root_module,
+                "root_module": absolute_root_module.as_deref().unwrap_or(&item.root_module),
                 "edition": item.edition,
                 "deps": dependencies,
                 "cfg": self.cfg,

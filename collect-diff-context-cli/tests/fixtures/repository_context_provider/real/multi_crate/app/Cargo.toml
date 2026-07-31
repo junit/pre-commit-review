@@ -1,0 +1,10 @@
+[package]
+name = "provider-real-app"
+version = "0.1.0"
+edition = "2021"
+
+[dependencies]
+provider-real-shared = { path = "../shared" }
+
+[lib]
+path = "src/lib.rs"

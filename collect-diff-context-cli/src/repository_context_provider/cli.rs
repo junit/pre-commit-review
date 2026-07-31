@@ -2,12 +2,16 @@ use crate::candidate::snapshot::{CandidateSnapshot, SnapshotLimits};
 use crate::repository_context_provider::cli_contract::{
     ProviderRegistry, ProviderRegistryEntry, ProviderRunRequest,
 };
+#[cfg(feature = "test-fixture")]
+use crate::repository_context_provider::contract::PositionEncoding;
 use crate::repository_context_provider::contract::{
     sha256_json, validate_absolute_path, validate_sha256, validate_text, AuthorizedProviderProfile,
     CandidateBinding, ProviderBinding, RepositoryContextProviderRequest, RustAnalyzerProjectModel,
     MAX_REPORT_BYTES,
 };
 use crate::repository_context_provider::model::{build_linked_project_model, ProviderModelLimits};
+#[cfg(feature = "test-fixture")]
+use crate::repository_context_provider::run_repository_context_provider_with_position_encoding_preference;
 use crate::repository_context_provider::snapshot::BoundCandidateSnapshot;
 use crate::repository_context_provider::{
     run_repository_context_provider, ProviderError, ProviderInvocation,
@@ -62,6 +66,8 @@ pub struct RunArgs {
     pub model_path: PathBuf,
     pub expected_model_sha256: String,
     pub request_path: PathBuf,
+    #[cfg(feature = "test-fixture")]
+    pub test_position_encoding: Option<PositionEncoding>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -185,6 +191,8 @@ fn parse_run(arguments: &[String]) -> Result<ParseOutcome, CliError> {
     let mut model_path = None;
     let mut expected_model_sha256 = None;
     let mut request_path = None;
+    #[cfg(feature = "test-fixture")]
+    let mut test_position_encoding = None;
     let mut seen = BTreeSet::new();
     let mut index = 0;
     while index < arguments.len() {
@@ -206,6 +214,10 @@ fn parse_run(arguments: &[String]) -> Result<ParseOutcome, CliError> {
                 expected_model_sha256 = Some(parse_sha256(value, flag)?);
             }
             "--request" => request_path = Some(parse_absolute_path(value)?),
+            #[cfg(feature = "test-fixture")]
+            "--test-position-encoding" => {
+                test_position_encoding = Some(parse_position_encoding(value)?);
+            }
             _ => return Err(argument_error("unsupported run argument")),
         }
         index += consumed;
@@ -222,7 +234,18 @@ fn parse_run(arguments: &[String]) -> Result<ParseOutcome, CliError> {
         expected_model_sha256: expected_model_sha256
             .ok_or_else(|| argument_error("--expect-model-sha256 is required"))?,
         request_path: request_path.ok_or_else(|| argument_error("--request is required"))?,
+        #[cfg(feature = "test-fixture")]
+        test_position_encoding,
     })))
+}
+
+#[cfg(feature = "test-fixture")]
+fn parse_position_encoding(value: &str) -> Result<PositionEncoding, CliError> {
+    match value {
+        "utf-8" => Ok(PositionEncoding::Utf8),
+        "utf-16" => Ok(PositionEncoding::Utf16),
+        _ => Err(argument_error("--test-position-encoding is invalid")),
+    }
 }
 
 fn help_requested(arguments: &[String]) -> bool {
@@ -542,14 +565,23 @@ fn run_provider(arguments: RunArgs) -> Result<String, RunFailure> {
             "owned provider request construction failed",
         )
     })?;
-    let report = run_repository_context_provider(ProviderInvocation {
+    let invocation = ProviderInvocation {
         snapshot: &snapshot,
         model: &model,
         request: &request,
         profile: &profile,
         cancellation: Arc::new(AtomicBool::new(false)),
-    })
+    };
+    #[cfg(feature = "test-fixture")]
+    let report = match arguments.test_position_encoding {
+        Some(encoding) => {
+            run_repository_context_provider_with_position_encoding_preference(invocation, encoding)
+        }
+        None => run_repository_context_provider(invocation),
+    }
     .map_err(provider_failure)?;
+    #[cfg(not(feature = "test-fixture"))]
+    let report = run_repository_context_provider(invocation).map_err(provider_failure)?;
     revalidate_scope_bounded(&scope, SCOPE_DEADLINE).map_err(|_| {
         authorization_failure(
             "provider-cli-scope-invalid",

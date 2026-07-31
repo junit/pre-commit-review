@@ -670,7 +670,8 @@ tree, the installer generates
 - final installed executable SHA256;
 - the existing canonical hardened configuration SHA256;
 - exact target triple and `toolchain_mode: none`;
-- arguments `--stdio`;
+- an empty argument list because the pinned executable uses stdio by default
+  and rejects `--stdio`;
 - the existing fixed hardening values and authorized maximum limits.
 
 The installer then generates
@@ -791,7 +792,8 @@ cover:
 - readiness/capability rejection, cancellation, timeout, process cleanup, and
   postflight executable/profile/snapshot drift;
 - two identical runs producing byte-identical normalized reports after
-  excluding documented elapsed metrics.
+  zeroing documented runtime-dependent elapsed time, sampled peak RSS, and
+  derived report-byte metrics.
 
 PR CI runs a short real-server smoke on all four platforms using the exact
 published pack selected by the candidate manifest. It verifies version,

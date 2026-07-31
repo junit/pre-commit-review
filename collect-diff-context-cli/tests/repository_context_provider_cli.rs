@@ -306,7 +306,7 @@ impl CliRunFixture {
             configuration_sha256: "0".repeat(64),
             target_triple: model.target_triple.clone(),
             toolchain_mode: "none".to_string(),
-            arguments: vec!["--stdio".to_string()],
+            arguments: Vec::new(),
             hardening: ProviderHardening {
                 cargo_build_scripts: false,
                 cargo_no_deps: true,

@@ -761,7 +761,7 @@ fn doctor_requires_provider_registry_to_bind_the_installed_executable() -> Resul
         configuration_sha256: "0".repeat(64),
         target_triple: "x86_64-unknown-linux-gnu".to_string(),
         toolchain_mode: "none".to_string(),
-        arguments: vec!["--stdio".to_string()],
+        arguments: Vec::new(),
         hardening: ProviderHardening {
             cargo_build_scripts: false,
             cargo_no_deps: true,

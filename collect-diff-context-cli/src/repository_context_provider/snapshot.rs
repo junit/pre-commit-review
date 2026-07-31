@@ -651,7 +651,7 @@ impl<'a> BoundCandidateSnapshot<'a> {
     }
 
     pub fn root(&self) -> &Path {
-        self.snapshot.path()
+        &self.canonical_root
     }
 
     pub fn model(&self) -> &RustAnalyzerProjectModel {

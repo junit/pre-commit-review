@@ -178,6 +178,7 @@ impl ManagedLspSession {
         command
             .env("CARGO_NET_OFFLINE", "true")
             .env("RUSTUP_AUTO_INSTALL", "0")
+            .env("RA_LOG", "off")
             .env("CARGO_TARGET_DIR", runtime.target())
             .env("RUST_ANALYZER cargo.buildScripts.enable", "false")
             .env("RUST_ANALYZER cargo.noDeps", "true")

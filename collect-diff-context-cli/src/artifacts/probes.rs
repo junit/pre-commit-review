@@ -33,6 +33,33 @@ const GITLEAKS_CAPABILITY_ARGUMENTS: &[&str] = &[
     "--report-path=-",
     "stdin",
 ];
+const GITLEAKS_VERSION_ARGUMENTS: &[&str] = &["version"];
+const RUST_ANALYZER_VERSION_ARGUMENTS: &[&str] = &["--version"];
+const RUST_ANALYZER_CAPABILITY_ARGUMENTS: &[&str] = &["--help"];
+const RUST_ANALYZER_HELP_PREFIX: &[u8] = b"rust-analyzerLSPserverfortheRustprogramminglanguage.";
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CapabilityExpectation {
+    CompactExact(&'static [u8]),
+    RustAnalyzerHelpV1,
+}
+
+impl CapabilityExpectation {
+    fn matches(self, stdout: &[u8]) -> bool {
+        let compact = compact_ascii_whitespace(stdout);
+        match self {
+            Self::CompactExact(expected) => compact == expected,
+            Self::RustAnalyzerHelpV1 => compact.starts_with(RUST_ANALYZER_HELP_PREFIX),
+        }
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct ProbePlan {
+    version_arguments: &'static [&'static str],
+    capability_arguments: &'static [&'static str],
+    capability_expectation: CapabilityExpectation,
+}
 
 struct ProbeOutput {
     status: ExitStatus,
@@ -57,17 +84,18 @@ pub fn run_installed_probes(
     record: &ArtifactPackRecord,
 ) -> Result<Vec<ProbeResult>, ArtifactError> {
     record.validate()?;
-    if record.artifact_role != ArtifactRole::Sanitizer
-        || record.version_probe != ProbeId::GitleaksVersionV1
-        || record.capability_probe != ProbeId::GitleaksStdinJsonV1
-    {
-        return Err(error(
-            "probe-policy",
-            "artifact probes are not implemented for the selected role",
-        ));
-    }
+    let plan = probe_plan(
+        record.artifact_role,
+        record.version_probe,
+        record.capability_probe,
+    )?;
 
-    let version = run_probe(executable, &record.executable.sha256, &["version"], record)?;
+    let version = run_probe(
+        executable,
+        &record.executable.sha256,
+        plan.version_arguments,
+        record,
+    )?;
     if !version.status.success()
         || trim_ascii(&version.stdout) != record.expected_version.as_bytes()
     {
@@ -80,10 +108,10 @@ pub fn run_installed_probes(
     let capability = run_probe(
         executable,
         &record.executable.sha256,
-        GITLEAKS_CAPABILITY_ARGUMENTS,
+        plan.capability_arguments,
         record,
     )?;
-    if !capability.status.success() || compact_ascii_whitespace(&capability.stdout) != b"[]" {
+    if !capability.status.success() || !plan.capability_expectation.matches(&capability.stdout) {
         return Err(error(
             "probe-capability-output",
             "artifact capability probe did not return the authorized result",
@@ -102,6 +130,35 @@ pub fn run_installed_probes(
             observed_version: None,
         },
     ])
+}
+
+fn probe_plan(
+    role: ArtifactRole,
+    version_probe: ProbeId,
+    capability_probe: ProbeId,
+) -> Result<ProbePlan, ArtifactError> {
+    match (role, version_probe, capability_probe) {
+        (ArtifactRole::Sanitizer, ProbeId::GitleaksVersionV1, ProbeId::GitleaksStdinJsonV1) => {
+            Ok(ProbePlan {
+                version_arguments: GITLEAKS_VERSION_ARGUMENTS,
+                capability_arguments: GITLEAKS_CAPABILITY_ARGUMENTS,
+                capability_expectation: CapabilityExpectation::CompactExact(b"[]"),
+            })
+        }
+        (
+            ArtifactRole::RepositoryContextProvider,
+            ProbeId::RustAnalyzerVersionV1,
+            ProbeId::RustAnalyzerStdioV1,
+        ) => Ok(ProbePlan {
+            version_arguments: RUST_ANALYZER_VERSION_ARGUMENTS,
+            capability_arguments: RUST_ANALYZER_CAPABILITY_ARGUMENTS,
+            capability_expectation: CapabilityExpectation::RustAnalyzerHelpV1,
+        }),
+        _ => Err(error(
+            "probe-policy",
+            "artifact probes are not implemented for the selected role",
+        )),
+    }
 }
 
 fn run_probe(
@@ -306,6 +363,22 @@ fn error(code: &'static str, message: &'static str) -> ArtifactError {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn rust_analyzer_probe_plan_uses_version_and_lsp_help_flags() {
+        let plan = probe_plan(
+            ArtifactRole::RepositoryContextProvider,
+            ProbeId::RustAnalyzerVersionV1,
+            ProbeId::RustAnalyzerStdioV1,
+        )
+        .unwrap();
+        assert_eq!(plan.version_arguments, ["--version"]);
+        assert_eq!(plan.capability_arguments, ["--help"]);
+        assert!(plan
+            .capability_expectation
+            .matches(b"rust-analyzer\n  LSP server for the Rust programming language.\n"));
+        assert!(!plan.capability_expectation.matches(b"unrelated help"));
+    }
 
     #[cfg(unix)]
     #[test]
