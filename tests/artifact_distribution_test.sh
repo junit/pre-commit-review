@@ -317,12 +317,163 @@ if 'artifact-rust-analyzer-2026.07.27-pcr.1' in workflow:
 if 'artifact-rust-analyzer-2026.07.27-pcr.2' in workflow:
     raise SystemExit('provider workflow still activates the historical pcr.2 tag')
 PY
+
+provider_workflow="$repo_root/.github/workflows/provider-real-server.yml"
+fuzz_workflow="$repo_root/.github/workflows/provider-fuzz-scheduled.yml"
+[ -r "$provider_workflow" ] || fail 'provider real-server workflow is missing'
+[ -r "$fuzz_workflow" ] || fail 'provider fuzz workflow is missing'
+python3 - "$provider_workflow" "$fuzz_workflow" "$repo_root/.github/workflows/lint.yml" "$repo_root/.github/workflows/release.yml" "$repo_root/.github/workflows/artifact-pack-release.yml" "$repo_root/tests/provider_real_server_test.sh" <<'PY'
+import re
+import sys
+from pathlib import Path
+
+provider, fuzz, lint, release, pack, provider_harness = map(Path, sys.argv[1:])
+provider_text = provider.read_text(encoding='utf-8')
+fuzz_text = fuzz.read_text(encoding='utf-8')
+release_text = release.read_text(encoding='utf-8')
+pack_text = pack.read_text(encoding='utf-8')
+provider_contract_text = provider_text + '\n' + provider_harness.read_text(encoding='utf-8')
+
+for platform in ('darwin-arm64', 'darwin-amd64', 'linux-amd64', 'windows-amd64'):
+    if platform not in provider_text:
+        raise SystemExit(f'provider workflow is missing platform matrix entry: {platform}')
+for needle in (
+    'artifact-rust-analyzer-2026.07.27-pcr.3',
+    'candidate-manifest.json',
+    'provider-baseline-sample-runner',
+    '--locked --features test-fixture --bin provider-baseline-sample-runner',
+    'CARGO_BIN_EXE_provider-baseline-sample-runner',
+    'PCR_PROVIDER_BASELINE_EXPECTED_RUNNER_SHA256',
+    'runner contract cannot declare its trusted digest',
+    'provider_baseline_local_evidence',
+    'measurement["runner_sha256"]',
+    'github-hosted-macos-15-intel',
+    'github-hosted-macos-14-arm64',
+    'github-hosted-ubuntu-24-x64',
+    'github-hosted-windows-2025-x64',
+    'provider baseline nearest-rank p95 differs',
+    'provider baseline p95 exceeds the reviewed threshold',
+):
+    if needle not in provider_contract_text:
+        raise SystemExit(f'provider workflow is missing trust/measurement assertion: {needle}')
+if re.search(
+    r'^\s*PCR_PROVIDER_BASELINE_EXPECTED_RUNNER_SHA256:\s*',
+    provider_text,
+    re.MULTILINE,
+):
+    raise SystemExit('provider workflow exposes the trusted runner digest to the whole harness')
+if '--baseline-runner-sha256' not in provider_text:
+    raise SystemExit('provider workflow does not pass the runner digest through the narrow harness input')
+for trigger in ('pull_request:', 'schedule:', 'workflow_call:'):
+    if trigger not in provider_text:
+        raise SystemExit(f'provider workflow is missing trigger: {trigger}')
+for needle in (
+    '-runs=256',
+    '-max_total_time=900',
+    '-max_total_time=1800',
+    'repository_context_frame',
+    'repository_context_messages',
+    "'corpus_sha256'",
+    "'duration_seconds'",
+    "'exit_status'",
+    'if: always()',
+    "['git', 'ls-files'",
+):
+    if needle not in fuzz_text:
+        raise SystemExit(f'fuzz workflow is missing bounded tier: {needle}')
+for trigger in ('pull_request:', 'schedule:', 'workflow_call:'):
+    if trigger not in fuzz_text:
+        raise SystemExit(f'fuzz workflow is missing trigger: {trigger}')
+
+for path in (lint, release, pack, provider, fuzz):
+    text = path.read_text(encoding='utf-8')
+    refs = re.findall(r'^\s*uses:\s+[^@\s]+@([^\s]+)\s*$', text, re.MULTILINE)
+    invalid = [ref for ref in refs if re.fullmatch(r'[0-9a-fA-F]{40}', ref) is None]
+    if invalid:
+        raise SystemExit(f'{path.name} contains non-commit-pinned action refs: {invalid!r}')
+
+for path in (lint, release, pack):
+    text = path.read_text(encoding='utf-8')
+    if 'stable' in text and 'cargo +stable' in text:
+        raise SystemExit(f'{path.name} still invokes moving Rust stable')
+    if 'cargo test' in text and '--locked' not in text:
+        raise SystemExit(f'{path.name} has an unlocked cargo test invocation')
+
+if 'uses: ./.github/workflows/provider-real-server.yml' not in release_text:
+    raise SystemExit('core release does not require the real-provider gate')
+if 'uses: ./.github/workflows/provider-fuzz-scheduled.yml' not in release_text:
+    raise SystemExit('core release does not require the release fuzz tier')
+if 'uses: ./.github/workflows/provider-real-server.yml' not in pack_text:
+    raise SystemExit('provider release does not require the real-provider gate')
+if 'uses: ./.github/workflows/provider-fuzz-scheduled.yml' not in pack_text:
+    raise SystemExit('provider release does not require the release fuzz tier')
+if 'Require GitHub release immutability' not in pack_text:
+    raise SystemExit('provider publication does not verify GitHub release immutability')
+for text, label in ((release_text, 'core'), (pack_text, 'provider')):
+    if 'repos/$GITHUB_REPOSITORY/immutable-releases' not in text:
+        raise SystemExit(f'{label} release uses the wrong immutable-releases API endpoint')
+    if "--jq '.enabled'" not in text:
+        raise SystemExit(f'{label} release does not check the immutable-releases enabled field')
+    if 'RELEASE_ADMIN_TOKEN' not in text:
+        raise SystemExit(f'{label} release does not use an administration-read token')
+
+def job_body(text, name):
+    marker = f'  {name}:\n'
+    try:
+        body = text.split(marker, 1)[1]
+    except IndexError as error:
+        raise SystemExit(f'workflow job is missing: {name}') from error
+    next_job = re.search(r'^  [a-z0-9-]+:\s*$', body, re.MULTILINE)
+    return body if next_job is None else body[:next_job.start()]
+
+publish_provider = job_body(pack_text, 'publish-rust-analyzer')
+verify_published_provider = job_body(pack_text, 'provider-real-release')
+if 'provider-real-release' in next(
+    (line for line in publish_provider.splitlines() if line.strip().startswith('needs:')),
+    '',
+):
+    raise SystemExit('provider publication depends on a consumer of the unpublished release')
+if 'needs: publish-rust-analyzer' not in verify_published_provider:
+    raise SystemExit('real-provider release verification does not run after publication')
+
+attest_core = job_body(release_text, 'attest-release-inputs')
+verify_attested_core = job_body(release_text, 'verify-attested-release-inputs')
+publish_core = job_body(release_text, 'create-release')
+if 'actions/attest-build-provenance@' not in attest_core:
+    raise SystemExit('core release attestation is not produced before clean verification')
+if 'needs: attest-release-inputs' not in verify_attested_core:
+    raise SystemExit('clean core verifier does not consume the attestation producer')
+if 'gh attestation verify' not in verify_attested_core:
+    raise SystemExit('clean core verifier does not verify generated attestations')
+publish_core_needs = next(
+    (line for line in publish_core.splitlines() if line.strip().startswith('needs:')),
+    '',
+)
+if 'verify-attested-release-inputs' not in publish_core_needs:
+    raise SystemExit('core publication does not depend on clean attestation verification')
+if 'actions/attest-build-provenance@' in publish_core:
+    raise SystemExit('core publisher still creates its own unverified attestation')
+PY
+grep -Fq 'Every pull request runs 256 iterations' "$repo_root/collect-diff-context-cli/fuzz/README.md" \
+  || fail 'fuzz README does not define the PR tier'
+grep -Fq 'scheduled CI runs 15 minutes' "$repo_root/collect-diff-context-cli/fuzz/README.md" \
+  || fail 'fuzz README does not define the scheduled tier'
+grep -Fq 'provider/core release CI runs 30 minutes' "$repo_root/collect-diff-context-cli/fuzz/README.md" \
+  || fail 'fuzz README does not define the release tier'
 grep -Fq 'Record release toolchain and lockfile evidence' "$repo_root/.github/workflows/release.yml" \
   || fail 'release workflow does not record toolchain evidence'
 grep -Fq 'Cargo.lock' "$repo_root/.github/workflows/release.yml" \
   || fail 'release workflow does not bind the Cargo lockfile'
 grep -Fq 'release-evidence.json' "$repo_root/.github/workflows/release.yml" \
   || fail 'release workflow does not publish release evidence'
+grep -Fq "provider_records = records_by_artifact.get('rust-analyzer', [])" \
+  "$repo_root/.github/workflows/release.yml" \
+  || fail 'core release does not preserve reviewed provider records'
+grep -Fq "artifact-rust-analyzer-2026.07.27-pcr.3" \
+  "$repo_root/.github/workflows/release.yml" \
+  || fail 'core release does not require the exact published provider pack'
+grep -Fq "quality_baseline_sha256" "$repo_root/.github/workflows/release.yml" \
+  || fail 'core release does not bind the reviewed provider baseline'
 if grep -Eq 'uses: [^@]+@(v[0-9]+|master|stable|main)$' \
   "$repo_root/.github/workflows/release.yml" "$repo_root/.github/workflows/artifact-pack-release.yml"; then
   fail 'release trust workflows use a moving action ref'

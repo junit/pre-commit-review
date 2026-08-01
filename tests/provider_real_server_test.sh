@@ -25,6 +25,43 @@ fail() {
   exit 1
 }
 
+baseline_runner=''
+baseline_runner_class=''
+baseline_evidence_output=''
+baseline_runner_sha256=''
+baseline_values=0
+while [ "$#" -gt 0 ]; do
+  [ "$#" -ge 2 ] || fail 'every hosted baseline option requires one value'
+  option="$1"
+  value="$2"
+  [ -n "$value" ] || fail 'hosted baseline option values cannot be empty'
+  case "$option" in
+    --baseline-runner)
+      [ -z "$baseline_runner" ] || fail 'hosted baseline runner is duplicated'
+      baseline_runner="$value"
+      ;;
+    --baseline-runner-class)
+      [ -z "$baseline_runner_class" ] || fail 'hosted baseline runner class is duplicated'
+      baseline_runner_class="$value"
+      ;;
+    --baseline-evidence-output)
+      [ -z "$baseline_evidence_output" ] || fail 'hosted baseline evidence output is duplicated'
+      baseline_evidence_output="$value"
+      ;;
+    --baseline-runner-sha256)
+      [ -z "$baseline_runner_sha256" ] || fail 'hosted baseline runner digest is duplicated'
+      baseline_runner_sha256="$value"
+      ;;
+    *) fail "unknown provider real-server option: $option" ;;
+  esac
+  baseline_values=$((baseline_values + 1))
+  shift 2
+done
+case "$baseline_values" in
+  0|4) ;;
+  *) fail 'hosted baseline inputs must be provided together' ;;
+esac
+
 require_tool() {
   command -v "$1" >/dev/null 2>&1 || fail "required tool is unavailable: $1"
 }
@@ -576,6 +613,96 @@ PY
 )
 cargo +1.95.0 test --manifest-path "$repo_root/collect-diff-context-cli/Cargo.toml" \
   --locked --test provider_install
+
+if [ "$baseline_values" -eq 4 ]; then
+  [ -f "$baseline_runner" ] && [ ! -L "$baseline_runner" ] || \
+    fail 'hosted baseline runner is not a regular file'
+  case "$baseline_evidence_output" in
+    /*|[A-Za-z]:[\\/]*) ;;
+    *) fail 'hosted baseline evidence output must be absolute' ;;
+  esac
+  [ ! -e "$baseline_evidence_output" ] || \
+    fail 'hosted baseline evidence output already exists'
+  baseline_output_parent="$(dirname -- "$baseline_evidence_output")"
+  [ -d "$baseline_output_parent" ] && [ ! -L "$baseline_output_parent" ] || \
+    fail 'hosted baseline evidence parent is not a regular directory'
+  python3 - "$baseline_runner_sha256" <<'PY' || \
+    fail 'hosted baseline runner digest is invalid'
+import re
+import sys
+
+if re.fullmatch(r'[0-9a-f]{64}', sys.argv[1]) is None:
+    raise SystemExit(1)
+PY
+
+  baseline_contract="$harness_root/provider-baseline-contract.json"
+  baseline_measurement="$harness_root/provider-baseline-measurement.json"
+  baseline_runner_native="$(native_path "$baseline_runner")"
+  baseline_contract_native="$(native_path "$baseline_contract")"
+  source_lock_native="$(native_path "$repo_root/third_party_artifacts/sources/rust-analyzer-2026-07-27.json")"
+  fixture_native="$(native_path "$repo_root/collect-diff-context-cli/tests/fixtures/repository_context_provider/real/single_crate")"
+  env -u PCR_PROVIDER_BASELINE_EXPECTED_RUNNER_SHA256 \
+    "$baseline_runner_native" contract \
+    --target-root "$target_native" \
+    --source-lock "$source_lock_native" \
+    --fixture-root "$fixture_native" \
+    --runner-class "$baseline_runner_class" \
+    --output "$baseline_contract_native"
+
+  python3 - "$baseline_contract" <<'PY' || \
+    fail 'runner contract cannot declare its trusted digest'
+import json
+import sys
+from pathlib import Path
+
+contract = json.loads(Path(sys.argv[1]).read_text(encoding='utf-8'))
+trusted = 'PCR_PROVIDER_BASELINE_EXPECTED_RUNNER_SHA256'.casefold()
+if any(name.casefold() == trusted for name in contract.get('environment', {})):
+    raise SystemExit(1)
+PY
+
+  PCR_PROVIDER_BASELINE_EXPECTED_RUNNER_SHA256="$baseline_runner_sha256" \
+    python3 "$repo_root/scripts/measure_provider_baseline.py" \
+    --runner "$baseline_contract" \
+    --samples 20 >"$baseline_measurement"
+
+  python3 - \
+    "$baseline_measurement" \
+    "$baseline_runner_sha256" \
+    "$platform" \
+    "$baseline_runner_class" <<'PY' || \
+    fail 'hosted baseline measurement differs from its reviewed inputs'
+import json
+import sys
+from pathlib import Path
+
+path = Path(sys.argv[1])
+raw = path.read_bytes()
+measurement = json.loads(raw)
+if json.dumps(measurement, separators=(',', ':'), sort_keys=True).encode() != raw:
+    raise SystemExit(1)
+if measurement.get('kind') == 'provider_baseline_local_evidence':
+    raise SystemExit(1)
+if measurement.get('runner_sha256') != sys.argv[2]:
+    raise SystemExit(1)
+if measurement.get('platform_id') != sys.argv[3]:
+    raise SystemExit(1)
+if measurement.get('runner_class') != sys.argv[4]:
+    raise SystemExit(1)
+if measurement.get('provisioning_included') is not False:
+    raise SystemExit(1)
+if len(measurement.get('samples_ms', [])) != 20:
+    raise SystemExit(1)
+if not isinstance(measurement.get('p95_ms'), int):
+    raise SystemExit(1)
+if not isinstance(measurement.get('peak_process_tree_rss_bytes'), int):
+    raise SystemExit(1)
+PY
+  snapshot_target "$target_native" "$harness_root/target-after-baseline.json"
+  cmp "$harness_root/target-before.json" "$harness_root/target-after-baseline.json" >/dev/null || \
+    fail 'baseline measurement changed target-local authorization bytes'
+  mv -- "$baseline_measurement" "$baseline_evidence_output"
+fi
 
 rm -rf -- "$target_root" "$cache_root" "$harness_root" "$sentinel_root"
 for removed in "$target_root" "$cache_root" "$harness_root" "$sentinel_root"; do

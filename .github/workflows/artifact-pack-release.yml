@@ -535,6 +535,20 @@ jobs:
       - name: Run provider composition rejection fixtures
         run: ./tests/provider_release_verifier_test.sh
 
+  provider-real-release:
+    name: Verify published rust-analyzer provider as a clean consumer
+    needs: publish-rust-analyzer
+    if: (inputs.artifact == 'rust-analyzer' && inputs.release_tag == 'artifact-rust-analyzer-2026.07.27-pcr.3') || github.ref == 'refs/tags/artifact-rust-analyzer-2026.07.27-pcr.3'
+    uses: ./.github/workflows/provider-real-server.yml
+    secrets: inherit
+
+  provider-fuzz-release:
+    name: Run rust-analyzer release fuzz tier
+    if: (inputs.artifact == 'rust-analyzer' && inputs.release_tag == 'artifact-rust-analyzer-2026.07.27-pcr.3') || github.ref == 'refs/tags/artifact-rust-analyzer-2026.07.27-pcr.3'
+    uses: ./.github/workflows/provider-fuzz-scheduled.yml
+    with:
+      release_gate: true
+
   publish:
     name: Publish immutable provider assets
     needs: verify
@@ -546,6 +560,19 @@ jobs:
         with:
           path: dist
 
+      - name: Require GitHub release immutability
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_ADMIN_TOKEN }}
+        run: |
+          set -euo pipefail
+          : "${GH_TOKEN:?RELEASE_ADMIN_TOKEN is required to verify release immutability}"
+          immutable="$(gh api "repos/$GITHUB_REPOSITORY/immutable-releases" --jq '.enabled')"
+          [ "$immutable" = 'true' ] || {
+            echo 'GitHub release immutability is not enabled' >&2
+            exit 1
+          }
+
       - name: Publish provider release assets
         uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65
         with:
@@ -556,7 +583,7 @@ jobs:
 
   publish-rust-analyzer:
     name: Publish immutable rust-analyzer assets
-    needs: verify-rust-analyzer
+    needs: [verify-rust-analyzer, provider-fuzz-release]
     if: (inputs.artifact == 'rust-analyzer' && inputs.release_tag == 'artifact-rust-analyzer-2026.07.27-pcr.3' && github.event_name == 'workflow_dispatch') || github.ref == 'refs/tags/artifact-rust-analyzer-2026.07.27-pcr.3'
     runs-on: ubuntu-latest
     steps:
@@ -565,6 +592,19 @@ jobs:
         with:
           path: dist
           merge-multiple: true
+
+      - name: Require GitHub release immutability
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_ADMIN_TOKEN }}
+        run: |
+          set -euo pipefail
+          : "${GH_TOKEN:?RELEASE_ADMIN_TOKEN is required to verify release immutability}"
+          immutable="$(gh api "repos/$GITHUB_REPOSITORY/immutable-releases" --jq '.enabled')"
+          [ "$immutable" = 'true' ] || {
+            echo 'GitHub release immutability is not enabled' >&2
+            exit 1
+          }
 
       - name: Publish provider pack subjects and evidence
         uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65

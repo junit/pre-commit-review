@@ -1,0 +1,204 @@
+name: Provider Fuzz Tiers
+
+on:
+  pull_request:
+  schedule:
+    - cron: '41 4 * * 3'
+  workflow_dispatch:
+    inputs:
+      release_gate:
+        description: Run the 30-minute provider/core release tier
+        required: false
+        default: false
+        type: boolean
+  workflow_call:
+    inputs:
+      release_gate:
+        description: Run the 30-minute provider/core release tier
+        required: false
+        default: false
+        type: boolean
+
+permissions:
+  contents: read
+
+env:
+  FUZZ_TOOLCHAIN: nightly-2026-07-29
+
+jobs:
+  pull-request-smoke:
+    name: Provider fuzz PR (${{ matrix.target }})
+    if: github.event_name == 'pull_request'
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [repository_context_frame, repository_context_messages]
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - name: Install exact fuzz toolchain
+        uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c
+        with:
+          toolchain: nightly-2026-07-29
+      - name: Install cargo-fuzz
+        run: cargo +"${FUZZ_TOOLCHAIN}" install --locked --version 0.13.2 cargo-fuzz
+      - name: Run 256 provider fuzz iterations
+        run: cargo +"${FUZZ_TOOLCHAIN}" fuzz run ${{ matrix.target }} --fuzz-dir collect-diff-context-cli/fuzz -- -runs=256 -timeout=5
+
+  scheduled:
+    name: Provider fuzz scheduled (${{ matrix.target }})
+    if: (github.event_name == 'schedule' || github.event_name == 'workflow_dispatch') && inputs.release_gate != true
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [repository_context_frame, repository_context_messages]
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - name: Install exact fuzz toolchain
+        uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c
+        with:
+          toolchain: nightly-2026-07-29
+      - name: Install cargo-fuzz
+        run: cargo +"${FUZZ_TOOLCHAIN}" install --locked --version 0.13.2 cargo-fuzz
+      - name: Run the 15-minute scheduled tier
+        shell: bash
+        env:
+          FUZZ_TARGET: ${{ matrix.target }}
+          FUZZ_DURATION_SECONDS: '900'
+        run: |
+          set -euo pipefail
+          mkdir -p fuzz-evidence
+          start="$SECONDS"
+          set +e
+          cargo +"${FUZZ_TOOLCHAIN}" fuzz run "$FUZZ_TARGET" \
+            --fuzz-dir collect-diff-context-cli/fuzz -- \
+            -max_total_time=900 -timeout=5
+          status="$?"
+          set -e
+          elapsed=$((SECONDS - start))
+          rustc +"${FUZZ_TOOLCHAIN}" -Vv >"fuzz-evidence/${FUZZ_TARGET}-toolchain.txt"
+          python3 - "$FUZZ_TARGET" "$FUZZ_DURATION_SECONDS" "$elapsed" "$status" <<'PY'
+          import hashlib
+          import json
+          import subprocess
+          import sys
+          from pathlib import Path
+
+          target, configured, elapsed, status = sys.argv[1:]
+          root = Path('collect-diff-context-cli/fuzz')
+          corpus_root = root / 'corpus' / target
+          tracked = subprocess.run(
+              ['git', 'ls-files', '-z', '--', str(corpus_root)],
+              check=True, stdout=subprocess.PIPE,
+          ).stdout.split(b'\0')
+          digest = hashlib.sha256()
+          for raw_path in sorted(path for path in tracked if path):
+              path = Path(raw_path.decode())
+              relative = path.relative_to(corpus_root).as_posix().encode()
+              content = path.read_bytes()
+              digest.update(len(relative).to_bytes(8, 'big'))
+              digest.update(relative)
+              digest.update(len(content).to_bytes(8, 'big'))
+              digest.update(content)
+          evidence = {
+              'schema_version': 1,
+              'kind': 'provider_fuzz_evidence',
+              'target': target,
+              'toolchain': 'nightly-2026-07-29',
+              'cargo_fuzz_version': '0.13.2',
+              'fuzz_lock_sha256': hashlib.sha256((root / 'Cargo.lock').read_bytes()).hexdigest(),
+              'corpus_sha256': digest.hexdigest(),
+              'configured_duration_seconds': int(configured),
+              'duration_seconds': int(elapsed),
+              'exit_status': int(status),
+          }
+          output = Path('fuzz-evidence') / f'{target}.json'
+          output.write_bytes(json.dumps(evidence, separators=(',', ':'), sort_keys=True).encode())
+          PY
+          exit "$status"
+      - if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: provider-fuzz-scheduled-${{ matrix.target }}
+          path: fuzz-evidence/*
+          if-no-files-found: error
+
+  release:
+    name: Provider fuzz release (${{ matrix.target }})
+    if: inputs.release_gate == true
+    runs-on: ubuntu-24.04
+    strategy:
+      fail-fast: false
+      matrix:
+        target: [repository_context_frame, repository_context_messages]
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - name: Install exact fuzz toolchain
+        uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c
+        with:
+          toolchain: nightly-2026-07-29
+      - name: Install cargo-fuzz
+        run: cargo +"${FUZZ_TOOLCHAIN}" install --locked --version 0.13.2 cargo-fuzz
+      - name: Run the 30-minute provider/core release tier
+        shell: bash
+        env:
+          FUZZ_TARGET: ${{ matrix.target }}
+          FUZZ_DURATION_SECONDS: '1800'
+        run: |
+          set -euo pipefail
+          mkdir -p fuzz-evidence
+          start="$SECONDS"
+          set +e
+          cargo +"${FUZZ_TOOLCHAIN}" fuzz run "$FUZZ_TARGET" \
+            --fuzz-dir collect-diff-context-cli/fuzz -- \
+            -max_total_time=1800 -timeout=5
+          status="$?"
+          set -e
+          elapsed=$((SECONDS - start))
+          rustc +"${FUZZ_TOOLCHAIN}" -Vv >"fuzz-evidence/${FUZZ_TARGET}-toolchain.txt"
+          python3 - "$FUZZ_TARGET" "$FUZZ_DURATION_SECONDS" "$elapsed" "$status" <<'PY'
+          import hashlib
+          import json
+          import subprocess
+          import sys
+          from pathlib import Path
+
+          target, configured, elapsed, status = sys.argv[1:]
+          root = Path('collect-diff-context-cli/fuzz')
+          corpus_root = root / 'corpus' / target
+          tracked = subprocess.run(
+              ['git', 'ls-files', '-z', '--', str(corpus_root)],
+              check=True, stdout=subprocess.PIPE,
+          ).stdout.split(b'\0')
+          digest = hashlib.sha256()
+          for raw_path in sorted(path for path in tracked if path):
+              path = Path(raw_path.decode())
+              relative = path.relative_to(corpus_root).as_posix().encode()
+              content = path.read_bytes()
+              digest.update(len(relative).to_bytes(8, 'big'))
+              digest.update(relative)
+              digest.update(len(content).to_bytes(8, 'big'))
+              digest.update(content)
+          evidence = {
+              'schema_version': 1,
+              'kind': 'provider_fuzz_evidence',
+              'target': target,
+              'toolchain': 'nightly-2026-07-29',
+              'cargo_fuzz_version': '0.13.2',
+              'fuzz_lock_sha256': hashlib.sha256((root / 'Cargo.lock').read_bytes()).hexdigest(),
+              'corpus_sha256': digest.hexdigest(),
+              'configured_duration_seconds': int(configured),
+              'duration_seconds': int(elapsed),
+              'exit_status': int(status),
+          }
+          output = Path('fuzz-evidence') / f'{target}.json'
+          output.write_bytes(json.dumps(evidence, separators=(',', ':'), sort_keys=True).encode())
+          PY
+          exit "$status"
+      - if: always()
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: provider-fuzz-release-${{ matrix.target }}
+          path: fuzz-evidence/*
+          if-no-files-found: error

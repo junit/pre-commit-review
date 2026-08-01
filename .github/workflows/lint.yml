@@ -29,16 +29,16 @@ jobs:
   shellcheck:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
       - name: Run shellcheck
-        uses: ludeeus/action-shellcheck@2.0.0
+        uses: ludeeus/action-shellcheck@00cae500b08a931fb5698e11e79bfbd38e612a38
         env:
           SHELLCHECK_OPTS: -s bash
         with:
           severity: warning
           additional_paths: scripts install.sh tests evals
       - name: Set up Go for actionlint
-        uses: actions/setup-go@v5
+        uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5
         with:
           go-version: '1.25.x'
       - name: Validate GitHub Actions workflows
@@ -47,13 +47,14 @@ jobs:
   rust-checks:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
       - name: Set up Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c
         with:
+          toolchain: 1.95.0
           components: rustfmt, clippy
       - name: Cache cargo registry
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830
         with:
           path: |
             ~/.cargo/registry/index/
@@ -62,62 +63,61 @@ jobs:
             collect-diff-context-cli/target/
           key: ${{ runner.os }}-cargo-${{ hashFiles('collect-diff-context-cli/Cargo.lock', 'collect-diff-context-cli/fuzz/Cargo.lock') }}
       - name: Check formatting
-        run: cargo fmt --all -- --check
+        run: cargo +1.95.0 fmt --all -- --check
         working-directory: collect-diff-context-cli
       - name: Check fuzz target formatting
-        run: cargo fmt --all --manifest-path fuzz/Cargo.toml -- --check
+        run: cargo +1.95.0 fmt --all --manifest-path fuzz/Cargo.toml -- --check
         working-directory: collect-diff-context-cli
       - name: Run default-feature clippy
-        run: cargo clippy --all-targets -- -D warnings
+        run: cargo +1.95.0 clippy --locked --all-targets -- -D warnings
         working-directory: collect-diff-context-cli
       - name: Run all-feature clippy
-        run: cargo clippy --all-targets --all-features -- -D warnings
+        run: cargo +1.95.0 clippy --locked --all-targets --all-features -- -D warnings
         working-directory: collect-diff-context-cli
       - name: Run unit tests
-        run: cargo test
+        run: cargo +1.95.0 test --locked
         working-directory: collect-diff-context-cli
       - name: Run adversarial structural-context tests
-        run: cargo test --test impact_context_rust adversarial
+        run: cargo +1.95.0 test --locked --test impact_context_rust adversarial
         working-directory: collect-diff-context-cli
       - name: Compile release binary
-        run: cargo build --release
+        run: cargo +1.95.0 build --release --locked
         working-directory: collect-diff-context-cli
       - name: Run fast impact-context release gates
-        run: cargo test --release --test impact_context_performance -- --nocapture
+        run: cargo +1.95.0 test --release --locked --test impact_context_performance -- --nocapture
         working-directory: collect-diff-context-cli
       - name: Run repository-index release gates
-        run: cargo test --release --test repository_index_integration -- --nocapture
+        run: cargo +1.95.0 test --release --locked --test repository_index_integration -- --nocapture
         working-directory: collect-diff-context-cli
       - name: Smoke-test repository-index benchmark stages
-        run: cargo bench --bench repository_index -- --test
+        run: cargo +1.95.0 bench --locked --bench repository_index -- --test
         env:
           PRE_COMMIT_REVIEW_SQLITE_SCALE_GATE: '1'
         working-directory: collect-diff-context-cli
       - name: Set up nightly fuzz toolchain
-        run: rustup toolchain install nightly --profile minimal
+        run: rustup toolchain install nightly-2026-07-29 --profile minimal
       - name: Install cargo-fuzz
-        run: cargo install --locked --version 0.13.2 cargo-fuzz
+        run: cargo +nightly-2026-07-29 install --locked --version 0.13.2 cargo-fuzz
       - name: Compile structural-context fuzz targets
-        run: cargo +nightly fuzz build --fuzz-dir collect-diff-context-cli/fuzz
+        run: cargo +nightly-2026-07-29 fuzz build --fuzz-dir collect-diff-context-cli/fuzz
       - name: Run bounded structural-context fuzz smoke
         run: |
-          cargo +nightly fuzz run tree_sitter_rust --fuzz-dir collect-diff-context-cli/fuzz -- -max_total_time=10 -timeout=5
-          cargo +nightly fuzz run impact_contract --fuzz-dir collect-diff-context-cli/fuzz -- -max_total_time=10 -timeout=5
-          cargo +nightly fuzz run file_facts_decode --fuzz-dir collect-diff-context-cli/fuzz -- -runs=256 -timeout=5
-          cargo +nightly fuzz run repository_graph_row --fuzz-dir collect-diff-context-cli/fuzz -- -runs=256 -timeout=5
-          cargo +nightly fuzz run repository_overlay --fuzz-dir collect-diff-context-cli/fuzz -- -runs=256 -timeout=5
-          cargo +nightly fuzz run repository_traversal --fuzz-dir collect-diff-context-cli/fuzz -- -runs=256 -timeout=5
-          cargo +nightly fuzz run repository_context_frame --fuzz-dir collect-diff-context-cli/fuzz -- -runs=256 -timeout=5
-          cargo +nightly fuzz run repository_context_messages --fuzz-dir collect-diff-context-cli/fuzz -- -runs=256 -timeout=5
+          cargo +nightly-2026-07-29 fuzz run tree_sitter_rust --fuzz-dir collect-diff-context-cli/fuzz -- -max_total_time=10 -timeout=5
+          cargo +nightly-2026-07-29 fuzz run impact_contract --fuzz-dir collect-diff-context-cli/fuzz -- -max_total_time=10 -timeout=5
+          cargo +nightly-2026-07-29 fuzz run file_facts_decode --fuzz-dir collect-diff-context-cli/fuzz -- -runs=256 -timeout=5
+          cargo +nightly-2026-07-29 fuzz run repository_graph_row --fuzz-dir collect-diff-context-cli/fuzz -- -runs=256 -timeout=5
+          cargo +nightly-2026-07-29 fuzz run repository_overlay --fuzz-dir collect-diff-context-cli/fuzz -- -runs=256 -timeout=5
+          cargo +nightly-2026-07-29 fuzz run repository_traversal --fuzz-dir collect-diff-context-cli/fuzz -- -runs=256 -timeout=5
 
   rust-1-95:
     name: Rust 1.95 locked provider gates
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
       - name: Set up Rust 1.95
-        uses: dtolnay/rust-toolchain@1.95.0
+        uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c
         with:
+          toolchain: 1.95.0
           components: rustfmt, clippy
       - name: Check all targets and features
         run: cargo +1.95.0 check --all-targets --all-features --locked
@@ -160,13 +160,14 @@ jobs:
             repository_executable: repository-context-cli.exe
             provider_executable: repository-context-provider-cli.exe
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
       - name: Set up Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c
         with:
+          toolchain: 1.95.0
           targets: ${{ matrix.target }}
       - name: Cache cargo registry
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830
         with:
           path: |
             ~/.cargo/registry/index/
@@ -175,7 +176,7 @@ jobs:
             collect-diff-context-cli/target/
           key: ${{ runner.os }}-static-analysis-${{ matrix.target }}-${{ hashFiles('collect-diff-context-cli/Cargo.lock') }}
       - name: Build analysis CLIs
-        run: cargo build --release --target ${{ matrix.target }} --bin static-analysis-cli --bin repository-context-cli --bin repository-context-provider-cli
+        run: cargo +1.95.0 build --release --locked --target ${{ matrix.target }} --bin static-analysis-cli --bin repository-context-cli --bin repository-context-provider-cli
         working-directory: collect-diff-context-cli
       - name: Smoke-test analysis CLIs
         shell: bash
@@ -190,18 +191,20 @@ jobs:
           "$repository_binary" index --help
           "$provider_binary" --help
       - name: Run focused Rust contracts
-        run: cargo test --target ${{ matrix.target }} --features test-fixture --test candidate_content --test impact_context_contracts --test repository_index_contracts --test static_evidence --test static_execution --test static_execution_modes --test static_execution_platform --test static_orchestration --test repository_context_provider_contracts --test repository_context_provider_cli_contracts --test repository_context_provider_model --test repository_context_provider_cli --test repository_context_provider_snapshot --test repository_context_json_rpc --test repository_context_session --test repository_context_rust_analyzer --test repository_context_provider_platform
+        run: cargo +1.95.0 test --locked --target ${{ matrix.target }} --features test-fixture --test candidate_content --test impact_context_contracts --test repository_index_contracts --test static_evidence --test static_execution --test static_execution_modes --test static_execution_platform --test static_orchestration --test repository_context_provider_contracts --test repository_context_provider_cli_contracts --test repository_context_provider_model --test repository_context_provider_cli --test repository_context_provider_snapshot --test repository_context_json_rpc --test repository_context_session --test repository_context_rust_analyzer --test repository_context_provider_platform
         working-directory: collect-diff-context-cli
 
   integration-tests:
     runs-on: ubuntu-latest
     needs: [rust-checks, static-analysis-platforms]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
       - name: Set up Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c
+        with:
+          toolchain: 1.95.0
       - name: Cache cargo registry
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830
         with:
           path: |
             ~/.cargo/registry/index/
@@ -215,7 +218,7 @@ jobs:
         run: ./install.sh --doctor
       - name: Build current helper source
         run: |
-          cargo build --release --manifest-path collect-diff-context-cli/Cargo.toml
+          cargo +1.95.0 build --release --locked --manifest-path collect-diff-context-cli/Cargo.toml
           echo "PRE_COMMIT_REVIEW_RUST_BIN=$GITHUB_WORKSPACE/collect-diff-context-cli/target/release/collect-diff-context-cli" >> "$GITHUB_ENV"
       - name: Run collect_diff_context_test.sh
         run: ./tests/collect_diff_context_test.sh

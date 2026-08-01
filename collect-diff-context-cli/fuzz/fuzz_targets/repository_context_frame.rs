@@ -6,6 +6,7 @@ use collect_diff_context_cli::repository_context_provider::json_rpc::{
 use libfuzzer_sys::fuzz_target;
 
 const MAX_INPUT_BYTES: usize = 64 * 1024;
+const MAX_CHUNK_BYTES: usize = 31;
 
 fuzz_target!(|data: &[u8]| {
     if data.len() > MAX_INPUT_BYTES {
@@ -26,8 +27,9 @@ fuzz_target!(|data: &[u8]| {
 
     let mut offset = 0;
     while offset < data.len() {
-        let step = usize::from(data[offset] % 31).saturating_add(1);
+        let step = usize::from(data[offset] % MAX_CHUNK_BYTES as u8).saturating_add(1);
         let end = offset.saturating_add(step).min(data.len());
+        assert!(end > offset);
         let result = decoder.push(&data[offset..end]);
         assert!(decoder.buffered_bytes() <= max_buffer_bytes);
         let bodies = match result {
@@ -39,5 +41,6 @@ fuzz_target!(|data: &[u8]| {
         }
         offset = end;
     }
+    assert!(decoder.buffered_bytes() <= max_buffer_bytes);
     let _ = decoder.finish();
 });

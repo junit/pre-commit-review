@@ -284,6 +284,7 @@ jobs:
             sha256sum "$archive" > "$archive.sha256"
           done
           python3 - dist/manifest.json <<'PY'
+          import hashlib
           import json
           from pathlib import Path
           import sys
@@ -291,10 +292,42 @@ jobs:
           manifest = json.loads(Path(sys.argv[1]).read_text(encoding='utf-8'))
           records = manifest['packs']
           expected = ['darwin-amd64', 'darwin-arm64', 'linux-amd64', 'windows-amd64']
-          if [record['platform_id'] for record in records] != expected:
-              raise SystemExit('canonical manifest does not contain the four ordered active platform records')
-          if any(record['state'] != 'active' or record['artifact_id'] != 'gitleaks' for record in records):
-              raise SystemExit('canonical manifest contains a non-active or unexpected record')
+          records_by_artifact = {}
+          for record in records:
+              records_by_artifact.setdefault(record['artifact_id'], []).append(record)
+          if set(records_by_artifact) - {'gitleaks', 'rust-analyzer'}:
+              raise SystemExit('canonical manifest contains an unexpected artifact')
+
+          gitleaks_records = records_by_artifact.get('gitleaks', [])
+          if [record['platform_id'] for record in gitleaks_records] != expected:
+              raise SystemExit('canonical manifest does not contain four ordered Gitleaks records')
+          if any(
+              record['state'] != 'active'
+              or record['pack_version'] != '8.30.1-pcr.1'
+              or record['project_release_tag'] != 'artifact-gitleaks-8.30.1-pcr.1'
+              for record in gitleaks_records
+          ):
+              raise SystemExit('canonical Gitleaks records differ from the release inputs')
+
+          provider_records = records_by_artifact.get('rust-analyzer', [])
+          if provider_records:
+              if [record['platform_id'] for record in provider_records] != expected:
+                  raise SystemExit('canonical manifest does not contain four ordered provider records')
+              baseline_path = Path(
+                  'third_party_artifacts/baselines/rust-analyzer-2026.07.27-pcr.3.json'
+              )
+              if not baseline_path.is_file():
+                  raise SystemExit('reviewed provider baseline is absent')
+              baseline_sha256 = hashlib.sha256(baseline_path.read_bytes()).hexdigest()
+              if any(
+                  record['state'] != 'active'
+                  or record['pack_version'] != '2026.07.27-pcr.3'
+                  or record['project_release_tag']
+                  != 'artifact-rust-analyzer-2026.07.27-pcr.3'
+                  or record['quality_baseline_sha256'] != baseline_sha256
+                  for record in provider_records
+              ):
+                  raise SystemExit('canonical provider records differ from reviewed publication inputs')
           PY
 
           mkdir -p dist/pre-commit-review/scripts/bin \
@@ -433,9 +466,81 @@ jobs:
             (cd "$(dirname "$sidecar")" && sha256sum -c "$(basename "$sidecar")")
           done
 
+  provider-real-release:
+    name: Verify exact published provider
+    uses: ./.github/workflows/provider-real-server.yml
+    secrets: inherit
+
+  provider-fuzz-release:
+    name: Run provider release fuzz tier
+    uses: ./.github/workflows/provider-fuzz-scheduled.yml
+    with:
+      release_gate: true
+
+  attest-release-inputs:
+    name: Attest canonical release inputs
+    needs: [assemble-packs, verify-release-inputs, provider-real-release, provider-fuzz-release]
+    if: startsWith(github.ref, 'refs/tags/') || (github.event_name == 'workflow_dispatch' && inputs.build_only != true)
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download canonical packs
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: canonical-release-packs
+          path: artifacts
+      - name: Attest release archive subjects
+        uses: actions/attest-build-provenance@96b4a1ef7235a096b17240c259729fdd70c83d45
+        with:
+          subject-path: |
+            artifacts/*.tar.gz
+            artifacts/manifest.json
+            artifacts/pre-commit-review.cdx.json
+            artifacts/release-evidence.json
+
+  verify-attested-release-inputs:
+    name: Verify canonical release attestations as a clean consumer
+    needs: attest-release-inputs
+    if: startsWith(github.ref, 'refs/tags/') || (github.event_name == 'workflow_dispatch' && inputs.build_only != true)
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      attestations: read
+    steps:
+      - name: Download canonical packs in a clean job
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: canonical-release-packs
+          path: artifacts
+      - name: Verify sidecars before attestation lookup
+        shell: bash
+        run: |
+          set -euo pipefail
+          find artifacts -name '*.tar.gz.sha256' -print0 | while IFS= read -r -d '' sidecar; do
+            (cd "$(dirname "$sidecar")" && sha256sum -c "$(basename "$sidecar")")
+          done
+      - name: Verify GitHub attestations for every release subject
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          subjects=(
+            artifacts/*.tar.gz
+            artifacts/manifest.json
+            artifacts/pre-commit-review.cdx.json
+            artifacts/release-evidence.json
+          )
+          for subject in "${subjects[@]}"; do
+            [ -f "$subject" ] || {
+              echo "attested release subject is absent: $subject" >&2
+              exit 1
+            }
+            gh attestation verify "$subject" --repo "$GITHUB_REPOSITORY"
+          done
+
   create-release:
     name: Create GitHub Release
-    needs: [assemble-packs, verify-release-inputs]
+    needs: verify-attested-release-inputs
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/') || (github.event_name == 'workflow_dispatch' && inputs.build_only != true)
     steps:
@@ -449,22 +554,14 @@ jobs:
         shell: bash
         run: |
           set -euo pipefail
-          immutable="$(gh api "repos/$GITHUB_REPOSITORY" --jq '.immutable_releases // false')"
+          : "${GH_TOKEN:?RELEASE_ADMIN_TOKEN is required to verify release immutability}"
+          immutable="$(gh api "repos/$GITHUB_REPOSITORY/immutable-releases" --jq '.enabled')"
           [ "$immutable" = 'true' ] || {
             echo 'GitHub release immutability is not enabled' >&2
             exit 1
           }
         env:
-          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-
-      - name: Attest release archive subjects
-        uses: actions/attest-build-provenance@96b4a1ef7235a096b17240c259729fdd70c83d45
-        with:
-          subject-path: |
-            artifacts/*.tar.gz
-            artifacts/manifest.json
-            artifacts/pre-commit-review.cdx.json
-            artifacts/release-evidence.json
+          GH_TOKEN: ${{ secrets.RELEASE_ADMIN_TOKEN }}
 
       - name: Publish Gitleaks artifact release
         uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65

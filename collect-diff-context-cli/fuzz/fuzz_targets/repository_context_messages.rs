@@ -14,6 +14,10 @@ fn message_counted<T>(result: &Result<T, ProtocolError>) -> bool {
         .is_none_or(|error| error.code != "provider-message-limit")
 }
 
+fn increment(value: usize) -> usize {
+    value.checked_add(1).expect("bounded fuzz counter overflow")
+}
+
 fuzz_target!(|data: &[u8]| {
     if data.len() > MAX_INPUT_BYTES {
         return;
@@ -46,41 +50,41 @@ fuzz_target!(|data: &[u8]| {
             Ok(InboundMessage::Response(response)) => {
                 let result = state.accept_client_response(response);
                 if message_counted(&result) {
-                    messages += 1;
+                    messages = increment(messages);
                 }
                 if result
                     .as_ref()
                     .err()
                     .is_some_and(|error| error.code == "provider-response-id-invalid")
                 {
-                    invalid += 1;
+                    invalid = increment(invalid);
                 }
             }
             Ok(InboundMessage::Request(_)) => {
                 let result = state.observe_server_request();
                 if message_counted(&result) {
-                    messages += 1;
+                    messages = increment(messages);
                 }
                 if result.is_ok() {
-                    server_requests += 1;
+                    server_requests = increment(server_requests);
                 }
             }
             Ok(InboundMessage::Notification(_)) => {
                 let result = state.observe_notification();
                 if message_counted(&result) {
-                    messages += 1;
+                    messages = increment(messages);
                 }
                 if result.is_ok() {
-                    notifications += 1;
+                    notifications = increment(notifications);
                 }
             }
             Err(_) => {
                 let result = state.observe_invalid();
                 if message_counted(&result) {
-                    messages += 1;
+                    messages = increment(messages);
                 }
                 if result.is_ok() {
-                    invalid += 1;
+                    invalid = increment(invalid);
                 }
             }
         }
