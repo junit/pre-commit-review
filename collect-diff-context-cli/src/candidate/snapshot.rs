@@ -919,7 +919,7 @@ fn hash_entry(root: &Path, path: &Path, state: &mut HashState) -> Result<(), Sna
         hash_entry_header(&mut state.digest, &relative_bytes, observed_mode, b"file");
         let mut input = File::open(path)
             .map_err(|error| SnapshotError::new(format!("cannot hash snapshot file: {error}")))?;
-        let mut buffer = [0_u8; 1024 * 1024];
+        let mut buffer = vec![0_u8; 64 * 1024];
         loop {
             let read = input.read(&mut buffer).map_err(|error| {
                 SnapshotError::new(format!("cannot hash snapshot file: {error}"))
@@ -1352,6 +1352,22 @@ mod tests {
         );
         assert!(safe_relative_path(b"../escape").is_err());
         assert!(safe_relative_path(b"/absolute").is_err());
+    }
+
+    #[test]
+    fn snapshot_hashing_fits_windows_main_thread_stack() {
+        const WINDOWS_MAIN_THREAD_STACK_BYTES: usize = 1024 * 1024;
+
+        let worker = std::thread::Builder::new()
+            .name("candidate-snapshot-stack-regression".to_string())
+            .stack_size(WINDOWS_MAIN_THREAD_STACK_BYTES)
+            .spawn(|| {
+                let snapshot = fixture_snapshot();
+                snapshot.verify_unchanged().unwrap();
+            })
+            .unwrap();
+
+        worker.join().unwrap();
     }
 
     #[cfg(unix)]

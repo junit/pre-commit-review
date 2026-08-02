@@ -124,11 +124,30 @@ jobs:
             suffix='.exe'
           fi
           runner="$GITHUB_WORKSPACE/collect-diff-context-cli/target/debug/provider-baseline-sample-runner${suffix}"
-          [ -f "$runner" ] || {
+          [ -f "$runner" ] && [ ! -L "$runner" ] || {
             echo 'Cargo did not emit the expected baseline runner' >&2
             exit 1
           }
-          echo "CARGO_BIN_EXE_provider-baseline-sample-runner=$runner" >>"$GITHUB_OUTPUT"
+          runner_copy="$RUNNER_TEMP/provider-evidence/runner-bin/provider-baseline-sample-runner${suffix}"
+          python3 - "$runner" "$runner_copy" <<'PY'
+          import os
+          import sys
+          from pathlib import Path
+
+          source = Path(sys.argv[1])
+          destination = Path(sys.argv[2])
+          if not source.is_file() or source.is_symlink():
+              raise SystemExit('Cargo runner output is absent or unsafe')
+          destination.parent.mkdir(mode=0o700)
+          with source.open('rb') as input_file, destination.open('xb') as output_file:
+              while chunk := input_file.read(64 * 1024):
+                  output_file.write(chunk)
+              output_file.flush()
+              os.fsync(output_file.fileno())
+          if os.name != 'nt':
+              os.chmod(destination, 0o500)
+          PY
+          echo "CARGO_BIN_EXE_provider-baseline-sample-runner=$runner_copy" >>"$GITHUB_OUTPUT"
         working-directory: collect-diff-context-cli
 
       - name: Hash the exact Cargo runner output

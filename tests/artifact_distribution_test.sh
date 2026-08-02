@@ -357,6 +357,22 @@ for needle in (
 ):
     if needle not in provider_contract_text:
         raise SystemExit(f'provider workflow is missing trust/measurement assertion: {needle}')
+runner_copy = 'runner_copy="$RUNNER_TEMP/provider-evidence/runner-bin/provider-baseline-sample-runner${suffix}"'
+runner_output = 'echo "CARGO_BIN_EXE_provider-baseline-sample-runner=$runner_copy" >>"$GITHUB_OUTPUT"'
+if runner_copy not in provider_text or runner_output not in provider_text:
+    raise SystemExit('provider workflow does not preserve the hashed Cargo runner outside target/debug')
+runner_copy_controls = (
+    '[ -f "$runner" ] && [ ! -L "$runner" ]',
+    'if not source.is_file() or source.is_symlink():',
+    'destination.parent.mkdir(mode=0o700)',
+    "destination.open('xb')",
+    'output_file.flush()',
+    'os.fsync(output_file.fileno())',
+    'os.chmod(destination, 0o500)',
+)
+for control in runner_copy_controls:
+    if control not in provider_text:
+        raise SystemExit(f'provider workflow runner copy is missing hardening control: {control}')
 if not re.search(
     r'PCR_REAL_PROVIDER_TARGET_ROOT="\$target_native"\s*\\\n'
     r'\s*cargo \+1\.95\.0 test\s*\\\n'
