@@ -24,6 +24,8 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use std::time::Duration;
 use tempfile::TempDir;
+#[cfg(windows)]
+use url::Url;
 
 const FIXTURES: [&str; 5] = [
     "single_crate",
@@ -387,6 +389,45 @@ fn windows_candidate_snapshot_remains_readable_and_read_only() {
     assert!(OpenOptions::new().write(true).open(&source).is_err());
     assert!(fs::write(snapshot.path().join("unexpected.rs"), b"").is_err());
     snapshot.verify_unchanged().unwrap();
+}
+
+#[cfg(windows)]
+#[test]
+fn windows_linked_project_roots_match_lsp_file_uri_paths() {
+    let repository = TempDir::new().unwrap();
+    materialize_fixture(&fixture_root("single_crate"), repository.path());
+    git(repository.path(), &["init", "-q"]);
+    git(repository.path(), &["add", "--", "."]);
+
+    let snapshot = CandidateSnapshot::materialize(
+        repository.path(),
+        ReviewSource::Staged,
+        SnapshotLimits {
+            max_files: 64,
+            max_bytes: 256 * 1024,
+        },
+    )
+    .unwrap();
+    let model = build_linked_project_model(
+        &snapshot,
+        ProviderModelLimits {
+            max_files: 64,
+            max_bytes: 256 * 1024,
+            max_file_bytes: 64 * 1024,
+        },
+    )
+    .unwrap();
+    let canonical_root = fs::canonicalize(snapshot.path()).unwrap();
+    let root_uri = Url::from_directory_path(&canonical_root).unwrap();
+    let lsp_root = root_uri.to_file_path().unwrap();
+    let linked = model.linked_project_value_at(&canonical_root).unwrap();
+    let linked_crates = linked["crates"].as_array().unwrap();
+
+    assert_eq!(linked_crates.len(), model.crates.len());
+    for (linked_crate, crate_model) in linked_crates.iter().zip(&model.crates) {
+        let linked_root = PathBuf::from(linked_crate["root_module"].as_str().unwrap());
+        assert_eq!(linked_root, lsp_root.join(&crate_model.root_module));
+    }
 }
 
 #[test]
