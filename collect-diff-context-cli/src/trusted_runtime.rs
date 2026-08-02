@@ -7,6 +7,8 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus};
 use tempfile::TempDir;
 
+const COPY_BUFFER_BYTES: usize = 1024 * 1024;
+
 #[derive(Debug, Clone, PartialEq, Eq)]
 pub(crate) struct TrustedRuntimeError {
     pub(crate) code: &'static str,
@@ -309,7 +311,7 @@ fn copy_and_hash(mut input: File, destination: &Path) -> Result<String, TrustedR
         .open(destination)
         .map_err(runtime_create_error)?;
     let mut digest = Sha256::new();
-    let mut buffer = [0_u8; 1024 * 1024];
+    let mut buffer = vec![0_u8; COPY_BUFFER_BYTES];
     loop {
         let read = input.read(&mut buffer).map_err(|error| {
             TrustedRuntimeError::new(
@@ -337,7 +339,7 @@ fn hash_file(path: &Path) -> Result<String, TrustedRuntimeError> {
         )
     })?;
     let mut digest = Sha256::new();
-    let mut buffer = [0_u8; 1024 * 1024];
+    let mut buffer = vec![0_u8; COPY_BUFFER_BYTES];
     loop {
         let read = input.read(&mut buffer).map_err(|error| {
             TrustedRuntimeError::new(
@@ -429,6 +431,22 @@ mod tests {
         assert!(runtime.temporary().is_dir());
         assert!(runtime.target.is_dir());
         assert!(runtime.empty_path().is_dir());
+    }
+
+    #[test]
+    fn private_runtime_creation_fits_windows_main_thread_stack() {
+        const WINDOWS_MAIN_THREAD_STACK_BYTES: usize = 1024 * 1024;
+
+        let source = std::env::current_exe().unwrap();
+        let expected_sha256 = format!("{:x}", Sha256::digest(std::fs::read(&source).unwrap()));
+
+        let worker = std::thread::Builder::new()
+            .name("trusted-runtime-stack-regression".to_string())
+            .stack_size(WINDOWS_MAIN_THREAD_STACK_BYTES)
+            .spawn(move || PrivateRuntime::create(&source, &expected_sha256))
+            .unwrap();
+        let runtime = worker.join().unwrap().unwrap();
+        runtime.verify().unwrap();
     }
 
     #[test]
