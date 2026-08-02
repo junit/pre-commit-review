@@ -579,11 +579,25 @@ pub fn traverse_call_hierarchy(
                 }
                 Err(error) => return Err(error),
             };
-            if normalized.path == seed.path
-                && kind_compatible(seed.kind, normalized.symbol.kind)
-                && range_contains(&normalized.symbol.symbol_range, &seed.symbol_range)
-                && range_contains_byte(&normalized.symbol.selection_range, seed.query_byte)
-            {
+            let path_matches = normalized.path == seed.path;
+            let kind_matches = kind_compatible(seed.kind, normalized.symbol.kind);
+            let symbol_range_contains =
+                range_contains(&normalized.symbol.symbol_range, &seed.symbol_range);
+            let selection_contains =
+                range_contains_byte(&normalized.symbol.selection_range, seed.query_byte);
+            #[cfg(feature = "test-fixture")]
+            if std::env::var_os("PCR_TEST_TRACE_SEED_MATCH").is_some() {
+                eprintln!(
+                    "[DEBUG-task8b-seed-match] path_matches={path_matches} kind_matches={kind_matches} symbol_range_contains={symbol_range_contains} selection_contains={selection_contains} seed_path={:?} item_path={:?} seed_symbol_range={:?} item_symbol_range={:?} seed_query_byte={} item_selection_range={:?}",
+                    seed.path,
+                    normalized.path,
+                    seed.symbol_range,
+                    normalized.symbol.symbol_range,
+                    seed.query_byte,
+                    normalized.symbol.selection_range,
+                );
+            }
+            if path_matches && kind_matches && symbol_range_contains && selection_contains {
                 matches.push(normalized);
             }
         }
