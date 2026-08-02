@@ -731,17 +731,7 @@ def parse_args():
     return parser.parse_args()
 
 
-def core_release_context():
-    if os.environ.get("PCR_CORE_RELEASE_JOB"):
-        return True
-    return os.environ.get("GITHUB_ACTIONS") == "true" and os.environ.get(
-        "GITHUB_WORKFLOW"
-    ) == "Release Multi-Platform Packs"
-
-
 def main():
-    if core_release_context():
-        fail("core-release-boundary", "core release jobs cannot create reviewed baselines")
     args = parse_args()
     if args.runner_timeout_seconds is not None and not args.evidence_only_local:
         fail(

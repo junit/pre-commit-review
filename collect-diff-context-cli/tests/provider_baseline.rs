@@ -428,20 +428,29 @@ fn measurement_cli_rejects_sample_policy_identity_and_timing_drift() {
 }
 
 #[test]
-fn measurement_cli_rejects_untrusted_runner_and_sample_boundaries() {
+fn core_release_context_can_measure_without_rewriting_reviewed_data() {
     let core_release = measurement_runner(&[1; 21], BTreeMap::new(), None);
-    let output = Command::new("python3")
-        .arg(repo_root().join("scripts/measure_provider_baseline.py"))
-        .arg("--runner")
-        .arg(core_release.path().join("runner.json"))
-        .arg("--samples")
-        .arg("20")
-        .env("PCR_CORE_RELEASE_JOB", "1")
-        .output()
-        .unwrap();
-    assert!(!output.status.success());
-    assert!(String::from_utf8_lossy(&output.stderr).contains("core-release-boundary"));
+    let reviewed_baseline = fixture_root().join("reviewed-baseline.json");
+    let before = fs::read(&reviewed_baseline).unwrap();
+    let output = measurement_command(
+        &core_release.path().join("runner.json"),
+        20,
+        &["--evidence-only-local"],
+    )
+    .env("GITHUB_ACTIONS", "true")
+    .env("GITHUB_WORKFLOW", "Release Multi-Platform Packs")
+    .output()
+    .unwrap();
+    assert!(
+        output.status.success(),
+        "measurement failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+    assert_eq!(fs::read(reviewed_baseline).unwrap(), before);
+}
 
+#[test]
+fn measurement_cli_rejects_untrusted_runner_and_sample_boundaries() {
     let noncanonical_runner = measurement_runner(&[1; 21], BTreeMap::new(), None);
     let path = noncanonical_runner.path().join("runner.json");
     let mut bytes = fs::read(&path).unwrap();

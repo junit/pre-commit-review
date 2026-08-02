@@ -4,24 +4,48 @@ use std::path::{Path, PathBuf};
 use std::process::Command;
 
 pub(crate) fn restrict_tree_read_execute(path: &Path) -> Result<(), String> {
-    apply_current_user_acl(path, "(OI)(CI)RX")
+    let sid = current_user_sid()?;
+    apply_current_user_grant(path, &sid, "RX")?;
+    apply_current_user_deny(path, &sid, "(WD,AD,WEA,WA,DE,DC)")
 }
 
 pub(crate) fn restrict_tree_private(path: &Path) -> Result<(), String> {
-    apply_current_user_acl(path, "(OI)(CI)F")
+    let sid = current_user_sid()?;
+    apply_current_user_grant(path, &sid, "(OI)(CI)F")
 }
 
 pub(crate) fn grant_tree_full_control(path: &Path) -> Result<(), String> {
-    apply_current_user_acl(path, "(OI)(CI)F")
+    apply_current_user_full_control(path)
 }
 
-fn apply_current_user_acl(path: &Path, permissions: &str) -> Result<(), String> {
-    let identity = format!("*{}:{permissions}", current_user_sid()?);
+fn apply_current_user_full_control(path: &Path) -> Result<(), String> {
+    let sid = current_user_sid()?;
+    remove_current_user_denies(path, &sid)?;
+    apply_current_user_grant(path, &sid, "F")
+}
+
+fn apply_current_user_grant(path: &Path, sid: &str, permissions: &str) -> Result<(), String> {
+    let identity = format!("*{sid}:{permissions}");
+    run_icacls(
+        path,
+        &["/inheritance:r", "/grant:r", &identity, "/T", "/C", "/Q"],
+    )
+}
+
+fn apply_current_user_deny(path: &Path, sid: &str, permissions: &str) -> Result<(), String> {
+    let identity = format!("*{sid}:{permissions}");
+    run_icacls(path, &["/deny", &identity, "/T", "/C", "/Q"])
+}
+
+fn remove_current_user_denies(path: &Path, sid: &str) -> Result<(), String> {
+    let identity = format!("*{sid}");
+    run_icacls(path, &["/remove:d", &identity, "/T", "/C", "/Q"])
+}
+
+fn run_icacls(path: &Path, arguments: &[&str]) -> Result<(), String> {
     let output = Command::new(system_binary("icacls.exe")?)
         .arg(path)
-        .args(["/inheritance:r", "/grant:r"])
-        .arg(identity)
-        .args(["/T", "/C", "/Q"])
+        .args(arguments)
         .output()
         .map_err(|error| format!("cannot start icacls.exe: {error}"))?;
     if output.status.success() {

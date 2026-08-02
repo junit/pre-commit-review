@@ -18,6 +18,8 @@ use collect_diff_context_cli::review_scope::{
 use sha2::{Digest, Sha256};
 use std::env;
 use std::fs;
+#[cfg(windows)]
+use std::fs::OpenOptions;
 use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use std::time::Duration;
@@ -360,6 +362,31 @@ fn normalized_report(report: RepositoryContextProviderReport) -> RepositoryConte
         },
         ..report
     }
+}
+
+#[cfg(windows)]
+#[test]
+fn windows_candidate_snapshot_remains_readable_and_read_only() {
+    let repository = TempDir::new().unwrap();
+    materialize_fixture(&fixture_root("single_crate"), repository.path());
+    git(repository.path(), &["init", "-q"]);
+    git(repository.path(), &["add", "--", "."]);
+
+    let snapshot = CandidateSnapshot::materialize(
+        repository.path(),
+        ReviewSource::Staged,
+        SnapshotLimits {
+            max_files: 64,
+            max_bytes: 256 * 1024,
+        },
+    )
+    .unwrap();
+    let source = snapshot.path().join("src/lib.rs");
+    assert!(fs::read_to_string(&source).unwrap().contains("pub fn seed"));
+    snapshot.verify_unchanged().unwrap();
+    assert!(OpenOptions::new().write(true).open(&source).is_err());
+    assert!(fs::write(snapshot.path().join("unexpected.rs"), b"").is_err());
+    snapshot.verify_unchanged().unwrap();
 }
 
 #[test]

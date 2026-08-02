@@ -265,16 +265,24 @@ fn reviewed_measurement_rejects_a_same_name_runner_with_a_different_digest() {
 }
 
 #[test]
-fn reviewed_measurement_accepts_the_cargo_built_runner_digest_at_provenance() {
+fn core_release_measurement_accepts_the_cargo_built_runner_digest_at_provenance() {
     let temporary = tempfile::tempdir().unwrap();
     let real_runner = Path::new(env!("CARGO_BIN_EXE_provider-baseline-sample-runner"));
     let contract = reviewed_contract(temporary.path(), real_runner);
     let real_runner_sha256 = sha256_bytes(&fs::read(real_runner).unwrap());
 
-    let output = run_reviewed_measurement(&contract, &real_runner_sha256);
+    let output = reviewed_measurement_command(&contract)
+        .env(EXPECTED_RUNNER_SHA256, &real_runner_sha256)
+        .env("GITHUB_WORKFLOW", "Release Multi-Platform Packs")
+        .output()
+        .unwrap();
 
     assert!(!output.status.success());
     let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        !stderr.contains("core-release-boundary"),
+        "core release did not reach reviewed runner validation: {stderr}"
+    );
     assert!(
         !stderr.contains("runner-provenance"),
         "Cargo-built runner failed its provenance boundary: {stderr}"
