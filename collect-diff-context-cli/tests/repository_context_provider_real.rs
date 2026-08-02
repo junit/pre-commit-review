@@ -327,8 +327,6 @@ impl RealRunHarness {
             .env("TMPDIR", &self.runtime_temp_root)
             .env("TMP", &self.runtime_temp_root)
             .env("TEMP", &self.runtime_temp_root);
-        #[cfg(windows)]
-        command.env("PCR_TEST_TRACE_SEED_MATCH", "1");
         let output = command.output().unwrap();
         assert!(
             output.status.success(),
