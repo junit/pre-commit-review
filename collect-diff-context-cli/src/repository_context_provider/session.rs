@@ -393,6 +393,28 @@ impl ManagedLspSession {
         }
     }
 
+    pub(crate) fn wait_for_retry(&mut self, delay: Duration) -> Result<(), SessionError> {
+        let retry_at = Instant::now().checked_add(delay).unwrap_or(self.deadline);
+        loop {
+            self.check_limits()?;
+            let remaining = retry_at
+                .checked_duration_since(Instant::now())
+                .unwrap_or_default();
+            if remaining.is_zero() {
+                return Ok(());
+            }
+            let deadline_remaining = self
+                .deadline
+                .checked_duration_since(Instant::now())
+                .unwrap_or_default();
+            thread::sleep(
+                remaining
+                    .min(deadline_remaining)
+                    .min(Duration::from_millis(5)),
+            );
+        }
+    }
+
     pub fn shutdown_and_reap(&mut self) -> Result<(), SessionError> {
         let shutdown_id = self.send_request_optional("shutdown", None)?;
         loop {

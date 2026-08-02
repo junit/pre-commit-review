@@ -211,6 +211,10 @@ impl Fixture {
     }
 
     fn run_graph(&self) -> CallHierarchyTraversal {
+        self.run_graph_scenario("graph")
+    }
+
+    fn run_graph_scenario(&self, scenario: &str) -> CallHierarchyTraversal {
         let bound =
             BoundCandidateSnapshot::new(&self.snapshot, &self.model, &self.binding).unwrap();
         let profile_path = self.tools.path().join("profile.json");
@@ -263,10 +267,10 @@ impl Fixture {
         let binding_digest = request.binding_digest(&self.model.algorithm).unwrap();
         let arguments = Box::leak(
             vec![
-                "graph".to_string(),
+                scenario.to_string(),
                 self.tools
                     .path()
-                    .join("graph.log")
+                    .join(format!("{scenario}.log"))
                     .to_string_lossy()
                     .into_owned(),
             ]
@@ -510,6 +514,17 @@ fn call_hierarchy_bfs_deduplicates_edges_and_is_deterministic() {
         .edges
         .windows(2)
         .all(|edges| edges[0].edge_id < edges[1].edge_id));
+}
+
+#[test]
+fn call_hierarchy_retries_transient_empty_seed_resolution() {
+    let traversal = Fixture::new().run_graph_scenario("graph-transient-empty");
+    assert_eq!(traversal.seed_symbols.len(), 1);
+    assert!(!traversal.edges.is_empty());
+    assert!(traversal
+        .limitations
+        .iter()
+        .all(|limitation| limitation.code != "seed-unresolved"));
 }
 
 #[test]

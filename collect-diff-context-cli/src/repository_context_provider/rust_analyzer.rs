@@ -6,17 +6,20 @@ use super::contract::{
 use super::json_rpc::{InboundMessage, ResponseOutcome, ServerRequest};
 use super::session::{ManagedLspSession, SessionError};
 use super::snapshot::{
-    BoundCandidateSnapshot, LspRange, SnapshotFilePath, SnapshotSourceBudget, SnapshotUriMapper,
-    SourceDocument,
+    BoundCandidateSnapshot, LspPosition, LspRange, SnapshotFilePath, SnapshotSourceBudget,
+    SnapshotUriMapper, SourceDocument,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use std::collections::{BTreeMap, BTreeSet};
 use std::sync::Arc;
+use std::time::Duration;
 use tree_sitter::Parser;
 use url::Url;
 
 const MAX_SEMANTIC_SCAN_NODES: usize = 100_000;
+const PREPARE_CALL_HIERARCHY_RETRY_DELAYS: [Duration; 2] =
+    [Duration::from_millis(25), Duration::from_millis(50)];
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
 pub enum Readiness {
@@ -537,17 +540,8 @@ pub fn traverse_call_hierarchy(
         let position = document
             .byte_to_lsp(seed.query_byte, encoding)
             .map_err(snapshot_error)?;
-        let request_id = session
-            .send_request(
-                "textDocument/prepareCallHierarchy",
-                json!({
-                    "textDocument": {"uri": uri},
-                    "position": position,
-                }),
-            )
-            .map_err(traversal_session_error)?;
-        let value = wait_for_response(session, request_id)?;
-        let Some(value) = value else {
+        let items = prepare_call_hierarchy(session, &uri, position)?;
+        if items.is_empty() {
             add_limitation(
                 &mut output.limitations,
                 "seed-unresolved",
@@ -556,16 +550,8 @@ pub fn traverse_call_hierarchy(
                 Some(&seed.path),
             );
             continue;
-        };
-        let items: Vec<CallHierarchyItem> = serde_json::from_value(value).map_err(|_| {
-            RustAnalyzerTraversalError::new(
-                "provider-call-hierarchy-invalid",
-                "prepare call hierarchy response is malformed",
-            )
-        })?;
+        }
         let mut matches = Vec::new();
-        #[cfg(windows)]
-        let mut mismatch_diagnostics = Vec::new();
         for item in items {
             let normalized = match normalize_item(&mut cache, item, binding_digest, encoding) {
                 Ok(item) => item,
@@ -587,32 +573,15 @@ pub fn traverse_call_hierarchy(
                 range_contains(&normalized.symbol.symbol_range, &seed.symbol_range);
             let selection_contains =
                 range_contains_byte(&normalized.symbol.selection_range, seed.query_byte);
-            #[cfg(windows)]
-            mismatch_diagnostics.push(format!(
-                "path_matches={path_matches},kind_matches={kind_matches},symbol_range_contains={symbol_range_contains},selection_contains={selection_contains},seed_path={:?},item_path={:?},seed_symbol_range={:?},item_symbol_range={:?},seed_query_byte={},item_selection_range={:?}",
-                    seed.path,
-                    normalized.path,
-                    seed.symbol_range,
-                    normalized.symbol.symbol_range,
-                    seed.query_byte,
-                    normalized.symbol.selection_range,
-            ));
             if path_matches && kind_matches && symbol_range_contains && selection_contains {
                 matches.push(normalized);
             }
         }
         if matches.is_empty() {
-            #[cfg(windows)]
-            let message = format!(
-                "[DEBUG-task8b-seed-match] {}",
-                mismatch_diagnostics.join(";")
-            );
-            #[cfg(not(windows))]
-            let message = "call hierarchy seed did not resolve to exactly one symbol".to_string();
             add_limitation(
                 &mut output.limitations,
                 "seed-unresolved",
-                &message,
+                "call hierarchy seed did not resolve to exactly one symbol",
                 None,
                 Some(&seed.path),
             );
@@ -1002,6 +971,48 @@ fn request_calls(
         .send_request(method, json!({"item": current.wire.clone()}))
         .map_err(traversal_session_error)?;
     Ok(wait_for_response(session, id)?.unwrap_or(Value::Null))
+}
+
+fn prepare_call_hierarchy(
+    session: &mut ManagedLspSession,
+    uri: &Url,
+    position: LspPosition,
+) -> Result<Vec<CallHierarchyItem>, RustAnalyzerTraversalError> {
+    for delay in PREPARE_CALL_HIERARCHY_RETRY_DELAYS {
+        let items = request_prepared_items(session, uri, position)?;
+        if !items.is_empty() {
+            return Ok(items);
+        }
+        session
+            .wait_for_retry(delay)
+            .map_err(traversal_session_error)?;
+    }
+    request_prepared_items(session, uri, position)
+}
+
+fn request_prepared_items(
+    session: &mut ManagedLspSession,
+    uri: &Url,
+    position: LspPosition,
+) -> Result<Vec<CallHierarchyItem>, RustAnalyzerTraversalError> {
+    let request_id = session
+        .send_request(
+            "textDocument/prepareCallHierarchy",
+            json!({
+                "textDocument": {"uri": uri},
+                "position": position,
+            }),
+        )
+        .map_err(traversal_session_error)?;
+    match wait_for_response(session, request_id)? {
+        Some(value) => serde_json::from_value(value).map_err(|_| {
+            RustAnalyzerTraversalError::new(
+                "provider-call-hierarchy-invalid",
+                "prepare call hierarchy response is malformed",
+            )
+        }),
+        None => Ok(Vec::new()),
+    }
 }
 
 fn wait_for_response(

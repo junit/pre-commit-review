@@ -36,6 +36,7 @@ fn main() {
         "initialize-error" => handshake_initialize_error(log_path.as_deref()),
         "unknown-encoding" => handshake(log_path.as_deref(), "ok", Some("utf-32")),
         "graph" => graph(log_path.as_deref()),
+        "graph-transient-empty" => graph_with_transient_empty(log_path.as_deref()),
         "graph-warning" => graph_with_health(log_path.as_deref(), "warning"),
         "" => fixture_stdio(log_path.as_deref()),
         "stderr-flood" => stderr_flood(),
@@ -293,10 +294,22 @@ fn handshake_hang(log_path: Option<&str>) -> io::Result<()> {
 }
 
 fn graph(log_path: Option<&str>) -> io::Result<()> {
-    graph_with_health(log_path, "ok")
+    graph_with_health_and_empty_responses(log_path, "ok", 0)
 }
 
 fn graph_with_health(log_path: Option<&str>, health: &str) -> io::Result<()> {
+    graph_with_health_and_empty_responses(log_path, health, 0)
+}
+
+fn graph_with_transient_empty(log_path: Option<&str>) -> io::Result<()> {
+    graph_with_health_and_empty_responses(log_path, "ok", 1)
+}
+
+fn graph_with_health_and_empty_responses(
+    log_path: Option<&str>,
+    health: &str,
+    empty_prepare_responses: usize,
+) -> io::Result<()> {
     let mut input = io::stdin().lock();
     let mut output = io::stdout().lock();
     let initialize = read_json_frame(&mut input)?;
@@ -329,16 +342,25 @@ fn graph_with_health(log_path: Option<&str>, health: &str) -> io::Result<()> {
     } else {
         "seed"
     };
+    let mut prepare_responses = 0_usize;
     loop {
         let message = read_json_frame(&mut input)?;
         let method = message.get("method").and_then(Value::as_str);
         log_method(log_path, method)?;
         let id = message.get("id").cloned().unwrap_or(Value::Null);
         match method {
-            Some("textDocument/prepareCallHierarchy") => write_frame(
-                &mut output,
-                &json!({"jsonrpc":"2.0","id":id,"result":[graph_item(&uri, prepared_seed_name)]}),
-            )?,
+            Some("textDocument/prepareCallHierarchy") => {
+                let result = if prepare_responses < empty_prepare_responses {
+                    json!([])
+                } else {
+                    json!([graph_item(&uri, prepared_seed_name)])
+                };
+                prepare_responses += 1;
+                write_frame(
+                    &mut output,
+                    &json!({"jsonrpc":"2.0","id":id,"result":result}),
+                )?;
+            }
             Some("callHierarchy/incomingCalls") => {
                 let name = message
                     .get("params")
