@@ -150,13 +150,23 @@ impl SnapshotUriMapper {
                 "file URI target is outside the snapshot",
             )
         })?;
-        let relative = relative.to_str().ok_or_else(|| {
-            SnapshotBoundaryError::new(
-                "provider-uri-non-utf8",
-                "snapshot file path is not valid UTF-8",
-            )
-        })?;
-        SnapshotFilePath::new(relative).map_err(|_| {
+        let relative = relative
+            .components()
+            .map(|component| match component {
+                Component::Normal(value) => value.to_str().ok_or_else(|| {
+                    SnapshotBoundaryError::new(
+                        "provider-uri-non-utf8",
+                        "snapshot file path is not valid UTF-8",
+                    )
+                }),
+                _ => Err(SnapshotBoundaryError::new(
+                    "provider-uri-invalid",
+                    "file URI target path is not normalized",
+                )),
+            })
+            .collect::<Result<Vec<_>, _>>()?
+            .join("/");
+        SnapshotFilePath::new(&relative).map_err(|_| {
             SnapshotBoundaryError::new(
                 "provider-uri-invalid",
                 "file URI target path is not normalized",
