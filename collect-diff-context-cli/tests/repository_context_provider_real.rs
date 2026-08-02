@@ -80,15 +80,14 @@ fn copy_fixture(source: &Path, destination: &Path) {
     }
 }
 
+fn fixture_declares_crlf_lib(bytes: &[u8]) -> bool {
+    std::str::from_utf8(bytes).is_ok_and(|text| text.lines().eq(["src/lib.rs -text"]))
+}
+
 fn materialize_fixture(source: &Path, destination: &Path) {
     copy_fixture(source, destination);
     let attributes = source.join(".gitattributes");
-    if attributes.is_file()
-        && fs::read_to_string(attributes)
-            .unwrap()
-            .lines()
-            .any(|line| line == "src/lib.rs -text")
-    {
+    if attributes.is_file() && fixture_declares_crlf_lib(&fs::read(attributes).unwrap()) {
         let source_path = destination.join("src/lib.rs");
         let bytes = fs::read(&source_path).unwrap();
         let mut crlf =
@@ -420,10 +419,9 @@ fn real_fixture_inventory_covers_required_semantic_cases() {
     assert!(partial.contains("generated_call!(target.invoke())"));
 
     let unicode_root = fixture_root("unicode_crlf");
-    assert_eq!(
-        fs::read_to_string(unicode_root.join(".gitattributes")).unwrap(),
-        "src/lib.rs -text\n"
-    );
+    assert!(fixture_declares_crlf_lib(
+        &fs::read(unicode_root.join(".gitattributes")).unwrap()
+    ));
     let materialized = TempDir::new().unwrap();
     materialize_fixture(&unicode_root, materialized.path());
     let unicode = fs::read(materialized.path().join("src/lib.rs")).unwrap();
@@ -443,6 +441,13 @@ fn real_fixture_inventory_covers_required_semantic_cases() {
     assert!(cycles.contains("second(value - 1)"));
     assert!(cycles.contains("third(value)"));
     assert!(cycles.contains("first(value)"));
+}
+
+#[test]
+fn fixture_crlf_marker_accepts_host_line_endings() {
+    assert!(fixture_declares_crlf_lib(b"src/lib.rs -text\n"));
+    assert!(fixture_declares_crlf_lib(b"src/lib.rs -text\r\n"));
+    assert!(!fixture_declares_crlf_lib(b"src/lib.rs text\r\n"));
 }
 
 #[test]

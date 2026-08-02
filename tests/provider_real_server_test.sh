@@ -522,7 +522,8 @@ snapshot_target "$target_native" "$harness_root/target-before.json"
 PCR_REAL_PROVIDER_TARGET_ROOT="$target_native" \
   cargo +1.95.0 test \
   --manifest-path "$repo_root/collect-diff-context-cli/Cargo.toml" \
-  --locked --features test-fixture --test repository_context_provider_real -- --nocapture
+  --locked --features test-fixture --test repository_context_provider_real -- \
+  --nocapture --test-threads=1
 snapshot_target "$target_native" "$harness_root/target-after.json"
 cmp "$harness_root/target-before.json" "$harness_root/target-after.json" >/dev/null || \
   fail 'provider execution changed target-local authorization bytes'

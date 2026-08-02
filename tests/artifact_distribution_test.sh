@@ -332,7 +332,8 @@ provider_text = provider.read_text(encoding='utf-8')
 fuzz_text = fuzz.read_text(encoding='utf-8')
 release_text = release.read_text(encoding='utf-8')
 pack_text = pack.read_text(encoding='utf-8')
-provider_contract_text = provider_text + '\n' + provider_harness.read_text(encoding='utf-8')
+provider_harness_text = provider_harness.read_text(encoding='utf-8')
+provider_contract_text = provider_text + '\n' + provider_harness_text
 
 for platform in ('darwin-arm64', 'darwin-amd64', 'linux-amd64', 'windows-amd64'):
     if platform not in provider_text:
@@ -356,6 +357,15 @@ for needle in (
 ):
     if needle not in provider_contract_text:
         raise SystemExit(f'provider workflow is missing trust/measurement assertion: {needle}')
+if not re.search(
+    r'PCR_REAL_PROVIDER_TARGET_ROOT="\$target_native"\s*\\\n'
+    r'\s*cargo \+1\.95\.0 test\s*\\\n'
+    r'\s*--manifest-path "\$repo_root/collect-diff-context-cli/Cargo\.toml"\s*\\\n'
+    r'\s*--locked --features test-fixture --test repository_context_provider_real --\s*\\\n'
+    r'\s*--nocapture --test-threads=1(?:\n|$)',
+    provider_harness_text,
+):
+    raise SystemExit('real-provider integration suite is not serialized at its Cargo invocation')
 if re.search(
     r'^\s*PCR_PROVIDER_BASELINE_EXPECTED_RUNNER_SHA256:\s*',
     provider_text,

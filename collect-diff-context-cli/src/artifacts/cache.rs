@@ -294,6 +294,7 @@ pub fn provision_from_cache(
     manifest: &ArtifactManifest,
 ) -> Result<ProvisionedArtifact, ArtifactError> {
     manifest.validate()?;
+    let distribution_manifest_bytes = canonical_json(manifest)?;
     if !target_root.is_absolute() {
         return Err(error(
             "target-root-not-absolute",
@@ -327,6 +328,7 @@ pub fn provision_from_cache(
             "artifact target already contains the selected pack",
         ));
     }
+    retain_distribution_manifest(&target_root, &distribution_manifest_bytes)?;
     ensure_private_path(&pack_root)?;
 
     let cached_manifest = cached.root.join(PACK_MANIFEST_FILE);
@@ -377,7 +379,7 @@ pub fn provision_from_cache(
     let receipt = ArtifactReceipt {
         schema_version: 1,
         kind: "third_party_artifact_receipt".to_string(),
-        distribution_manifest_sha256: sha256_bytes(&canonical_json(manifest)?),
+        distribution_manifest_sha256: sha256_bytes(&distribution_manifest_bytes),
         artifact_id: record.artifact_id.clone(),
         tool_version: record.tool_version.clone(),
         pack_version: record.pack_version.clone(),
@@ -403,6 +405,24 @@ pub fn provision_from_cache(
         executable_path: pack_root.join(&record.executable.path),
         receipt_path,
     })
+}
+
+fn retain_distribution_manifest(target_root: &Path, expected: &[u8]) -> Result<(), ArtifactError> {
+    let distribution_root = target_root.join("runtime/distribution");
+    ensure_private_path(&distribution_root)?;
+    let manifest_path = distribution_root.join("manifest.json");
+    if manifest_path.exists() {
+        if read_bounded(&manifest_path, MAX_MANIFEST_BYTES)? != expected {
+            return Err(error(
+                "target-distribution-manifest-drift",
+                "target distribution manifest differs from the reviewed manifest",
+            ));
+        }
+    } else {
+        write_new_file(&manifest_path, expected, false, false)?;
+        sync_directory(&distribution_root).map_err(map_cache_io_error)?;
+    }
+    Ok(())
 }
 
 fn provision_provider_authorization(

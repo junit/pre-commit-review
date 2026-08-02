@@ -513,6 +513,14 @@ fn local_pack_verify_and_provision_emit_compact_reports() -> Result<(), Box<dyn 
         .target_root
         .join("runtime/artifact-receipts/gitleaks.json")
         .is_file());
+    assert_eq!(
+        fs::read(
+            fixture
+                .target_root
+                .join("runtime/distribution/manifest.json")
+        )?,
+        canonical_json(&fixture.manifest)?,
+    );
 
     let progress = fixture
         .command()
@@ -532,6 +540,44 @@ fn local_pack_verify_and_provision_emit_compact_reports() -> Result<(), Box<dyn 
         .output()?;
     completed_report(&progress)?;
     assert!(!progress.stderr.is_empty());
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn provision_rejects_a_conflicting_target_distribution_manifest() -> Result<(), Box<dyn Error>> {
+    let fixture = CliFixture::new()?;
+    let distribution = fixture.target_root.join("runtime/distribution");
+    fs::create_dir_all(&distribution)?;
+    fs::write(distribution.join("manifest.json"), b"{}")?;
+    let before = tree_snapshot(&fixture.target_root)?;
+
+    failed_report(
+        &fixture.provision()?,
+        1,
+        "target-distribution-manifest-drift",
+    )?;
+    assert_eq!(tree_snapshot(&fixture.target_root)?, before);
+    Ok(())
+}
+
+#[cfg(unix)]
+#[test]
+fn provision_rejects_a_symlinked_target_distribution_manifest() -> Result<(), Box<dyn Error>> {
+    use std::os::unix::fs::symlink;
+
+    let fixture = CliFixture::new()?;
+    let distribution = fixture.target_root.join("runtime/distribution");
+    let external_manifest = fixture._root.path().join("external-manifest.json");
+    let external_bytes = canonical_json(&fixture.manifest)?;
+    fs::create_dir_all(&distribution)?;
+    fs::write(&external_manifest, &external_bytes)?;
+    symlink(&external_manifest, distribution.join("manifest.json"))?;
+    let before = tree_snapshot(&fixture.target_root)?;
+
+    failed_report(&fixture.provision()?, 1, "artifact-file-open")?;
+    assert_eq!(tree_snapshot(&fixture.target_root)?, before);
+    assert_eq!(fs::read(external_manifest)?, external_bytes);
     Ok(())
 }
 
