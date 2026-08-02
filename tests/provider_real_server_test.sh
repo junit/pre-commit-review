@@ -474,7 +474,16 @@ if registry.get('kind') != 'repository_context_provider_registry' or len(registr
 entry = registry['entries'][0]
 executable = Path(entry['executable_path']).resolve()
 expected_root = (root / 'runtime/third-party/rust-analyzer' / pack_version).resolve()
-if Path(entry['profile_path']).resolve() != profile_path or not executable.is_relative_to(expected_root):
+
+def same_file(first, second):
+    try:
+        return first.samefile(second)
+    except OSError:
+        return False
+
+profile_matches = same_file(Path(entry['profile_path']), profile_path)
+executable_is_contained = any(same_file(parent, expected_root) for parent in executable.parents)
+if not profile_matches or not executable_is_contained:
     raise SystemExit('provider registry escapes the target-local pack')
 if entry['target_triple'] != profile['target_triple'] or profile['arguments'] != []:
     raise SystemExit('provider registry/profile binding differs')

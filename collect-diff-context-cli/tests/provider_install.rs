@@ -17,6 +17,10 @@ fn reviewed_candidate_manifest() -> ArtifactManifest {
         .arg(repository.join("scripts/generate_provider_manifest_update.py"))
         .arg("--fixture")
         .arg(repository.join("tests/fixtures/provider-release"))
+        .env_remove("PCR_CORE_RELEASE_JOB")
+        .env_remove("GITHUB_WORKFLOW_REF")
+        .env_remove("GITHUB_WORKFLOW")
+        .env_remove("GITHUB_ACTIONS")
         .output()
         .unwrap();
     assert!(
@@ -36,6 +40,28 @@ fn provider_install_selects_one_active_current_platform_record() {
     assert_eq!(record.artifact_id, "rust-analyzer");
     assert_eq!(record.platform_id, "linux-amd64");
     assert_eq!(record.pack_version, "2026.07.27-pcr.3");
+}
+
+#[test]
+fn provider_install_fixture_isolated_from_release_workflow_environment() {
+    let output = Command::new(std::env::current_exe().unwrap())
+        .arg("provider_install_selects_one_active_current_platform_record")
+        .arg("--exact")
+        .arg("--nocapture")
+        .env("GITHUB_ACTIONS", "true")
+        .env("GITHUB_WORKFLOW", "Release Multi-Platform Packs")
+        .env(
+            "GITHUB_WORKFLOW_REF",
+            "junit/pre-commit-review/.github/workflows/release.yml@refs/heads/test",
+        )
+        .output()
+        .unwrap();
+
+    assert!(
+        output.status.success(),
+        "isolated fixture test failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
 }
 
 #[test]
