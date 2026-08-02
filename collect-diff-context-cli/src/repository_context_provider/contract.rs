@@ -7,6 +7,7 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::path::{Component, Path, PathBuf};
+use url::Url;
 
 pub const MAX_DEADLINE_MS: u64 = 30_000;
 pub const MAX_DEPTH: u8 = 2;
@@ -871,7 +872,15 @@ impl RustAnalyzerProjectModel {
                 "linked-project snapshot root must be absolute",
             );
         }
-        self.linked_project_value_with_root(Some(snapshot_root))
+        let protocol_root = Url::from_directory_path(snapshot_root)
+            .and_then(|uri| uri.to_file_path())
+            .map_err(|_| {
+                ProjectModelError::new(
+                    "provider-model-root-invalid",
+                    "linked-project snapshot root cannot be represented as a file URI",
+                )
+            })?;
+        self.linked_project_value_with_root(Some(&protocol_root))
     }
 
     fn linked_project_value_with_root(
