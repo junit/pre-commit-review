@@ -804,7 +804,12 @@ fn validate_runner_class(platform: &str, runner_class: &str) -> Result<()> {
         "darwin-amd64" => ("github-hosted-macos-15-intel", "macOS", "X64", "macos15"),
         "darwin-arm64" => ("github-hosted-macos-14-arm64", "macOS", "ARM64", "macos14"),
         "linux-amd64" => ("github-hosted-ubuntu-24-x64", "Linux", "X64", "ubuntu24"),
-        "windows-amd64" => ("github-hosted-windows-2025-x64", "Windows", "X64", "win25"),
+        "windows-amd64" => (
+            "github-hosted-windows-2025-x64",
+            "Windows",
+            "X64",
+            "win25-vs2026",
+        ),
         _ => return Err(binding_error("current provider platform is unsupported")),
     };
     let metadata_matches = runner_class == expected_class

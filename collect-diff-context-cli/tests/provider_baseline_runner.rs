@@ -72,7 +72,7 @@ fn hosted_runner_metadata() -> [(&'static str, &'static str); 5] {
             ("GITHUB_REPOSITORY", "junit/pre-commit-review"),
             ("RUNNER_OS", "Windows"),
             ("RUNNER_ARCH", "X64"),
-            ("ImageOS", "win25"),
+            ("ImageOS", "win25-vs2026"),
         ],
         _ => unreachable!(),
     }

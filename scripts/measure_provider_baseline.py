@@ -60,7 +60,7 @@ HOSTED_RUNNER_METADATA = {
         "GITHUB_REPOSITORY": "junit/pre-commit-review",
         "RUNNER_OS": "Windows",
         "RUNNER_ARCH": "X64",
-        "ImageOS": "win25",
+        "ImageOS": "win25-vs2026",
     },
 }
 IDENTITY_FIELDS = {
