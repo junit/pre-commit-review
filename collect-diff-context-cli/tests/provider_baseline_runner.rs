@@ -387,6 +387,26 @@ fn reviewed_measurement_requires_the_exact_hosted_environment_policy() {
 }
 
 #[test]
+fn reviewed_measurement_rejects_a_different_git_path() {
+    let temporary = tempfile::tempdir().unwrap();
+    let real_runner = Path::new(env!("CARGO_BIN_EXE_provider-baseline-sample-runner"));
+    let contract_path = reviewed_contract(temporary.path(), real_runner);
+    let real_runner_sha256 = sha256_bytes(&fs::read(real_runner).unwrap());
+    let mut contract: Value = serde_json::from_slice(&fs::read(&contract_path).unwrap()).unwrap();
+    contract["environment"]["PATH"] = json!(temporary.path().to_string_lossy());
+    fs::write(&contract_path, serde_json::to_vec(&contract).unwrap()).unwrap();
+
+    let output = run_reviewed_measurement(&contract_path, &real_runner_sha256);
+
+    assert!(!output.status.success());
+    let stderr = String::from_utf8_lossy(&output.stderr);
+    assert!(
+        stderr.contains("runner-provenance") && stderr.contains("Git PATH"),
+        "different Git directory escaped hosted provenance policy: {stderr}"
+    );
+}
+
+#[test]
 fn measurement_contract_rejects_case_folded_environment_duplicates() {
     let temporary = tempfile::tempdir().unwrap();
     let real_runner = Path::new(env!("CARGO_BIN_EXE_provider-baseline-sample-runner"));

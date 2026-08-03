@@ -471,14 +471,15 @@ def validate_hosted_git_path(value):
     git = shutil.which("git.exe" if os.name == "nt" else "git")
     if git is None:
         fail("runner-provenance", "measurement process Git executable is unavailable")
-    trusted_directory = str(Path(git).resolve(strict=True).parent)
+    trusted_directory = Path(git).resolve(strict=True).parent
     paths = value.split(os.pathsep)
-    if (
-        len(paths) != 1
-        or not Path(paths[0]).is_absolute()
-        or os.path.normcase(os.path.normpath(paths[0]))
-        != os.path.normcase(os.path.normpath(trusted_directory))
-    ):
+    if len(paths) != 1 or not Path(paths[0]).is_absolute():
+        fail("runner-provenance", "runner Git PATH is not process-bound")
+    try:
+        matches = Path(paths[0]).samefile(trusted_directory)
+    except OSError:
+        matches = False
+    if not matches:
         fail("runner-provenance", "runner Git PATH is not process-bound")
 
 
