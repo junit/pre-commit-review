@@ -17,8 +17,14 @@ jobs:
         uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
       - name: Verify sidecars, scoped attestations, and revocation bounds
         run: ./scripts/verify_release_artifacts.sh --fixture tests/fixtures/release
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.13'
       - name: Install schema validator
-        run: python3 -m pip install --disable-pip-version-check jsonschema
+        run: |
+          python3 -m pip install --disable-pip-version-check 'jsonschema==4.25.1'
+          python3 -c 'import jsonschema; from referencing import Registry, Resource'
       - name: Validate artifact schemas
         run: python3 scripts/validate_schemas.py
       - name: Check verifier shell syntax

@@ -411,11 +411,13 @@ fn unstaged_symlink_reads_link_target_without_following_it() -> Result<(), Box<d
     Ok(())
 }
 
-#[test]
-fn space_tab_and_unicode_paths_remain_distinct() -> Result<(), Box<dyn Error>> {
+fn assert_staged_paths_remain_distinct(
+    source_paths: &[&str],
+    expected_paths: &[&str],
+) -> Result<(), Box<dyn Error>> {
     let repo = GitRepo::new()?;
     repo.commit_file("README.md", b"base\n")?;
-    for path in ["space name.rs", "tab\tname.rs", "snow-雪.rs"] {
+    for path in source_paths {
         repo.write(path, format!("// {path}\n"))?;
         repo.git(["add", "--", path])?;
     }
@@ -429,8 +431,26 @@ fn space_tab_and_unicode_paths_remain_distinct() -> Result<(), Box<dyn Error>> {
         .map(|file| file.path.as_str())
         .collect::<Vec<_>>();
 
-    assert_eq!(paths, vec!["snow-雪.rs", "space name.rs", "tab\tname.rs"]);
+    assert_eq!(paths, expected_paths);
     Ok(())
+}
+
+#[cfg(not(windows))]
+#[test]
+fn space_tab_and_unicode_paths_remain_distinct() -> Result<(), Box<dyn Error>> {
+    assert_staged_paths_remain_distinct(
+        &["space name.rs", "tab\tname.rs", "snow-雪.rs"],
+        &["snow-雪.rs", "space name.rs", "tab\tname.rs"],
+    )
+}
+
+#[cfg(windows)]
+#[test]
+fn space_punctuation_and_unicode_paths_remain_distinct() -> Result<(), Box<dyn Error>> {
+    assert_staged_paths_remain_distinct(
+        &["space name.rs", "tab-name.rs", "snow-雪.rs"],
+        &["snow-雪.rs", "space name.rs", "tab-name.rs"],
+    )
 }
 
 #[test]

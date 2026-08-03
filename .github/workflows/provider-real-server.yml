@@ -124,10 +124,10 @@ jobs:
             suffix='.exe'
           fi
           runner="$GITHUB_WORKSPACE/collect-diff-context-cli/target/debug/provider-baseline-sample-runner${suffix}"
-          [ -f "$runner" ] && [ ! -L "$runner" ] || {
+          if ! { [ -f "$runner" ] && [ ! -L "$runner" ]; }; then
             echo 'Cargo did not emit the expected baseline runner' >&2
             exit 1
-          }
+          fi
           runner_copy="$RUNNER_TEMP/provider-evidence/runner-bin/provider-baseline-sample-runner${suffix}"
           python3 - "$runner" "$runner_copy" <<'PY'
           import os

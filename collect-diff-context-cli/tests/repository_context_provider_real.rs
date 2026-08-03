@@ -7,7 +7,7 @@ use collect_diff_context_cli::repository_context_provider::cli_contract::{
 use collect_diff_context_cli::repository_context_provider::contract::{
     AuthorizedProviderProfile, CallDirection, PositionEncoding, ProviderLimits, ProviderRange,
     ProviderRangeFormat, RepositoryContextProviderReport, RepositoryContextProviderStatus,
-    SeedKind, SeedSymbol,
+    SeedKind, SeedSymbol, MAX_DEADLINE_MS,
 };
 use collect_diff_context_cli::repository_context_provider::model::{
     build_linked_project_model, ProviderModelLimits,
@@ -108,6 +108,10 @@ fn materialize_fixture(source: &Path, destination: &Path) {
 
 fn sha256(bytes: &[u8]) -> String {
     format!("{:x}", Sha256::digest(bytes))
+}
+
+fn real_provider_limits() -> ProviderLimits {
+    ProviderLimits::maximum()
 }
 
 fn byte_position(source: &[u8], offset: usize) -> (u32, u32) {
@@ -251,10 +255,7 @@ impl RealRunHarness {
             kind: "repository_context_provider_run_request".to_string(),
             seeds: vec![seed_symbol(seed_path, &source)],
             directions: vec![CallDirection::Incoming, CallDirection::Outgoing],
-            limits: ProviderLimits {
-                deadline_ms: 10_000,
-                ..ProviderLimits::maximum()
-            },
+            limits: real_provider_limits(),
         };
         configure(&mut request, &source);
         request.validate_against(&profile.maximum_limits).unwrap();
@@ -516,6 +517,11 @@ fn fixture_crlf_marker_accepts_host_line_endings() {
     assert!(fixture_declares_crlf_lib(b"src/lib.rs -text\n"));
     assert!(fixture_declares_crlf_lib(b"src/lib.rs -text\r\n"));
     assert!(!fixture_declares_crlf_lib(b"src/lib.rs text\r\n"));
+}
+
+#[test]
+fn real_provider_semantic_runs_use_full_authorized_deadline() {
+    assert_eq!(real_provider_limits().deadline_ms, MAX_DEADLINE_MS);
 }
 
 #[test]

@@ -515,7 +515,7 @@ pub(crate) fn platform_default_cache_root() -> Result<PathBuf, CacheError> {
                 "HOME is unavailable for the platform cache default",
             )
         })?;
-        return Ok(PathBuf::from(home).join(".cache").join("pre-commit-review"));
+        Ok(PathBuf::from(home).join(".cache").join("pre-commit-review"))
     }
     #[cfg(windows)]
     {
