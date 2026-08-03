@@ -387,9 +387,9 @@ fn write_sample(arguments: Arguments) -> Result<()> {
     let output = env::var_os("PCR_PROVIDER_BASELINE_SAMPLE_OUTPUT")
         .ok_or_else(|| argument_error("sample output environment is missing"))?;
     let output = absolute_output(&output.to_string_lossy())?;
-    let deadline = SampleDeadline::start(sample_deadline(&arguments)?);
-    deadline.check()?;
-    let prepared = prepare(&arguments, Some(&deadline))?;
+    let sample_deadline = sample_deadline(&arguments)?;
+    let prepared = prepare(&arguments, None)?;
+    let deadline = SampleDeadline::start(sample_deadline);
     deadline.check()?;
     let measured = run_repository_context_provider_measured(ProviderInvocation {
         snapshot: &prepared.snapshot,

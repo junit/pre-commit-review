@@ -28,9 +28,11 @@ run_helper() {
 run_impact_context() {
   local workdir="$1"
   local output_file="$2"
+  local mode="${3:-fast}"
   local control_file="$tmp_dir/impact-control.json"
   local fingerprint
   local impact_status=0
+  local -a impact_args
 
   (
     cd "$workdir"
@@ -47,11 +49,15 @@ lines = pathlib.Path(sys.argv[1]).read_text(encoding='utf-8').splitlines()
 print(json.loads(lines[lines.index('## Review Control Plane JSON') + 1])['scope_fingerprint'])
 PY
 )"
+  impact_args=(--source staged --expect-scope "$fingerprint" --mode "$mode")
+  if [ "$mode" = 'deep' ]; then
+    impact_args+=(--deadline-ms 5000)
+  fi
   (
     cd "$workdir"
     PRE_COMMIT_REVIEW_SECRET_SCAN=off \
     PRE_COMMIT_REVIEW_REPOSITORY_CONTEXT_BIN="$context_bin" \
-      "$impact_helper" --source staged --expect-scope "$fingerprint" --mode fast
+      "$impact_helper" "${impact_args[@]}"
   ) >"$output_file" 2>&1 || impact_status=$?
   if [ "$impact_status" -ne 0 ]; then
     cat "$output_file" >&2
@@ -424,7 +430,9 @@ fn payment_flow() {}
 EOF_RUST
 git -C "$popular_test_hint_repo" add .
 popular_test_hint_output="$tmp_dir/popular-test-hints.out"
-run_impact_context "$popular_test_hint_repo" "$popular_test_hint_output"
+# This fixture exercises many independent hint rules; it does not assert that
+# 15 per-file Git bindings fit inside the separate 750 ms Fast contract.
+run_impact_context "$popular_test_hint_repo" "$popular_test_hint_output" deep
 for rule_id in \
   jvm-integration-naming \
   junit-integration-tag \

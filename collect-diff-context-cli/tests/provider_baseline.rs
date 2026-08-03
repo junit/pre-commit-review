@@ -114,6 +114,72 @@ fn fake_runner_command(executable: &Path) -> Value {
     ])
 }
 
+fn hosted_workflow_baseline_identity_gate() -> String {
+    let workflow =
+        fs::read_to_string(repo_root().join(".github/workflows/provider-real-server.yml")).unwrap();
+    let step = workflow
+        .split("      - name: Bind measurement evidence to the runner build\n")
+        .nth(1)
+        .expect("hosted measurement binding step is present");
+    let script = step
+        .split("          python3 - <<'PY'\n")
+        .nth(1)
+        .expect("hosted measurement identity gate is present")
+        .split("\n          PY\n")
+        .next()
+        .expect("hosted measurement identity gate is terminated");
+    script
+        .lines()
+        .map(|line| line.strip_prefix("          ").unwrap_or(line))
+        .collect::<Vec<_>>()
+        .join("\n")
+}
+
+fn hosted_measurement_from_reviewed_baseline(baseline: &Value, platform_id: &str) -> Value {
+    let reviewed = baseline["measurements"]
+        .as_array()
+        .unwrap()
+        .iter()
+        .find(|measurement| measurement["platform_id"] == platform_id)
+        .unwrap();
+    let mut measurement = reviewed.clone();
+    measurement["pack_version"] = baseline["pack_version"].clone();
+    measurement["source_lock_sha256"] = baseline["source_lock_sha256"].clone();
+    measurement
+}
+
+fn run_hosted_workflow_baseline_identity_gate(temporary: &Path, measurement: &Value) -> Output {
+    let evidence = temporary.join("hosted-measurement.json");
+    fs::write(&evidence, canonical_json(measurement).unwrap()).unwrap();
+    let gate = temporary.join("hosted-baseline-identity-gate.py");
+    fs::write(&gate, hosted_workflow_baseline_identity_gate()).unwrap();
+
+    Command::new("python3")
+        .arg(&gate)
+        .current_dir(repo_root())
+        .env("EVIDENCE", evidence)
+        .env(
+            "EXPECTED_RUNNER_SHA256",
+            measurement["runner_sha256"].as_str().unwrap(),
+        )
+        .env(
+            "EXPECTED_PLATFORM",
+            measurement["platform_id"].as_str().unwrap(),
+        )
+        .env(
+            "EXPECTED_RUNNER_CLASS",
+            measurement["runner_class"].as_str().unwrap(),
+        )
+        .env("GITHUB_REPOSITORY", "junit/pre-commit-review")
+        .env("GITHUB_REF", "refs/heads/test")
+        .env("GITHUB_SHA", "a".repeat(40))
+        .env("ImageOS", "win25-vs2026")
+        .env("RUNNER_OS", "Windows")
+        .env("RUNNER_ARCH", "X64")
+        .output()
+        .unwrap()
+}
+
 #[test]
 fn measurement_fake_runner_process() {
     let Some(mode) = env::var_os("PCR_FAKE_RUNNER_MODE") else {
@@ -670,6 +736,38 @@ fn synthetic_reviewed_baseline_is_canonical_and_policy_valid() {
         assert_eq!(measurement.timing_scope, "provider-run-only-v1");
         assert!(!measurement.provisioning_included);
     }
+}
+
+#[test]
+fn windows_hosted_baseline_treats_runner_digest_as_provenance_not_stable_identity() {
+    let baseline_path =
+        repo_root().join("third_party_artifacts/baselines/rust-analyzer-2026.07.27-pcr.3.json");
+    let baseline_bytes = fs::read(&baseline_path).unwrap();
+    let baseline: Value = serde_json::from_slice(&baseline_bytes).unwrap();
+
+    let mut runner_drift = hosted_measurement_from_reviewed_baseline(&baseline, "windows-amd64");
+    runner_drift["runner_sha256"] = json!("f".repeat(64));
+
+    let mut stable_identity_drift =
+        hosted_measurement_from_reviewed_baseline(&baseline, "windows-amd64");
+    stable_identity_drift["executable_sha256"] = json!("0".repeat(64));
+
+    let temporary = tempfile::tempdir().unwrap();
+    let stable_identity_output =
+        run_hosted_workflow_baseline_identity_gate(temporary.path(), &stable_identity_drift);
+    assert!(!stable_identity_output.status.success());
+    assert_eq!(
+        String::from_utf8(stable_identity_output.stderr).unwrap(),
+        "reviewed provider baseline identity differs\n"
+    );
+
+    let runner_drift_output =
+        run_hosted_workflow_baseline_identity_gate(temporary.path(), &runner_drift);
+    assert!(
+        runner_drift_output.status.success(),
+        "runner_sha256 is per-run provenance and must not reject a hosted measurement whose stable identity matches the reviewed Windows baseline: {}",
+        String::from_utf8_lossy(&runner_drift_output.stderr)
+    );
 }
 
 #[test]

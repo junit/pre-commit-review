@@ -95,12 +95,14 @@ resolves only the project-owned adapter CLI and never resolves or downloads
 
 This provider remains opt-in and unreachable from the default review, Fast
 Mode, repository index, SQLite persistence, and static-analysis orchestration
-paths. Delivery 4 packages no real `rust-analyzer` artifact. See
+paths. Delivery 4 defines the adapter and protocol contracts; Delivery 5B adds
+reviewed real `rust-analyzer` packs and explicit transactional copy-mode
+installation without making the provider reachable from default paths. See
 [`rust-analyzer-context-provider.md`](rust-analyzer-context-provider.md) for
 the commands, schemas, digest checks, exit codes, linked-project, LSP,
-lifecycle, and report boundaries. A fake server proves the local protocol
-contract; real-server artifacts and sustained release evidence belong to
-Delivery 5.
+lifecycle, report, installation, and release-evidence boundaries. An
+independent fake server remains the adversarial protocol source; the real
+provider packs supply four-platform release evidence.
 
 The graph database is an internal implementation detail. Callers receive only bounded changed-symbol, incoming/outgoing relationship, reverse-dependent, connected-test, and limitation slices. Index, query, and output completeness remain independent so a complete bounded query over a heuristic graph is never presented as compiler completeness.
 

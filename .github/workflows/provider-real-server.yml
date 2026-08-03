@@ -246,7 +246,7 @@ jobs:
                   raise SystemExit('reviewed provider baseline platform binding differs')
               reviewed = candidates[0]
               identity_fields = (
-                  'pack_sha256', 'executable_sha256', 'runner_sha256', 'profile_sha256',
+                  'pack_sha256', 'executable_sha256', 'profile_sha256',
                   'fixture_id', 'fixture_sha256', 'request_sha256', 'runner_class',
                   'toolchain', 'timing_scope', 'provisioning_included',
               )

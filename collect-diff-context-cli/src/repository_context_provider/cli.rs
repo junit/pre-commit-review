@@ -957,11 +957,11 @@ fn read_file_sha256(path: &Path, maximum_bytes: usize) -> Result<(PathBuf, Strin
     Ok((path.to_path_buf(), format!("{:x}", digest.finalize())))
 }
 
-fn ensure_executable(path: &Path) -> Result<(), CliError> {
+fn ensure_executable(_path: &Path) -> Result<(), CliError> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        let mode = fs::metadata(path)
+        let mode = fs::metadata(_path)
             .map_err(|_| {
                 CliError::new(
                     "provider-cli-executable-invalid",

@@ -116,9 +116,6 @@ git -C "$security_repo" init -q
 git -C "$security_repo" config user.email review@example.test
 git -C "$security_repo" config user.name Review
 printf 'base\n' >"$security_repo/README.md"
-git -C "$security_repo" add README.md
-git -C "$security_repo" commit -qm base
-printf 'pub fn changed() {}\n' >"$security_repo/src.rs"
 printf '(function_item) @repository_query\n' >"$security_repo/.pre-commit-review/tree-sitter-rust.scm"
 printf '{"grammars":["repository"]}\n' >"$security_repo/tree-sitter.json"
 printf 'plugin\0payload' >"$security_repo/grammars/libtree-sitter-rust.so"
@@ -129,8 +126,11 @@ touch "$PCR_REPOSITORY_HOOK_SENTINEL"
 exit 97
 EOF_REPO_HOOK
 chmod +x "$security_repo/scripts/repository-context-hook.sh"
-git -C "$security_repo" add src.rs .pre-commit-review/tree-sitter-rust.scm \
+git -C "$security_repo" add README.md .pre-commit-review/tree-sitter-rust.scm \
   tree-sitter.json grammars/libtree-sitter-rust.so scripts/repository-context-hook.sh
+git -C "$security_repo" commit -qm base
+printf 'pub fn changed() {}\n' >"$security_repo/src.rs"
+git -C "$security_repo" add src.rs
 
 security_control="$tmp_dir/security-control.out"
 (

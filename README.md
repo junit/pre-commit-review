@@ -1,6 +1,6 @@
 # pre-commit-review
 
-[![Lint](https://img.shields.io/github/actions/workflow/status/wifibaby4u/pre-commit-review/lint.yml?branch=main&label=lint&logo=github)](https://github.com/wifibaby4u/pre-commit-review/actions/workflows/lint.yml)
+[![Lint](https://img.shields.io/github/actions/workflow/status/junit/pre-commit-review/lint.yml?branch=main&label=lint&logo=github)](https://github.com/junit/pre-commit-review/actions/workflows/lint.yml)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue)](./LICENSE)
 [![Shell](https://img.shields.io/badge/shell-bash-4EAA25?logo=gnubash&logoColor=white)](https://www.shellcheck.net/)
 

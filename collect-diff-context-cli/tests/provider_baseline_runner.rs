@@ -540,13 +540,12 @@ fn runner_requires_the_target_distribution_manifest_before_receipts() {
 }
 
 #[test]
-fn runner_sample_observes_its_total_deadline_before_provider_bindings() {
+fn runner_sample_validates_bindings_before_an_expired_test_deadline() {
     let temporary = tempfile::tempdir().unwrap();
-    let fixture_root = temporary.path().join("fixture");
-    fs::create_dir(&fixture_root).unwrap();
-    fs::write(fixture_root.join("lib.rs"), b"pub fn seed() {}\n").unwrap();
-    let source_lock = temporary.path().join("source-lock.json");
-    fs::write(&source_lock, b"{}").unwrap();
+    let fixture_root = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("tests/fixtures/repository_context_provider/real/single_crate");
+    let source_lock = Path::new(env!("CARGO_MANIFEST_DIR"))
+        .join("../third_party_artifacts/sources/rust-analyzer-2026-07-27.json");
     let output_path = temporary.path().join("sample.json");
 
     let output = Command::new(env!("CARGO_BIN_EXE_provider-baseline-sample-runner"))
@@ -568,12 +567,21 @@ fn runner_sample_observes_its_total_deadline_before_provider_bindings() {
 
     assert!(!output.status.success());
     assert!(output.stdout.is_empty());
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(
-        stderr.contains("runner-deadline"),
-        "runner did not enforce its total deadline first: {stderr}"
+    assert_eq!(
+        String::from_utf8(output.stderr).unwrap(),
+        "provider baseline sample runner failed: runner-binding: target distribution manifest is unavailable\n"
     );
     assert!(!output_path.exists());
+}
+
+#[test]
+fn runner_rejects_a_test_deadline_override_above_the_fixed_limit() {
+    let temporary = tempfile::tempdir().unwrap();
+    let fixture_root = temporary.path().join("fixture");
+    fs::create_dir(&fixture_root).unwrap();
+    let source_lock = temporary.path().join("source-lock.json");
+    fs::write(&source_lock, b"{}").unwrap();
+    let output_path = temporary.path().join("sample.json");
 
     let output = Command::new(env!("CARGO_BIN_EXE_provider-baseline-sample-runner"))
         .args([
@@ -591,10 +599,14 @@ fn runner_sample_observes_its_total_deadline_before_provider_bindings() {
         .env("PCR_PROVIDER_BASELINE_TEST_DEADLINE_MS", "30001")
         .output()
         .unwrap();
+
     assert!(!output.status.success());
-    let stderr = String::from_utf8_lossy(&output.stderr);
-    assert!(stderr.contains("runner-arguments"));
-    assert!(stderr.contains("test deadline override is invalid"));
+    assert!(output.stdout.is_empty());
+    assert_eq!(
+        String::from_utf8(output.stderr).unwrap(),
+        "provider baseline sample runner failed: runner-arguments: test deadline override is invalid\n"
+    );
+    assert!(!output_path.exists());
 }
 
 #[cfg(unix)]

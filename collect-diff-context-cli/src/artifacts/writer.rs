@@ -557,7 +557,7 @@ fn add_tree(
     Ok(())
 }
 
-fn source_mode(source: &Path, archive_path: &str) -> WriterResult<u32> {
+fn source_mode(_source: &Path, archive_path: &str) -> WriterResult<u32> {
     if archive_path.starts_with("bin/")
         || archive_path.starts_with("scripts/bin/")
         || archive_path == "install.sh"
@@ -568,8 +568,13 @@ fn source_mode(source: &Path, archive_path: &str) -> WriterResult<u32> {
     #[cfg(unix)]
     {
         use std::os::unix::fs::PermissionsExt;
-        let mode = fs::symlink_metadata(source)
-            .map_err(|error| format!("could not inspect pack input {}: {error}", source.display()))?
+        let mode = fs::symlink_metadata(_source)
+            .map_err(|error| {
+                format!(
+                    "could not inspect pack input {}: {error}",
+                    _source.display()
+                )
+            })?
             .permissions()
             .mode();
         if mode & 0o111 != 0 {
