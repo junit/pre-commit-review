@@ -7,6 +7,9 @@ use std::process::Command;
 use std::thread;
 use std::time::Duration;
 
+const LARGE_REPORT_SCOPE_FINGERPRINT: &str =
+    "8888888888888888888888888888888888888888888888888888888888888888";
+
 fn main() {
     let mut arguments = env::args().skip(1);
     let scenario = arguments.next().unwrap_or_default();
@@ -336,7 +339,8 @@ fn graph_with_health_and_empty_responses(
     )?;
     let uri = format!("{root_uri}src/lib.rs");
     let prepared_seed_name = if env::var("PRE_COMMIT_REVIEW_SCOPE_FINGERPRINT")
-        .is_ok_and(|value| value.starts_with('8'))
+        .as_deref()
+        .is_ok_and(|value| value == LARGE_REPORT_SCOPE_FINGERPRINT)
     {
         "large-seed"
     } else {

@@ -528,6 +528,17 @@ fn call_hierarchy_retries_transient_empty_seed_resolution() {
 }
 
 #[test]
+fn graph_warning_does_not_select_large_report_from_a_scope_digest_prefix() {
+    let mut fixture = Fixture::new();
+    fixture.binding.scope_fingerprint = format!("8{}", "0".repeat(63));
+
+    let traversal = fixture.run_graph_scenario("graph-warning");
+
+    assert_eq!(traversal.seed_symbols.len(), 1);
+    assert!(!traversal.edges.is_empty());
+}
+
+#[test]
 fn public_runner_returns_bound_completed_report() {
     let fixture = Fixture::new();
     let (request, profile) = fixture.runner_input();

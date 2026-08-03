@@ -59,8 +59,10 @@ grep -Fq 'collect-diff-context-cli/schemas/repository-context-provider-registry.
   "$provider_doc" || fail 'provider registry schema is not documented'
 grep -Fq 'collect-diff-context-cli/schemas/repository-context-provider-run-request.schema.json' \
   "$provider_doc" || fail 'provider request schema is not documented'
-grep -Fq "Delivery 4 does not bundle or download a real \`rust-analyzer\` artifact." \
-  "$provider_doc" || fail 'Delivery 4 artifact boundary is not documented'
+grep -Fq '## Delivery 5 Distribution Boundary' "$provider_doc" \
+  || fail 'Delivery 5 distribution boundary is not documented'
+grep -Fq 'installation of the reviewed current-platform Delivery 5B pack.' "$provider_doc" \
+  || fail 'Delivery 5B provider installation boundary is not documented'
 grep -Fq "\`repository-context-provider-cli\`" "$capabilities_doc" \
   || fail 'explicit provider CLI is not listed in helper capabilities'
 grep -Fq 'Delivery 4 explicit CLI' "$options_doc" \

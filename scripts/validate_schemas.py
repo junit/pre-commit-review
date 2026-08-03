@@ -165,7 +165,12 @@ def validate_canonical_artifact_metadata(skill_root, schemas, schema_registry):
 
 
 def validate_artifact_baseline_schema_policy(skill_root, schemas, schema_registry):
-    baseline_path = skill_root / 'tests/fixtures/provider-release/reviewed-baseline.json'
+    artifact_root = skill_root / 'third_party_artifacts'
+    if not artifact_root.exists():
+        return
+    baseline_path = (
+        artifact_root / 'baselines/rust-analyzer-2026.07.27-pcr.3.json'
+    )
     baseline, _ = _load_canonical_json(baseline_path)
     validator = jsonschema.Draft202012Validator(
         schemas['third-party-artifact-baseline.schema.json'],

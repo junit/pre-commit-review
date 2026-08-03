@@ -187,6 +187,8 @@ Useful flags:
 
 Release artifact trust is checked outside the extracted core payload. A release consumer verifies the archive's published `.sha256` sidecar before opening it, then verifies the project attestation for the exact archive subject. The attestation must bind `junit/pre-commit-review`, the expected release workflow, an immutable version tag and commit, the GitHub Actions OIDC issuer, and the pack composition digests. `scripts/verify_release_artifacts.sh --fixture <fixture>` is the build-only verifier used by CI; an unscoped subject-only attestation is rejected.
 
+Manual `workflow_dispatch` runs of the core release workflow are build-and-verify only. Core attestations and publication are reachable only from a pushed immutable `v*` version tag.
+
 Third-party packs use the project-owned immutable release tag and never fall back to `latest`, `nightly`, another source, or a remote revocation service. Target-local revocations are sorted and digest-pinned with 16,384-entry and 8 MiB ceilings. An offline core installation cannot learn a revocation published after that core was built, so operators must install a newer reviewed core when the distribution manifest changes.
 
 ### Optional rust-analyzer Provider

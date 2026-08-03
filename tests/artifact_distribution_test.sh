@@ -483,6 +483,17 @@ if 'needs: publish-rust-analyzer' not in verify_published_provider:
 attest_core = job_body(release_text, 'attest-release-inputs')
 verify_attested_core = job_body(release_text, 'verify-attested-release-inputs')
 publish_core = job_body(release_text, 'create-release')
+if 'build_only:' in release_text:
+    raise SystemExit('manual core workflow dispatch must always remain build-only')
+for body, label in (
+    (attest_core, 'core attestation'),
+    (verify_attested_core, 'clean core attestation verification'),
+    (publish_core, 'core publication'),
+):
+    if "startsWith(github.ref, 'refs/tags/')" not in body:
+        raise SystemExit(f'{label} is not restricted to an immutable version tag')
+    if "github.event_name == 'workflow_dispatch'" in body:
+        raise SystemExit(f'{label} is reachable from a branch workflow dispatch')
 if 'actions/attest-build-provenance@' not in attest_core:
     raise SystemExit('core release attestation is not produced before clean verification')
 if 'needs: attest-release-inputs' not in verify_attested_core:

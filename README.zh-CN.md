@@ -183,6 +183,23 @@
 - `--dry-run` 只打印将执行的动作，不真正修改文件
 - `--no-download` 跳过可选的 Gitleaks 下载；没有密钥打码时审查仍可继续
 - `--doctor` 在不安装 skill 的情况下诊断 scanner 来源、版本、bundled SHA256、可信配置和 stdin/JSON 能力；打码不可用时会非零退出，但不代表审查被阻塞
+- `--doctor-target /absolute/managed-skill` 对已安装目标执行只读 artifact 诊断；不会下载、修复或选择替代版本
+
+Release 产物的信任校验发生在 core payload 解压之前。使用方先验证 archive 外部发布的 `.sha256` sidecar，再验证精确 archive subject 的项目 attestation。Attestation 必须绑定 `junit/pre-commit-review`、预期 release workflow、不可变版本 tag 与 commit、GitHub Actions OIDC issuer，以及 pack composition digests。CI 使用 `scripts/verify_release_artifacts.sh --fixture <fixture>` 做仅构建验证；只有 subject、没有作用域约束的 attestation 会被拒绝。
+
+手动触发 core release workflow 只执行构建和验证。Core attestation 与发布仅能由已推送的不可变 `v*` 版本 tag 触发。
+
+第三方 pack 使用项目自有的不可变 release tag，不会回退到 `latest`、`nightly`、其他来源或远程 revocation service。目标内 revocation 按顺序保存并绑定 digest，上限为 16,384 条或 8 MiB。离线安装的旧 core 无法获知其构建后才发布的撤销记录；distribution manifest 变化后，operator 必须安装更新且已审查的 core。
+
+### 可选 rust-analyzer Provider
+
+普通审查、Fast Mode、repository index、SQLite cache 和 static-analysis workflow 都不会安装或启动 rust-analyzer provider。只有显式 copy-mode 安装会 provision 它：
+
+```bash
+./install.sh --agent codex --copy --with-rust-analyzer
+```
+
+`--no-download --with-rust-analyzer` 只接受 canonical cache 中已经验证的当前平台 pack；cache miss 会在替换目标前失败。`--with-rust-analyzer --link` 会在下载或修改目标前被拒绝。成功安装只会在 managed target 下生成 `runtime/providers/rust-analyzer.profile.json` 和 `runtime/providers/provider-registry.json`；调用方必须把它们的绝对路径和精确 SHA256 显式传给 `repository-context-provider-cli run`。Provider 运行时不会下载、搜索 `PATH`、调用 `rustup` 或 package manager、解析直接 upstream asset，也不会发现全局 registry。
 
 示例：
 

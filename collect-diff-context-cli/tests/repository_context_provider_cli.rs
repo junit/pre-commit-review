@@ -626,7 +626,13 @@ fn run_binds_registry_profile_executable_model_request_scope_and_snapshot(
     assert!(output.stderr.is_empty());
     let report: RepositoryContextProviderReport = serde_json::from_slice(&output.stdout)?;
     report.validate()?;
-    assert_eq!(report.status, RepositoryContextProviderStatus::Completed);
+    assert_eq!(
+        report.status,
+        RepositoryContextProviderStatus::Completed,
+        "limitations: {:?}, metrics: {:?}",
+        report.limitations,
+        report.metrics
+    );
     assert_eq!(
         report.candidate.scope_fingerprint,
         fixture.scope_fingerprint
@@ -753,7 +759,11 @@ fn run_renders_the_complete_provider_status_matrix_without_child_text() -> Resul
         assert!(output.stderr.is_empty());
         let report: RepositoryContextProviderReport = serde_json::from_slice(&output.stdout)?;
         report.validate()?;
-        assert_eq!(report.status, expected, "scenario {scenario}");
+        assert_eq!(
+            report.status, expected,
+            "scenario {scenario}: limitations: {:?}, metrics: {:?}",
+            report.limitations, report.metrics
+        );
         let encoded = String::from_utf8(output.stdout)?;
         assert!(!encoded.contains("fixture initialize failure"));
         assert!(!encoded.contains("Content-Length"));

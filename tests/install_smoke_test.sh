@@ -138,10 +138,13 @@ rm -f "$isolated_source"/scripts/bin/static_analysis-* \
 grep -Fq "\"\$static_binary\" orchestrate --help" "$repo_root/.github/workflows/lint.yml"
 grep -Fq "\"\$repository_binary\" collect --help" "$repo_root/.github/workflows/lint.yml"
 grep -Fq "\"\$repository_binary\" index --help" "$repo_root/.github/workflows/lint.yml"
-grep -Fq 'cargo clippy --all-targets --all-features -- -D warnings' "$repo_root/.github/workflows/lint.yml"
-grep -Fq 'cargo test --release --test repository_index_integration -- --nocapture' "$repo_root/.github/workflows/lint.yml"
+grep -Fq 'cargo +1.95.0 clippy --locked --all-targets --all-features -- -D warnings' \
+  "$repo_root/.github/workflows/lint.yml"
+grep -Fq 'cargo +1.95.0 test --release --locked --test repository_index_integration -- --nocapture' \
+  "$repo_root/.github/workflows/lint.yml"
 for fuzz_target in file_facts_decode repository_graph_row repository_overlay repository_traversal; do
-  grep -Fq "cargo +nightly fuzz run $fuzz_target" "$repo_root/.github/workflows/lint.yml"
+  grep -Fq "cargo +nightly-2026-07-29 fuzz run $fuzz_target" \
+    "$repo_root/.github/workflows/lint.yml"
 done
 grep -Fq './tests/static_analysis_orchestration_test.sh' "$repo_root/.github/workflows/lint.yml"
 grep -Fq "\"\${repository_binary}\" collect --help" "$repo_root/scripts/build_all_binaries.sh"

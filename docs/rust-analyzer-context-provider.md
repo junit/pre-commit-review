@@ -4,13 +4,15 @@
 
 This is an opt-in semantic provider for local developer tooling and code review
 infrastructure. It is not a network-security product. Delivery 4 exposes both
-the bounded library API and an explicit standalone CLI, but neither surface is
-part of the default review, Fast Mode, repository index, SQLite persistence, or
-static-analysis orchestration paths.
+the bounded library API and an explicit standalone CLI. Delivery 5B adds
+reviewed real-provider packs and explicit transactional installation, but no
+provider surface is part of the default review, Fast Mode, repository index,
+SQLite persistence, or static-analysis orchestration paths.
 
-The current delivery uses an independent fake LSP server for deterministic
-tests. Delivery 4 packages only the project-owned adapter CLI and its contracts.
-Delivery 4 does not bundle or download a real `rust-analyzer` artifact.
+Deterministic adversarial tests continue to use an independent fake LSP server.
+The core package contains only the project-owned adapter CLI and contracts; a
+real `rust-analyzer` enters a managed target only through explicit copy-mode
+installation of the reviewed current-platform Delivery 5B pack.
 
 ## Explicit CLI Workflow
 
@@ -199,10 +201,16 @@ rtk cargo +nightly fuzz run repository_context_frame --fuzz-dir collect-diff-con
 rtk cargo +nightly fuzz run repository_context_messages --fuzz-dir collect-diff-context-cli/fuzz -- -runs=256 -timeout=5
 ```
 
-## Deferred Release Work
+## Delivery 5 Distribution Boundary
 
-Delivery 5 owns any decision to distribute pinned real `rust-analyzer`
-artifacts on supported platforms, plus artifact-specific SBOM/license closure,
-real-server fixture evidence, a sustained fuzz campaign, trust-chain evidence,
-and resource/latency benchmarks. None of those claims are implied by the
-Delivery 4 adapter CLI, packaged contracts, or fake-server gates.
+Delivery 5B distributes the pinned real `rust-analyzer` for the four supported
+platforms through project-owned normalized packs. The reviewed distribution
+includes component-level SBOM/license evidence, real-server fixtures, release
+fuzz gates, scoped trust-chain evidence, sampled process-tree RSS, and
+pack-versioned latency baselines. These claims apply only to the exact active
+manifest records and do not broaden the Delivery 4 adapter or fake-server
+contracts.
+
+Manual core workflow dispatches are build-and-verify only. Core attestation and
+publication require a pushed immutable `v*` version tag, and the publishing job
+fails unless the repository immutable-releases setting is enabled.
