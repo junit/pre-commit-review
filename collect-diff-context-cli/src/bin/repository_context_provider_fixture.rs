@@ -610,8 +610,6 @@ fn hang() -> io::Result<()> {
 }
 
 fn malformed_frame() -> io::Result<()> {
-    let mut input = io::stdin().lock();
-    let _ = read_frame(&mut input)?;
     let mut stdout = io::stdout().lock();
     stdout.write_all(b"Content-Length: nope\r\n\r\n")?;
     stdout.flush()?;
