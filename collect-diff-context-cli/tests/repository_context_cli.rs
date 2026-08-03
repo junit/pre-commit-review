@@ -473,7 +473,7 @@ fn candidate_preparation_deadline_terminates_slow_git() -> Result<(), Box<dyn Er
     let wrapper = wrapper_root.path().join("git");
     fs::write(
         &wrapper,
-        b"#!/bin/sh\ncase \"$SLOW_GIT_PHASE: $* \" in\n  scope:*\" rev-parse --show-toplevel \"*) sleep 2 ;;\n  output:*\" rev-parse --show-toplevel \"*) dd if=/dev/zero bs=1048576 count=17 2>/dev/null; exit 0 ;;\n  revalidate:*\" rev-parse HEAD \"*)\n    count=0\n    if [ -f \"$SLOW_GIT_STATE\" ]; then count=$(cat \"$SLOW_GIT_STATE\"); fi\n    count=$((count + 1))\n    printf '%s\\n' \"$count\" > \"$SLOW_GIT_STATE\"\n    if [ \"$count\" -ge 2 ]; then sleep 2; fi\n    ;;\n  list:*\" ls-files --stage \"*) sleep 2 ;;\n  size:*\" cat-file -s \"*) sleep 2 ;;\n  ranges:*\" --unified=0 \"*) sleep 2 ;;\n  blob:*\" cat-file blob \"*) sleep 2 ;;\nesac\nexec \"$REAL_GIT\" \"$@\"\n",
+        b"#!/bin/sh\ncase \"$SLOW_GIT_PHASE: $* \" in\n  scope:*\" rev-parse --show-toplevel \"*) sleep 2 ;;\n  revalidate:*\" rev-parse HEAD \"*)\n    count=0\n    if [ -f \"$SLOW_GIT_STATE\" ]; then count=$(cat \"$SLOW_GIT_STATE\"); fi\n    count=$((count + 1))\n    printf '%s\\n' \"$count\" > \"$SLOW_GIT_STATE\"\n    if [ \"$count\" -ge 2 ]; then sleep 2; fi\n    ;;\n  list:*\" ls-files --stage \"*) sleep 2 ;;\n  size:*\" cat-file -s \"*) sleep 2 ;;\n  ranges:*\" --unified=0 \"*) sleep 2 ;;\n  blob:*\" cat-file blob \"*) sleep 2 ;;\nesac\nexec \"$REAL_GIT\" \"$@\"\n",
     )?;
     fs::set_permissions(&wrapper, fs::Permissions::from_mode(0o755))?;
     let real_git = executable_on_path("git")?;
@@ -484,15 +484,7 @@ fn candidate_preparation_deadline_terminates_slow_git() -> Result<(), Box<dyn Er
     )?;
 
     let slow_git_state = wrapper_root.path().join("slow-git-state");
-    for phase in [
-        "scope",
-        "output",
-        "list",
-        "size",
-        "ranges",
-        "blob",
-        "revalidate",
-    ] {
+    for phase in ["scope", "list", "size", "ranges", "blob", "revalidate"] {
         let _ = fs::remove_file(&slow_git_state);
         let started = Instant::now();
         let output = Command::new(env!("CARGO_BIN_EXE_repository-context-cli"))
@@ -538,14 +530,9 @@ fn candidate_preparation_deadline_terminates_slow_git() -> Result<(), Box<dyn Er
             String::from_utf8_lossy(&output.stdout),
             String::from_utf8_lossy(&output.stderr)
         );
-        let expected_diagnostic = if phase == "output" {
-            "output"
-        } else {
-            "deadline"
-        };
         assert!(
-            diagnostic.contains(expected_diagnostic),
-            "fast-path failure must report {expected_diagnostic} for {phase}: {diagnostic}"
+            diagnostic.contains("deadline"),
+            "fast-path failure must report deadline for {phase}: {diagnostic}"
         );
         if output.status.code() == Some(3) {
             let context: ImpactContext = serde_json::from_slice(&output.stdout)?;

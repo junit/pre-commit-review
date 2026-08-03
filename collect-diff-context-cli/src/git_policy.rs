@@ -185,3 +185,22 @@ fn terminate_process_group(process_group: &ProcessGroup, child: &mut std::proces
     process_group.terminate(child);
     let _ = child.wait();
 }
+
+#[cfg(all(test, unix))]
+mod tests {
+    use std::fs;
+
+    use super::*;
+
+    #[test]
+    fn bounded_output_reports_the_capture_limit_before_its_independent_deadline() {
+        let directory = tempfile::tempdir().unwrap();
+        let output = directory.path().join("oversized-output");
+        fs::write(&output, vec![0_u8; MAX_GIT_OUTPUT_BYTES + 1]).unwrap();
+
+        let error =
+            output_bounded(Command::new("cat").arg(output), Duration::from_secs(5)).unwrap_err();
+
+        assert!(matches!(error, GitOutputError::OutputLimitExceeded));
+    }
+}
