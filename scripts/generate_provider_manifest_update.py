@@ -98,6 +98,11 @@ def require_positive_integer(value, maximum, code, label):
     return value
 
 
+def require_schema_version(value, code, label):
+    if isinstance(value, bool) or not isinstance(value, int) or value != 1:
+        fail(code, f"{label} schema version differs")
+
+
 def digest(raw):
     return hashlib.sha256(raw).hexdigest()
 
@@ -133,8 +138,7 @@ def load_source_lock(repo_root):
     }
     require_fields(source_lock, required, "source-lock-binding", "source lock")
     if (
-        source_lock["schema_version"] != 1
-        or source_lock["kind"] != "third_party_sources"
+        source_lock["kind"] != "third_party_sources"
         or source_lock["artifact_id"] != "rust-analyzer"
         or source_lock["tool_version"] != TOOL_VERSION
         or source_lock["upstream_repository"] != "rust-lang/rust-analyzer"
@@ -142,6 +146,9 @@ def load_source_lock(repo_root):
         or not COMMIT.fullmatch(source_lock.get("upstream_commit", ""))
     ):
         fail("source-lock-binding", "source-lock identity is not reviewed")
+    require_schema_version(
+        source_lock["schema_version"], "source-lock-binding", "source lock"
+    )
     assets = source_lock.get("assets")
     if (
         not isinstance(assets, list)
@@ -170,8 +177,7 @@ def validate_publication_identity(publication):
     }
     require_fields(publication, required, "publication-contract", "publication")
     if (
-        publication["schema_version"] != 1
-        or publication["kind"] != "verified_provider_publication"
+        publication["kind"] != "verified_provider_publication"
         or publication["verification_status"] != "verified"
         or publication["repository"] != REPOSITORY
         or publication["workflow"] != WORKFLOW
@@ -183,6 +189,9 @@ def validate_publication_identity(publication):
         or not COMMIT.fullmatch(publication.get("commit", ""))
     ):
         fail("publication-contract", "publication identity is not reviewed")
+    require_schema_version(
+        publication["schema_version"], "publication-contract", "publication"
+    )
     if publication["source_lock_sha256"] != SOURCE_LOCK_SHA256:
         fail("source-lock-binding", "publication does not bind the reviewed source lock")
 
@@ -462,13 +471,13 @@ def validate_baseline(baseline, publication, platforms):
     }
     require_fields(baseline, fields, "baseline-binding", "baseline")
     if (
-        baseline["schema_version"] != 1
-        or baseline["kind"] != "third_party_artifact_baseline"
+        baseline["kind"] != "third_party_artifact_baseline"
         or baseline["artifact_id"] != publication["artifact_id"]
         or baseline["pack_version"] != publication["pack_version"]
         or baseline["source_lock_sha256"] != publication["source_lock_sha256"]
     ):
         fail("baseline-binding", "baseline identity differs from the publication")
+    require_schema_version(baseline["schema_version"], "baseline-binding", "baseline")
     measurements = baseline.get("measurements")
     if (
         not isinstance(measurements, list)
@@ -520,16 +529,54 @@ def build_manifest_record(source_lock, platform, quality_baseline_sha256):
     }
 
 
-def build_candidate(repo_root, publication_raw, baseline_raw, platforms, source_lock):
-    manifest_path = repo_root / "third_party_artifacts/manifest.json"
-    manifest, manifest_raw = read_canonical(manifest_path, "manifest-state")
-    if any(pack.get("artifact_id") == "rust-analyzer" for pack in manifest.get("packs", [])):
-        fail("manifest-state", "canonical manifest already contains a rust-analyzer record")
-    baseline_sha256 = digest(baseline_raw)
-    records = [build_manifest_record(source_lock, platform, baseline_sha256) for platform in platforms]
-    packs = list(manifest.get("packs", [])) + records
+def validate_manifest_state(manifest):
+    require_fields(
+        manifest,
+        {
+            "schema_version",
+            "kind",
+            "release_repository",
+            "revocation_index_sha256",
+            "packs",
+        },
+        "manifest-state",
+        "canonical manifest",
+    )
+    if (
+        manifest["kind"] != "third_party_artifacts"
+        or manifest["release_repository"] != REPOSITORY
+    ):
+        fail("manifest-state", "canonical manifest identity differs")
+    require_schema_version(manifest["schema_version"], "manifest-state", "manifest")
+    require_sha256(
+        manifest["revocation_index_sha256"],
+        "manifest-state",
+        "revocation index digest",
+    )
+    if not isinstance(manifest["packs"], list) or any(
+        not isinstance(pack, dict) for pack in manifest["packs"]
+    ):
+        fail("manifest-state", "canonical manifest packs must be objects")
+    if any(pack.get("artifact_id") != "rust-analyzer" for pack in manifest["packs"]):
+        fail(
+            "manifest-state",
+            "canonical manifest contains records outside the reviewed provider scope",
+        )
+
+
+def merge_provider_records(manifest, records):
+    existing = list(manifest["packs"])
+    provider_records = [
+        pack for pack in existing if pack.get("artifact_id") == "rust-analyzer"
+    ]
+    if provider_records and canonical_bytes(provider_records) != canonical_bytes(records):
+        fail("manifest-state", "canonical rust-analyzer records differ from the candidate")
+    packs = [pack for pack in existing if pack.get("artifact_id") != "rust-analyzer"] + records
     packs.sort(key=lambda pack: (pack["artifact_id"], pack["platform_id"], pack["pack_version"]))
-    manifest_candidate = {**manifest, "packs": packs}
+    return {**manifest, "packs": packs}
+
+
+def build_platform_summaries(platforms, baseline_sha256):
     summaries = []
     for platform in platforms:
         subjects = platform["subjects"]
@@ -547,6 +594,18 @@ def build_candidate(repo_root, publication_raw, baseline_raw, platforms, source_
                 "quality_baseline_sha256": baseline_sha256,
             }
         )
+    return summaries
+
+
+def build_candidate(manifest_path, publication_raw, baseline_raw, platforms, source_lock):
+    manifest, manifest_raw = read_canonical(manifest_path, "manifest-state")
+    validate_manifest_state(manifest)
+    baseline_sha256 = digest(baseline_raw)
+    records = [
+        build_manifest_record(source_lock, platform, baseline_sha256)
+        for platform in platforms
+    ]
+    manifest_candidate = merge_provider_records(manifest, records)
     return {
         "schema_version": 1,
         "kind": "provider_manifest_update_candidate",
@@ -554,7 +613,7 @@ def build_candidate(repo_root, publication_raw, baseline_raw, platforms, source_
         "source_publication_sha256": digest(publication_raw),
         "quality_baseline_sha256": baseline_sha256,
         "base_manifest_sha256": digest(manifest_raw),
-        "platforms": summaries,
+        "platforms": build_platform_summaries(platforms, baseline_sha256),
         "manifest_candidate": manifest_candidate,
     }
 
@@ -565,6 +624,7 @@ def parse_args():
     )
     parser.add_argument("--fixture", required=True, type=Path)
     parser.add_argument("--baseline", type=Path)
+    parser.add_argument("--manifest", type=Path)
     return parser.parse_args()
 
 
@@ -580,12 +640,17 @@ def main():
         fixture_root / "verified-publication.json"
     )
     baseline_path = args.baseline.resolve() if args.baseline else fixture_root / "reviewed-baseline.json"
+    manifest_path = (
+        args.manifest.resolve()
+        if args.manifest
+        else repo_root / "third_party_artifacts/manifest.json"
+    )
     baseline, baseline_raw = read_canonical(baseline_path)
     source_lock, assets = load_source_lock(repo_root)
     platforms = validate_publication(publication, assets)
     validate_baseline(baseline, publication, platforms)
     candidate = build_candidate(
-        repo_root,
+        manifest_path,
         publication_raw,
         baseline_raw,
         platforms,

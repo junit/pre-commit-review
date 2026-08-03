@@ -13,6 +13,8 @@ use std::{fs, io::Read, path::PathBuf, process::Command};
 
 const RUST_ANALYZER_SOURCE_LOCK_SHA256: &str =
     "298bc6c0339fe2c58fd35bfbd53db285ea7ff34e40734a4f0c36ccb3fe60d862";
+const RUST_ANALYZER_BASELINE_SHA256: &str =
+    "b698607fe09a1ec7e9f165f9555cf1aec97c75bd675e518d29e0bfc95fdd56d5";
 const PROVIDER_PACK_VERSION: &str = "2026.07.27-pcr.3";
 const EXPECTED_VERSION_OUTPUT: &str = "rust-analyzer 0.3.2989-standalone (12c3381f0b 2026-07-26)";
 const LINUX_EXPECTED_VERSION_OUTPUT: &str = "rust-analyzer 0.3.2989-standalone";
@@ -228,12 +230,37 @@ fn canonical_rust_analyzer_source_lock_binds_reviewed_release_inputs() {
 }
 
 #[test]
-fn unpublished_provider_records_are_absent_from_the_distribution_manifest() {
+fn published_provider_records_are_active_and_baseline_bound() {
     let bytes = fs::read(distribution_manifest_path()).unwrap();
     let manifest: ArtifactManifest = serde_json::from_slice(&bytes).unwrap();
-    assert!(manifest.packs.iter().all(|record| {
-        record.artifact_id != "rust-analyzer" || record.state != ArtifactState::Active
-    }));
+    manifest.validate().unwrap();
+    let providers = manifest
+        .packs
+        .iter()
+        .filter(|record| record.artifact_id == "rust-analyzer")
+        .collect::<Vec<_>>();
+    assert_eq!(providers.len(), 4);
+    assert_eq!(
+        providers
+            .iter()
+            .map(|record| record.platform_id.as_str())
+            .collect::<Vec<_>>(),
+        [
+            "darwin-amd64",
+            "darwin-arm64",
+            "linux-amd64",
+            "windows-amd64"
+        ]
+    );
+    for record in providers {
+        assert_eq!(record.state, ArtifactState::Active);
+        assert_eq!(record.pack_version, PROVIDER_PACK_VERSION);
+        assert_eq!(record.source_lock_sha256, RUST_ANALYZER_SOURCE_LOCK_SHA256);
+        assert_eq!(
+            record.quality_baseline_sha256.as_deref(),
+            Some(RUST_ANALYZER_BASELINE_SHA256)
+        );
+    }
 }
 
 #[test]

@@ -17,6 +17,8 @@ fn reviewed_candidate_manifest() -> ArtifactManifest {
         .arg(repository.join("scripts/generate_provider_manifest_update.py"))
         .arg("--fixture")
         .arg(repository.join("tests/fixtures/provider-release"))
+        .arg("--manifest")
+        .arg(repository.join("tests/fixtures/provider-release/base-manifest.json"))
         .env_remove("PCR_CORE_RELEASE_JOB")
         .env_remove("GITHUB_WORKFLOW_REF")
         .env_remove("GITHUB_WORKFLOW")

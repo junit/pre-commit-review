@@ -28,13 +28,19 @@ fn fixture_root() -> PathBuf {
     repo_root().join("tests/fixtures/provider-release")
 }
 
-fn run_generator(fixture: &Path) -> Output {
+fn run_generator_with_manifest(fixture: &Path, manifest: &Path) -> Output {
     Command::new("python3")
         .arg(repo_root().join("scripts/generate_provider_manifest_update.py"))
         .arg("--fixture")
         .arg(fixture)
+        .arg("--manifest")
+        .arg(manifest)
         .output()
         .unwrap()
+}
+
+fn run_generator(fixture: &Path) -> Output {
+    run_generator_with_manifest(fixture, &fixture_root().join("base-manifest.json"))
 }
 
 fn run_generator_in_core_release(fixture: &Path) -> Output {

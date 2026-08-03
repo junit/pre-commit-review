@@ -44,7 +44,9 @@ const ARTIFACT_SCHEMAS: &[(&str, &str)] = &[
 ];
 
 const CANONICAL_MANIFEST_SHA256: &str =
-    "62ac5077244a8ed5161dbd9b5a44ea7bcbd91eda7c0ae46cc70a6c61f722b75c";
+    "6caaec43a2b90e0783afb12ad2a8541dbb81d43e3813e5bddf200044460effc3";
+const CANONICAL_RUST_ANALYZER_BASELINE_SHA256: &str =
+    "b698607fe09a1ec7e9f165f9555cf1aec97c75bd675e518d29e0bfc95fdd56d5";
 const CANONICAL_REVOCATIONS_SHA256: &str =
     "e62256210a5f27606e808c36005ae9052aa900a5b890b0976367c05b62cf0457";
 const GITLEAKS_SOURCE_LOCK_SHA256: &str =
@@ -313,7 +315,6 @@ fn canonical_seed_metadata_is_compact_valid_and_digest_bound() {
     let manifest_bytes = read_canonical_metadata("manifest.json");
     let manifest: ArtifactManifest = serde_json::from_slice(&manifest_bytes).unwrap();
     manifest.validate().unwrap();
-    assert!(manifest.packs.is_empty());
     assert_eq!(canonical_json(&manifest).unwrap(), manifest_bytes);
     assert_eq!(sha256_bytes(&manifest_bytes), CANONICAL_MANIFEST_SHA256);
     assert_eq!(
@@ -323,6 +324,30 @@ fn canonical_seed_metadata_is_compact_valid_and_digest_bound() {
     assert!(!String::from_utf8(manifest_bytes)
         .unwrap()
         .contains("github.com"));
+
+    let baseline_bytes = read_canonical_metadata("baselines/rust-analyzer-2026.07.27-pcr.3.json");
+    let baseline: ArtifactBaseline = serde_json::from_slice(&baseline_bytes).unwrap();
+    baseline.validate().unwrap();
+    assert_eq!(canonical_json(&baseline).unwrap(), baseline_bytes);
+    assert_eq!(
+        sha256_bytes(&baseline_bytes),
+        CANONICAL_RUST_ANALYZER_BASELINE_SHA256
+    );
+    let providers = manifest
+        .packs
+        .iter()
+        .filter(|pack| pack.artifact_id == "rust-analyzer")
+        .collect::<Vec<_>>();
+    assert_eq!(providers.len(), baseline.measurements.len());
+    for (pack, measurement) in providers.iter().zip(&baseline.measurements) {
+        assert_eq!(pack.platform_id, measurement.platform_id);
+        assert_eq!(pack.pack_sha256, measurement.pack_sha256);
+        assert_eq!(pack.executable.sha256, measurement.executable_sha256);
+        assert_eq!(
+            pack.quality_baseline_sha256.as_deref(),
+            Some(CANONICAL_RUST_ANALYZER_BASELINE_SHA256)
+        );
+    }
 
     let source_lock_bytes = read_canonical_metadata("sources/gitleaks-8.30.1.json");
     let source_lock: SourceLock = serde_json::from_slice(&source_lock_bytes).unwrap();

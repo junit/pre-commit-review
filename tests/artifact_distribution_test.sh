@@ -246,10 +246,17 @@ import sys
 
 manifest = json.loads(Path(sys.argv[1]).read_text(encoding='utf-8'))
 records = manifest['packs']
-if len(records) != 4 or [record['platform_id'] for record in records] != [
+gitleaks = [record for record in records if record['artifact_id'] == 'gitleaks']
+providers = [record for record in records if record['artifact_id'] == 'rust-analyzer']
+platforms = [
     'darwin-amd64', 'darwin-arm64', 'linux-amd64', 'windows-amd64'
-]:
+]
+if len(records) != 8 or [record['platform_id'] for record in gitleaks] != platforms:
     raise SystemExit('matrix did not produce one canonical four-platform manifest')
+if [record['platform_id'] for record in providers] != platforms:
+    raise SystemExit('matrix did not preserve the reviewed provider manifest')
+if len({record['quality_baseline_sha256'] for record in providers}) != 1:
+    raise SystemExit('reviewed provider records do not bind one baseline')
 PY
 
 original="$tmp_dir/pre-commit-review-gitleaks-8.30.1-pcr.1-darwin-arm64.tar.gz"
