@@ -582,7 +582,29 @@ fn rust_writer_emits_a_complete_verifiable_gitleaks_record() {
         canonical_json(&updated_manifest).unwrap(),
         updated_manifest_bytes
     );
-    assert_eq!(updated_manifest.packs, vec![record.clone()]);
+    let reviewed_manifest: ArtifactManifest =
+        serde_json::from_slice(&fs::read(&distribution_manifest).unwrap()).unwrap();
+    let generated_gitleaks_records = updated_manifest
+        .packs
+        .iter()
+        .filter(|candidate| candidate.artifact_id == "gitleaks")
+        .collect::<Vec<_>>();
+    assert_eq!(generated_gitleaks_records, vec![&record]);
+    let retained_provider_records = updated_manifest
+        .packs
+        .iter()
+        .filter(|candidate| candidate.artifact_id == "rust-analyzer")
+        .collect::<Vec<_>>();
+    let reviewed_provider_records = reviewed_manifest
+        .packs
+        .iter()
+        .filter(|candidate| candidate.artifact_id == "rust-analyzer")
+        .collect::<Vec<_>>();
+    assert_eq!(retained_provider_records, reviewed_provider_records);
+    assert_eq!(
+        updated_manifest.packs.len(),
+        reviewed_manifest.packs.len() + 1
+    );
     updated_manifest.validate().unwrap();
 
     let verified = verify_pack(bytes.as_slice(), &record, &VerifyLimits::default()).unwrap();

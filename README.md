@@ -189,6 +189,28 @@ Release artifact trust is checked outside the extracted core payload. A release 
 
 Third-party packs use the project-owned immutable release tag and never fall back to `latest`, `nightly`, another source, or a remote revocation service. Target-local revocations are sorted and digest-pinned with 16,384-entry and 8 MiB ceilings. An offline core installation cannot learn a revocation published after that core was built, so operators must install a newer reviewed core when the distribution manifest changes.
 
+### Optional rust-analyzer Provider
+
+The rust-analyzer provider is never installed or started by a normal review,
+Fast Mode, repository index, SQLite cache, or static-analysis workflow. Install
+it only with an explicit copy-mode request:
+
+```bash
+./install.sh --agent codex --copy --with-rust-analyzer
+```
+
+`--no-download --with-rust-analyzer` accepts only a previously verified
+current-platform pack in the canonical cache; a cache miss fails before the
+target replacement commit point. `--with-rust-analyzer --link` is rejected
+before any download or target mutation. A successful installation writes the
+profile and registry only under the managed target at
+`runtime/providers/rust-analyzer.profile.json` and
+`runtime/providers/provider-registry.json`; callers pass their absolute paths
+and exact SHA256 values explicitly to `repository-context-provider-cli run`.
+The provider never downloads at runtime, searches `PATH`, invokes `rustup` or a
+package manager, resolves a direct upstream asset, or discovers a global
+registry.
+
 Examples:
 
 ```bash

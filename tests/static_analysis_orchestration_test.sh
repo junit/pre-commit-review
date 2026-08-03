@@ -13,6 +13,12 @@ fail() {
   exit 1
 }
 
+for surface in "$wrapper" "$helper" "$repo_root/scripts/lib/static_analysis_cli.sh"; do
+  if rg -n -i 'rust-analyzer|repository-context-provider-cli|run_repository_context_provider|artifacts[[:space:]]+(verify|provision)|runtime/providers|provider-registry|rustup[[:space:]]+toolchain[[:space:]]+install|cargo[[:space:]]+install[[:space:]]+rust-analyzer|direct[-_]upstream|global[-_]registry' "$surface"; then
+    fail "static-analysis orchestration surface can reach a provider or fallback: $surface"
+  fi
+done
+
 sha256_file() {
   if command -v sha256sum >/dev/null 2>&1; then
     sha256sum "$1" | awk '{print $1}'
@@ -24,7 +30,8 @@ sha256_file() {
 static_analysis_bin="$repo_root/collect-diff-context-cli/target/release/static-analysis-cli"
 context_bin="$repo_root/collect-diff-context-cli/target/release/collect-diff-context-cli"
 if [ ! -x "$static_analysis_bin" ] || [ ! -x "$context_bin" ]; then
-  cargo build --release --manifest-path "$repo_root/collect-diff-context-cli/Cargo.toml" --bins
+  cargo +1.95.0 build --release --locked \
+    --manifest-path "$repo_root/collect-diff-context-cli/Cargo.toml" --bins
 fi
 export PRE_COMMIT_REVIEW_STATIC_ANALYSIS_BIN="$static_analysis_bin"
 

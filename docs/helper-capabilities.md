@@ -10,6 +10,35 @@ Release installation is a separate operator action. Before an archive is opened,
 
 Revocations are local, bounded, and offline. The canonical distribution manifest retains active records and a recent revoked window; older revoked digests live in the sorted, digest-pinned target-local `runtime/distribution/revocations.json` index (maximum 16,384 entries or 8 MiB). Doctor rejects receipts found in either location and never downloads a replacement or consults a remote kill switch. An old offline core cannot learn a later revocation until a newer reviewed core is installed.
 
+## Optional Provider Installation
+
+`install.sh --with-rust-analyzer` is the only packaged installer path that
+provisions a real rust-analyzer pack. It is copy-mode only: combining it with
+`--link` is rejected before download or target mutation. With
+`--no-download`, the installer accepts only an already verified
+current-platform canonical cache entry and fails before target replacement on a
+cache miss. Successful installation writes compact, digest-bound authorization
+only below the managed target:
+
+```text
+runtime/providers/rust-analyzer.profile.json
+runtime/providers/provider-registry.json
+```
+
+The provider CLI receives those absolute paths and expected digests explicitly.
+Default review, Fast Mode, repository index, SQLite persistence, and
+static-analysis lanes neither read the target-local registry nor provision,
+download, discover on `PATH`, call `rustup` or a package manager, resolve a
+direct upstream asset, or use a global registry fallback.
+
+Provider release evidence treats process-tree RSS as a sampled acceptance
+threshold, not kernel containment: sampling is at most every 100 ms, missing
+accounting fails the gate, and the recorded peak is bounded evidence. Twenty
+hosted samples use nearest-rank p95; release acceptance is the integer limit
+`ceil(p95 * 5 / 4) + 250` milliseconds over the reviewed baseline. External
+rust-analyzer SBOMs provide component-level source, license, archive, and
+executable evidence without claiming a complete upstream dependency closure.
+
 ## Control Plane Gateway
 
 The review workflow starts with `scripts/collect_diff_context.sh --control-plane`. This bounded gateway:

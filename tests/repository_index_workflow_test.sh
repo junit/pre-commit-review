@@ -15,14 +15,14 @@ fail() {
   exit 1
 }
 
-grep -Fq 'cargo clippy --all-targets --all-features -- -D warnings' "$lint" \
+grep -Fq 'cargo +1.95.0 clippy --locked --all-targets --all-features -- -D warnings' "$lint" \
   || fail 'lint workflow does not run all-feature Clippy'
-grep -Fq 'cargo test --release --test repository_index_integration -- --nocapture' "$lint" \
+grep -Fq 'cargo +1.95.0 test --release --locked --test repository_index_integration -- --nocapture' "$lint" \
   || fail 'lint workflow does not run production repository-index release gates'
-grep -Fq 'cargo bench --bench repository_index -- --test' "$lint" \
+grep -Fq 'cargo +1.95.0 bench --locked --bench repository_index -- --test' "$lint" \
   || fail 'lint workflow does not smoke all repository-index benchmark stages'
 for target in file_facts_decode repository_graph_row repository_overlay repository_traversal; do
-  grep -Fq "cargo +nightly fuzz run $target" "$lint" \
+  grep -Fq "cargo +nightly-2026-07-29 fuzz run $target" "$lint" \
     || fail "lint workflow does not fuzz $target"
 done
 for target in "$fuzz_overlay" "$fuzz_traversal"; do
@@ -70,6 +70,24 @@ fi
 if [ -e "$repo_root/collect-diff-context-cli/src/bin/sqlite_storage_spike.rs" ] \
   || [ -e "$repo_root/collect-diff-context-cli/tests/sqlite_storage_spike.rs" ]; then
   fail 'temporary SQLite spike source or tests remain'
+fi
+
+for surface in \
+  "$repo_root/collect-diff-context-cli/src/impact_context" \
+  "$repo_root/collect-diff-context-cli/src/static_analysis" \
+  "$repo_root/collect-diff-context-cli/src/bin/repository_context.rs" \
+  "$repo_root/scripts/collect_impact_context.sh" \
+  "$repo_root/scripts/index_repository_context.sh" \
+  "$repo_root/scripts/collect_static_evidence.sh" \
+  "$repo_root/scripts/run_static_analysis.sh" \
+  "$repo_root/scripts/orchestrate_static_analysis.sh"; do
+  if rg -n -i 'rust-analyzer|repository-context-provider-cli|run_repository_context_provider|artifacts[[:space:]]+(verify|provision)|runtime/providers|provider-registry' "$surface"; then
+    fail "ordinary index/static-analysis surface can reach a provider: $surface"
+  fi
+done
+
+if rg -n -i 'index[[:space:]]+(build|doctor|inspect).*provider|provider.*index[[:space:]]+(build|doctor|inspect)' "$lint" "$release"; then
+  fail 'repository-index workflow invokes a semantic provider'
 fi
 
 printf 'repository index workflow tests passed\n'

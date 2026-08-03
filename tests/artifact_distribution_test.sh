@@ -290,6 +290,17 @@ grep -Fq 'pre-commit-review-core-' "$repo_root/.github/workflows/release.yml" \
   || fail 'release workflow does not publish the core asset grammar'
 grep -Fq 'sha256sum' "$repo_root/.github/workflows/release.yml" \
   || fail 'release workflow does not publish external archive sidecars'
+python3 - "$repo_root/.github/workflows/release.yml" <<'PY'
+from pathlib import Path
+import sys
+
+workflow = Path(sys.argv[1]).read_text(encoding='utf-8')
+expected = '''          for archive in dist/*.tar.gz; do
+            (cd "$(dirname "$archive")" && sha256sum "$(basename "$archive")") > "$archive.sha256"
+          done'''
+if expected not in workflow:
+    raise SystemExit('release sidecars must hash archive basenames from their containing directory')
+PY
 grep -Fq 'actions/attest-build-provenance@' "$repo_root/.github/workflows/release.yml" \
   || fail 'release workflow does not attest release archive subjects'
 grep -Fq 'artifact-pack-release.yml' "$repo_root/.github/workflows/artifact-pack-release.yml" \

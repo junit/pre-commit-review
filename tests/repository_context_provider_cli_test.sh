@@ -204,7 +204,10 @@ cat >"$provider_report" <<'EOF_REPORT'
     "nodes": 0,
     "edges": 0,
     "report_bytes": 0,
-    "elapsed_ms": 0
+    "elapsed_ms": 0,
+    "process_tree_peak_rss_bytes": 0,
+    "process_tree_sample_interval_ms": 100,
+    "process_tree_accounting": "available"
   }
 }
 EOF_REPORT

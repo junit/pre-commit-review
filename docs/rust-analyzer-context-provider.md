@@ -73,6 +73,34 @@ a safe report. Successful stdout contains exactly one model or provider-report
 JSON value. Errors are bounded stable codes on stderr; child stderr, local
 runtime paths, and raw JSON-RPC messages are never forwarded.
 
+## Installed Pack Boundary
+
+A real rust-analyzer executable exists only after an operator explicitly runs
+copy-mode installation with `install.sh --with-rust-analyzer`. The installer
+selects one reviewed current-platform pack and generates the compact,
+digest-bound files below the managed target:
+
+```text
+runtime/providers/rust-analyzer.profile.json
+runtime/providers/provider-registry.json
+```
+
+`--no-download --with-rust-analyzer` permits only a verified canonical-cache
+hit. A cache miss, bad pack, probe failure, or authorization-generation failure
+leaves an existing target unchanged. `--with-rust-analyzer --link` is rejected
+before download or mutation, because generated absolute paths must belong to a
+copied target. Moving that target invalidates the generated paths; the
+target-aware doctor reports drift without rewriting, downloading, or selecting
+a replacement.
+
+The provider is still an explicit CLI lane. Ordinary review, Fast Mode,
+repository index, SQLite persistence, and static-analysis orchestration never
+read a provider registry implicitly. Runtime execution never downloads a pack,
+searches `PATH`, invokes `rustup` or a package manager, resolves a direct
+upstream archive, or falls back to a global registry. The only accepted
+registry is the caller-supplied target-local absolute path with its expected
+SHA256.
+
 ## Inputs And Binding
 
 The public library runner accepts a borrowed, already materialized
@@ -117,6 +145,27 @@ private home/temp/target directories, an empty PATH, no shell, fixed locale,
 offline Cargo settings, disabled toolchain installation, and invalid proxy
 endpoints. Process-group termination and reader joins are Drop-safe. These are
 best-effort offline controls, not an operating-system network sandbox.
+
+## Release Evidence
+
+Hosted provider gates sample the complete child process tree at intervals no
+greater than 100 ms and fail closed when required accounting is unavailable.
+The RSS limit is an observed acceptance threshold, not a claim of universal
+kernel containment or hostile-code isolation. The evidence records only the
+bounded peak and accounting status.
+
+Release latency uses 20 isolated hosted samples. Each sample includes spawn,
+readiness, bounded traversal, report normalization, and cleanup, while pack
+provisioning and extraction stay outside the measurement. The nearest-rank p95
+must not exceed the integer threshold `ceil(reviewed_p95 * 5 / 4) + 250` ms.
+
+Provider pack SBOMs make component-level claims only: the pinned source lock,
+upstream archive, executable, copied license, normalized pack manifest, and
+generator are bound to the release evidence. They do not claim a complete
+upstream transitive dependency closure. Published packs require immutable
+GitHub releases and a sidecar plus scoped project attestation before extraction.
+Revocations remain local and offline; an older installed manifest cannot learn
+about a later revocation until a newer reviewed core is installed.
 
 ## Report Semantics
 

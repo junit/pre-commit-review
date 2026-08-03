@@ -281,7 +281,7 @@ jobs:
               --record-output "$PWD/dist/core-${platform}.record.json"
           done
           for archive in dist/*.tar.gz; do
-            sha256sum "$archive" > "$archive.sha256"
+            (cd "$(dirname "$archive")" && sha256sum "$(basename "$archive")") > "$archive.sha256"
           done
           python3 - dist/manifest.json <<'PY'
           import hashlib
@@ -458,6 +458,12 @@ jobs:
         with:
           name: canonical-release-packs
           path: artifacts
+      - name: Verify release-readiness reachability contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./tests/artifact_reachability_test.sh
+          ./tests/repository_index_workflow_test.sh
       - name: Verify archive sidecars before any extraction
         shell: bash
         run: |

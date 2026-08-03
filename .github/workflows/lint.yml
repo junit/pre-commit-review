@@ -240,6 +240,8 @@ jobs:
         run: ./tests/static_analysis_execution_modes_test.sh
       - name: Run static-analysis orchestration integration
         run: ./tests/static_analysis_orchestration_test.sh
+      - name: Run repository-index reachability contract
+        run: ./tests/repository_index_workflow_test.sh
       - name: Run repository-context integration
         run: |
           ./tests/repository_index_test.sh
