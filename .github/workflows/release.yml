@@ -189,7 +189,7 @@ jobs:
               --record-output "$PWD/dist/gitleaks-${{ matrix.platform }}.record.json"
 
       - name: Upload platform build inputs
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: release-packs-${{ matrix.platform }}
           path: dist/*
@@ -208,7 +208,7 @@ jobs:
           toolchain: 1.95.0
 
       - name: Download platform build inputs
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
         with:
           path: artifacts
 
@@ -429,7 +429,7 @@ jobs:
           PY
 
       - name: Upload canonical release inputs
-        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: canonical-release-packs
           path: |
@@ -448,7 +448,7 @@ jobs:
       - name: Checkout verifier
         uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
       - name: Download canonical release inputs
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
         with:
           name: canonical-release-packs
           path: artifacts
@@ -484,7 +484,7 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Download canonical packs
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
         with:
           name: canonical-release-packs
           path: artifacts
@@ -507,7 +507,7 @@ jobs:
       attestations: read
     steps:
       - name: Download canonical packs in a clean job
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
         with:
           name: canonical-release-packs
           path: artifacts
@@ -544,8 +544,13 @@ jobs:
     runs-on: ubuntu-latest
     if: startsWith(github.ref, 'refs/tags/')
     steps:
+      - name: Checkout release notes
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+        with:
+          persist-credentials: false
+
       - name: Download canonical packs
-        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        uses: actions/download-artifact@3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c
         with:
           name: canonical-release-packs
           path: artifacts

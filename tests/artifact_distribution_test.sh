@@ -340,12 +340,12 @@ provider_workflow="$repo_root/.github/workflows/provider-real-server.yml"
 fuzz_workflow="$repo_root/.github/workflows/provider-fuzz-scheduled.yml"
 [ -r "$provider_workflow" ] || fail 'provider real-server workflow is missing'
 [ -r "$fuzz_workflow" ] || fail 'provider fuzz workflow is missing'
-python3 - "$provider_workflow" "$fuzz_workflow" "$repo_root/.github/workflows/lint.yml" "$repo_root/.github/workflows/release.yml" "$repo_root/.github/workflows/artifact-pack-release.yml" "$repo_root/tests/provider_real_server_test.sh" <<'PY'
+python3 - "$provider_workflow" "$fuzz_workflow" "$repo_root/.github/workflows/lint.yml" "$repo_root/.github/workflows/release.yml" "$repo_root/.github/workflows/artifact-pack-release.yml" "$repo_root/.github/workflows/real-host-smoke.yml" "$repo_root/tests/provider_real_server_test.sh" <<'PY'
 import re
 import sys
 from pathlib import Path
 
-provider, fuzz, lint, release, pack, provider_harness = map(Path, sys.argv[1:])
+provider, fuzz, lint, release, pack, real_host, provider_harness = map(Path, sys.argv[1:])
 provider_text = provider.read_text(encoding='utf-8')
 fuzz_text = fuzz.read_text(encoding='utf-8')
 release_text = release.read_text(encoding='utf-8')
@@ -429,12 +429,27 @@ for trigger in ('pull_request:', 'schedule:', 'workflow_call:'):
     if trigger not in fuzz_text:
         raise SystemExit(f'fuzz workflow is missing trigger: {trigger}')
 
-for path in (lint, release, pack, provider, fuzz):
+for path in (lint, release, pack, provider, fuzz, real_host):
     text = path.read_text(encoding='utf-8')
     refs = re.findall(r'^\s*uses:\s+[^@\s]+@([^\s]+)\s*$', text, re.MULTILINE)
     invalid = [ref for ref in refs if re.fullmatch(r'[0-9a-fA-F]{40}', ref) is None]
     if invalid:
         raise SystemExit(f'{path.name} contains non-commit-pinned action refs: {invalid!r}')
+
+node24_artifact_actions = {
+    'actions/upload-artifact': '043fb46d1a93c77aae656e7c1c64a875d1fc6a0a',
+    'actions/download-artifact': '3e5f45b2cfb9172054b4087a40e8e0b5a5461e7c',
+}
+for path in (release, pack, provider, fuzz, real_host):
+    text = path.read_text(encoding='utf-8')
+    for action, expected_ref in node24_artifact_actions.items():
+        refs = re.findall(
+            rf'^\s*uses:\s+{re.escape(action)}@([^\s]+)\s*$',
+            text,
+            re.MULTILINE,
+        )
+        if refs and any(ref != expected_ref for ref in refs):
+            raise SystemExit(f'{path.name} does not pin {action} to its Node 24 release')
 
 for path in (lint, release, pack):
     text = path.read_text(encoding='utf-8')
@@ -508,6 +523,13 @@ if 'verify-attested-release-inputs' not in publish_core_needs:
     raise SystemExit('core publication does not depend on clean attestation verification')
 if 'actions/attest-build-provenance@' in publish_core:
     raise SystemExit('core publisher still creates its own unverified attestation')
+checkout = 'actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1'
+if checkout not in publish_core:
+    raise SystemExit('core publisher does not checkout its release notes')
+if 'persist-credentials: false' not in publish_core:
+    raise SystemExit('core publisher persists checkout credentials unnecessarily')
+if publish_core.index(checkout) > publish_core.index('body_path:'):
+    raise SystemExit('core publisher reads release notes before checkout')
 PY
 grep -Fq 'Every pull request runs 256 iterations' "$repo_root/collect-diff-context-cli/fuzz/README.md" \
   || fail 'fuzz README does not define the PR tier'

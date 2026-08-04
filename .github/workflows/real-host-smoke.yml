@@ -18,8 +18,8 @@ permissions:
 
 jobs:
   smoke:
-    # checkout v7 runs on Node 24; only dispatch to runners carrying this
-    # label after they have been upgraded to Actions Runner v2.327.1+.
+    # GitHub-owned actions run on Node 24; only dispatch to runners carrying
+    # this label after they have been upgraded to Actions Runner v2.327.1+.
     runs-on: [self-hosted, node24]
     strategy:
       fail-fast: false
@@ -36,7 +36,7 @@ jobs:
             --artifact-dir ".tmp/real-host-smoke"
       - name: Upload real host report
         if: always()
-        uses: actions/upload-artifact@v4
+        uses: actions/upload-artifact@043fb46d1a93c77aae656e7c1c64a875d1fc6a0a
         with:
           name: real-host-smoke-${{ matrix.host }}
           path: .tmp/real-host-smoke/${{ matrix.host }}-host-readiness-report.json

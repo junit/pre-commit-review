@@ -15,7 +15,7 @@ fail() {
 }
 
 for surface in "$runner" "$helper" "$repo_root/scripts/lib/static_analysis_cli.sh"; do
-  if rg -n -i 'rust-analyzer|repository-context-provider-cli|run_repository_context_provider|artifacts[[:space:]]+(verify|provision)|runtime/providers|provider-registry|rustup[[:space:]]+toolchain[[:space:]]+install|cargo[[:space:]]+install[[:space:]]+rust-analyzer|direct[-_]upstream|global[-_]registry' "$surface"; then
+  if grep -Eni 'rust-analyzer|repository-context-provider-cli|run_repository_context_provider|artifacts[[:space:]]+(verify|provision)|runtime/providers|provider-registry|rustup[[:space:]]+toolchain[[:space:]]+install|cargo[[:space:]]+install[[:space:]]+rust-analyzer|direct[-_]upstream|global[-_]registry' "$surface"; then
     fail "static-analysis execution surface can reach a provider or fallback: $surface"
   fi
 done

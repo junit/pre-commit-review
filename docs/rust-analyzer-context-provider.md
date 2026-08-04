@@ -206,9 +206,10 @@ rtk cargo +nightly fuzz run repository_context_messages --fuzz-dir collect-diff-
 `.github/workflows/real-host-smoke.yml` targets the `self-hosted,node24`
 runner label. The label is an operator-managed admission check: the runner
 must be Actions Runner `v2.327.1` or newer because the pinned
-`actions/checkout` v7 action executes with Node 24. Before enabling the label,
-verify the installed runner package version on the host and confirm the
-repository registration exposes both `self-hosted` and `node24` labels:
+`actions/checkout` v7 and `actions/upload-artifact` v7 actions execute with
+Node 24. Before enabling the label, verify the installed runner package version
+on the host and confirm the repository registration exposes both `self-hosted`
+and `node24` labels:
 
 ```text
 gh api repos/junit/pre-commit-review/actions/runners \

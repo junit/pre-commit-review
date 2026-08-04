@@ -44,6 +44,9 @@ if PRE_COMMIT_REVIEW_REPOSITORY_CONTEXT_BIN='relative-bin' \
   fail 'relative override was accepted'
 fi
 
+# Resolver fallback cases must not inherit the coverage job's binary override.
+unset PRE_COMMIT_REVIEW_REPOSITORY_CONTEXT_BIN
+
 isolated_root="$tmp_dir/isolated"
 isolated_scripts="$isolated_root/scripts"
 mkdir -p "$isolated_scripts/lib" \
