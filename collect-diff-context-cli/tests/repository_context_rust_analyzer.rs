@@ -412,23 +412,6 @@ fn graph_limits() -> ProviderLimits {
     }
 }
 
-fn configure_large_report_request(request: &mut RepositoryContextProviderRequest) {
-    request.candidate.scope_fingerprint = digest('8');
-    request.seeds[0].name = "large-seed".to_string();
-    request.directions = vec![CallDirection::Incoming, CallDirection::Outgoing];
-    request.limits.deadline_ms = 20_000;
-    request.limits.max_depth = 1;
-    request.limits.max_requests = 16;
-    request.limits.max_messages = 64;
-    request.limits.max_call_ranges = 1_000;
-    request.limits.max_frame_bytes = 4 * 1024 * 1024;
-    request.limits.max_protocol_bytes = 16 * 1024 * 1024;
-    request.limits.max_total_output_bytes = 16 * 1024 * 1024;
-    request.limits.max_nodes = 1_001;
-    request.limits.max_edges = 1_000;
-    request.limits.max_report_bytes = 16 * 1024 * 1024;
-}
-
 #[test]
 fn handshake_accepts_ready_server_and_uses_utf8_encoding() {
     let result = Fixture::new().run("readiness-ok").unwrap();
@@ -617,61 +600,40 @@ fn public_runner_elapsed_includes_final_report_processing() {
     assert_eq!(measured.report.metrics.elapsed_ms, measured.elapsed_ms);
 }
 
-#[cfg(unix)]
 #[test]
 fn public_runner_honors_cancellation_during_final_report_processing() {
-    use std::os::unix::fs::PermissionsExt;
-    use std::sync::atomic::Ordering;
-
     let _guard = lock_resource_intensive_runner_test();
     let fixture = Fixture::new();
-    let (mut request, mut profile) = fixture.runner_input();
-    configure_large_report_request(&mut request);
-    let wrapper = fixture.tools.path().join("final-report-provider");
-    let marker = fixture.tools.path().join("final-report-started");
-    fs::write(
-        &wrapper,
-        format!(
-            "#!/bin/sh\n'{}' \"$@\"\nstatus=$?\nprintf done > '{}'\nexit $status\n",
-            fixture.executable.display(),
-            marker.display()
-        ),
-    )
-    .unwrap();
-    fs::set_permissions(&wrapper, fs::Permissions::from_mode(0o700)).unwrap();
-    let executable_sha256 = format!("{:x}", Sha256::digest(fs::read(&wrapper).unwrap()));
-    profile.executable_sha256 = executable_sha256.clone();
-    request.provider.executable_path = wrapper;
-    request.provider.executable_sha256 = executable_sha256;
-    request.provider.profile_sha256 = profile.sha256();
-    fs::write(
-        &request.provider.profile_path,
-        serde_json::to_vec(&profile).unwrap(),
-    )
-    .unwrap();
+    let (request, profile) = fixture.runner_input();
 
     let cancellation = Arc::new(AtomicBool::new(false));
-    let watched_cancellation = Arc::clone(&cancellation);
-    let watcher = std::thread::spawn(move || {
-        while !marker.exists() {
-            std::thread::yield_now();
-        }
-        std::thread::sleep(Duration::from_millis(50));
-        watched_cancellation.store(true, Ordering::Release);
-    });
-    let result = run_repository_context_provider(ProviderInvocation {
-        snapshot: &fixture.snapshot,
-        model: &fixture.model,
-        request: &request,
-        profile: &profile,
-        cancellation,
-    });
-    watcher.join().unwrap();
-
-    assert_eq!(
-        result.unwrap_err(),
-        collect_diff_context_cli::repository_context_provider::ProviderError::Cancelled
+    let hook_cancellation = Arc::clone(&cancellation);
+    let postflight_hook = || {};
+    let finalization_hook = move |_: Instant| {
+        hook_cancellation.store(true, Ordering::Release);
+    };
+    let result = run_repository_context_provider_with_postflight_and_finalization_hooks(
+        ProviderInvocation {
+            snapshot: &fixture.snapshot,
+            model: &fixture.model,
+            request: &request,
+            profile: &profile,
+            cancellation,
+        },
+        &postflight_hook,
+        &finalization_hook,
     );
+
+    match result {
+        Err(error) => assert_eq!(
+            error,
+            collect_diff_context_cli::repository_context_provider::ProviderError::Cancelled
+        ),
+        Ok(measurement) => panic!(
+            "expected cancellation during finalization, got {:?}",
+            measurement.report.status
+        ),
+    }
 }
 
 #[cfg(unix)]
