@@ -376,12 +376,19 @@ fn shutdown_rechecks_rss_after_the_monitor_terminates_the_child() {
 fn root_exit_does_not_stop_accounting_for_a_live_rss_descendant() {
     let fixture = Fixture::new();
     let log = fixture.tools.path().join("root-exit-rss.log");
+    let gate = fixture.tools.path().join("root-exit-rss.gate");
     let bound =
         BoundCandidateSnapshot::new(&fixture.snapshot, &fixture.model, &fixture.binding).unwrap();
-    let launch = fixture.launch(&bound, "root-exit-descendant-rss", &log, None);
+    let launch = fixture.launch(
+        &bound,
+        "root-exit-descendant-rss",
+        &log,
+        Some(gate.to_str().unwrap()),
+    );
     let policy =
         ProviderResourcePolicy::for_test(TEST_RSS_LIMIT, Duration::from_millis(10)).unwrap();
     let mut session = ManagedLspSession::spawn_with_resource_policy(launch, policy).unwrap();
+    fs::write(gate, b"release root fixture").unwrap();
 
     let error = session.next_message().unwrap_err();
     assert_eq!(error.code, "process-tree-rss-limit");

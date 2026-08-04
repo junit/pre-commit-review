@@ -56,6 +56,7 @@ fn main() {
             root_exit_descendant_rss(log_path.as_deref(), arguments.next())
         }
         "rss-child" => rss_child(arguments.next()),
+        "rss-child-after-parent-exit" => rss_child_after_parent_exit(arguments.next()),
         "rss-child-detached" => rss_child_detached(arguments.next()),
         _ => Err(io::Error::new(
             io::ErrorKind::InvalidInput,
@@ -659,8 +660,28 @@ fn spawn_detached_descendant_rss(log_path: Option<&str>, marker: Option<String>)
     Ok(())
 }
 
-fn root_exit_descendant_rss(log_path: Option<&str>, marker: Option<String>) -> io::Result<()> {
-    spawn_rss_child(log_path, marker, false)
+fn root_exit_descendant_rss(log_path: Option<&str>, gate: Option<String>) -> io::Result<()> {
+    let gate = gate.ok_or_else(|| {
+        io::Error::new(
+            io::ErrorKind::InvalidInput,
+            "root-exit RSS fixture requires a gate path",
+        )
+    })?;
+    let executable = env::current_exe()?;
+    let child = Command::new(executable)
+        .args([
+            "rss-child-after-parent-exit",
+            "",
+            &std::process::id().to_string(),
+        ])
+        .spawn()?;
+    if let Some(log_path) = log_path {
+        std::fs::write(log_path, child.id().to_string())?;
+    }
+    while !std::path::Path::new(&gate).exists() {
+        thread::sleep(Duration::from_millis(1));
+    }
+    Ok(())
 }
 
 fn spawn_rss_child(
@@ -701,6 +722,26 @@ fn rss_child_detached(_marker: Option<String>) -> io::Result<()> {
     Err(io::Error::new(
         io::ErrorKind::Unsupported,
         "detached RSS fixture is Linux-only",
+    ))
+}
+
+#[cfg(unix)]
+fn rss_child_after_parent_exit(parent_pid: Option<String>) -> io::Result<()> {
+    let parent_pid = parent_pid
+        .ok_or_else(|| io::Error::new(io::ErrorKind::InvalidInput, "missing parent process id"))?
+        .parse::<i32>()
+        .map_err(|_| io::Error::new(io::ErrorKind::InvalidInput, "invalid parent process id"))?;
+    while unsafe { libc::getppid() } == parent_pid {
+        thread::sleep(Duration::from_millis(1));
+    }
+    rss_child(None)
+}
+
+#[cfg(not(unix))]
+fn rss_child_after_parent_exit(_parent_pid: Option<String>) -> io::Result<()> {
+    Err(io::Error::new(
+        io::ErrorKind::Unsupported,
+        "parent-exit RSS fixture is Unix-only",
     ))
 }
 
