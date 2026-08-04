@@ -35,6 +35,11 @@ const EXECUTION_ID: &str = "1111111111111111";
 const REPORT_ID: &str = "2222222222222222";
 
 fn valid_manifest() -> Value {
+    let profile_path = if cfg!(windows) {
+        r"C:\review\profiles\security.json"
+    } else {
+        "/opt/review/profiles/security.json"
+    };
     json!({
         "schema_version": 1,
         "kind": "static_analysis_orchestration_manifest",
@@ -42,7 +47,7 @@ fn valid_manifest() -> Value {
         "profiles": [
             {
                 "profile_id": "security",
-                "path": "/opt/review/profiles/security.json",
+                "path": profile_path,
                 "sha256": PROFILE_SHA256
             }
         ],
