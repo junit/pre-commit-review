@@ -24,7 +24,7 @@ jobs:
       matrix:
         host: ${{ (github.event.inputs.host == 'claude' && fromJson('["claude"]')) || (github.event.inputs.host == 'codex' && fromJson('["codex"]')) || fromJson('["claude", "codex"]') }}
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
       - name: Check jq
         run: jq --version
       - name: Run real host smoke
