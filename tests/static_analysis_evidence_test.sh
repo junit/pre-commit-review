@@ -22,6 +22,9 @@ test_static_analysis_binary_resolution() {
   local path_bin="$tmp_dir/path-only/static-analysis-cli"
   local os_name arch_name bundled_name bundled_bin
 
+  # Fallback cases must not inherit an outer CI binary override.
+  unset PRE_COMMIT_REVIEW_STATIC_ANALYSIS_BIN
+
   mkdir -p "$layout/scripts/lib" "$layout/scripts/bin" \
     "$layout/collect-diff-context-cli/target/release" "$tmp_dir/path-only"
   cp "$collector" "$isolated_wrapper"
