@@ -719,6 +719,170 @@ fn core_writer_emits_a_bound_manifest_and_record() {
     }));
     let record_bytes = fs::read(&record_path).unwrap();
     assert_eq!(canonical_json(&record).unwrap(), record_bytes);
+
+    let cli_output_path = temporary.path().join("core-cli.tar.gz");
+    let cli_record_path = temporary.path().join("core-cli.record.json");
+    let cli = Command::new(env!("CARGO_BIN_EXE_artifact-pack-writer"))
+        .arg("core")
+        .arg("--platform-id")
+        .arg("linux-amd64")
+        .arg("--pack-version")
+        .arg("0.1.0")
+        .arg("--source-root")
+        .arg(&source_root)
+        .arg("--manifest")
+        .arg(&manifest_path)
+        .arg("--revocations")
+        .arg(&revocations_path)
+        .arg("--output")
+        .arg(&cli_output_path)
+        .arg("--record-output")
+        .arg(&cli_record_path)
+        .output()
+        .unwrap();
+    assert!(
+        cli.status.success(),
+        "writer failed: {}",
+        String::from_utf8_lossy(&cli.stderr)
+    );
+    let cli_record: serde_json::Value = serde_json::from_slice(&cli.stdout).unwrap();
+    assert_eq!(cli_record, record);
+    assert_eq!(fs::read(&cli_output_path).unwrap(), pack_bytes);
+    assert_eq!(
+        fs::read(&cli_record_path).unwrap(),
+        canonical_json(&record).unwrap()
+    );
+
+    let unbound_manifest_path = temporary.path().join("unbound-manifest.json");
+    let unbound_distribution = ArtifactManifest {
+        revocation_index_sha256: "0".repeat(64),
+        ..distribution
+    };
+    fs::write(
+        &unbound_manifest_path,
+        canonical_json(&unbound_distribution).unwrap(),
+    )
+    .unwrap();
+    let error = write_core_pack(&CorePackOptions {
+        platform_id: "linux-amd64",
+        pack_version: "0.1.0",
+        source_root: &source_root,
+        manifest_path: &unbound_manifest_path,
+        revocations_path: &revocations_path,
+        output_path: &temporary.path().join("unbound.tar.gz"),
+        record_output: None,
+    })
+    .unwrap_err();
+    assert_eq!(
+        error,
+        "distribution manifest does not bind the revocation index"
+    );
+
+    let noncanonical_revocations_path = temporary.path().join("revocations.pretty.json");
+    fs::write(
+        &noncanonical_revocations_path,
+        serde_json::to_vec_pretty(&revocations).unwrap(),
+    )
+    .unwrap();
+    let error = write_core_pack(&CorePackOptions {
+        platform_id: "linux-amd64",
+        pack_version: "0.1.0",
+        source_root: &source_root,
+        manifest_path: &manifest_path,
+        revocations_path: &noncanonical_revocations_path,
+        output_path: &temporary.path().join("noncanonical.tar.gz"),
+        record_output: None,
+    })
+    .unwrap_err();
+    assert!(error.contains("non-canonical JSON input"));
+
+    let error = write_core_pack(&CorePackOptions {
+        platform_id: "unsupported",
+        pack_version: "0.1.0",
+        source_root: &source_root,
+        manifest_path: &manifest_path,
+        revocations_path: &revocations_path,
+        output_path: &temporary.path().join("unsupported.tar.gz"),
+        record_output: None,
+    })
+    .unwrap_err();
+    assert_eq!(error, "unsupported platform: unsupported");
+
+    #[cfg(unix)]
+    {
+        std::os::unix::fs::symlink(
+            source_root.join("LICENSE"),
+            source_root.join("docs/license-link"),
+        )
+        .unwrap();
+        let error = write_core_pack(&CorePackOptions {
+            platform_id: "linux-amd64",
+            pack_version: "0.1.0",
+            source_root: &source_root,
+            manifest_path: &manifest_path,
+            revocations_path: &revocations_path,
+            output_path: &temporary.path().join("symlink.tar.gz"),
+            record_output: None,
+        })
+        .unwrap_err();
+        assert!(error.contains("pack input contains a symlink"));
+    }
+}
+
+#[test]
+fn artifact_pack_writer_rejects_invalid_cli_inputs() {
+    let cases: &[(&[&str], &str)] = &[
+        (&[], "missing pack kind"),
+        (&["unsupported"], "unsupported pack kind"),
+        (&["core", "source"], "unexpected argument"),
+        (&["core", "--platform-id"], "requires a value"),
+        (
+            &[
+                "core",
+                "--platform-id",
+                "linux-amd64",
+                "--platform-id",
+                "linux-amd64",
+            ],
+            "duplicate argument",
+        ),
+        (&["core", "--unknown", "value"], "unknown argument"),
+        (
+            &[
+                "core",
+                "--platform-id",
+                "linux-amd64",
+                "--pack-version",
+                "0.1.0",
+                "--output",
+                "relative.tar.gz",
+            ],
+            "path must be absolute",
+        ),
+        (
+            &["core", "--platform-id", "linux-amd64"],
+            "missing required argument",
+        ),
+    ];
+    for (arguments, expected_error) in cases {
+        let output = Command::new(env!("CARGO_BIN_EXE_artifact-pack-writer"))
+            .args(*arguments)
+            .output()
+            .unwrap();
+        assert!(!output.status.success(), "arguments unexpectedly passed");
+        assert!(
+            String::from_utf8_lossy(&output.stderr).contains(expected_error),
+            "unexpected stderr for {arguments:?}: {}",
+            String::from_utf8_lossy(&output.stderr)
+        );
+    }
+
+    let help = Command::new(env!("CARGO_BIN_EXE_artifact-pack-writer"))
+        .arg("--help")
+        .output()
+        .unwrap();
+    assert!(help.status.success());
+    assert!(String::from_utf8_lossy(&help.stdout).contains("Usage: artifact-pack-writer"));
 }
 
 #[test]
