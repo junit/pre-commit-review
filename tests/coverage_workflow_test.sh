@@ -33,6 +33,8 @@ grep -Fq 'cargo +1.95.0 test --release --locked' <<<"$job" \
   || fail 'coverage job does not run instrumented Rust tests'
 grep -Fq 'cargo +1.95.0 build --release --locked --bins' <<<"$job" \
   || fail 'coverage job does not build instrumented production binaries'
+grep -Fq './scripts/fetch_gitleaks.sh --platform linux-amd64' <<<"$job" \
+  || fail 'coverage job does not provision the pinned secret scanner'
 for integration_test in \
   collect_diff_context_test.sh \
   secret_gate_test.sh \

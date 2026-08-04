@@ -134,6 +134,7 @@ jobs:
         run: |
           set -euo pipefail
           cd collect-diff-context-cli
+          # shellcheck disable=SC1090 # cargo-llvm-cov emits shell exports for this workspace.
           source <(cargo +1.95.0 llvm-cov show-env --sh)
           cargo +1.95.0 llvm-cov clean --workspace
           cargo +1.95.0 test --release --locked
@@ -143,6 +144,7 @@ jobs:
           export PRE_COMMIT_REVIEW_STATIC_ANALYSIS_BIN="$GITHUB_WORKSPACE/collect-diff-context-cli/target/release/static-analysis-cli"
           export PRE_COMMIT_REVIEW_REPOSITORY_CONTEXT_BIN="$GITHUB_WORKSPACE/collect-diff-context-cli/target/release/repository-context-cli"
           export PRE_COMMIT_REVIEW_REPOSITORY_CONTEXT_PROVIDER_BIN="$GITHUB_WORKSPACE/collect-diff-context-cli/target/release/repository-context-provider-cli"
+          ./scripts/fetch_gitleaks.sh --platform linux-amd64
           ./tests/collect_diff_context_test.sh
           ./tests/secret_gate_test.sh
           ./tests/static_analysis_evidence_test.sh
