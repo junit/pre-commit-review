@@ -312,7 +312,8 @@ fn file_uri_mapper_accepts_only_contained_regular_snapshot_files() {
         mapper.to_file_path(&credentials).unwrap_err().code,
         "provider-uri-invalid"
     );
-    let authority = Url::parse(&format!("file://example.test{}", uri.path())).unwrap();
+    let authority = Url::parse("file://example.test/src/lib.rs").unwrap();
+    assert_eq!(authority.host_str(), Some("example.test"));
     assert_eq!(
         mapper.to_file_path(&authority).unwrap_err().code,
         "provider-uri-invalid"
