@@ -17,7 +17,8 @@ use collect_diff_context_cli::repository_context_provider::session::{
 use collect_diff_context_cli::repository_context_provider::snapshot::BoundCandidateSnapshot;
 use collect_diff_context_cli::repository_context_provider::{
     run_repository_context_provider, run_repository_context_provider_measured,
-    run_repository_context_provider_with_postflight_elapsed_ms, ProviderInvocation,
+    run_repository_context_provider_with_postflight_elapsed_ms,
+    run_repository_context_provider_with_postflight_snapshot_hook, ProviderInvocation,
 };
 use collect_diff_context_cli::review_scope::ReviewSource;
 use serde_json::json;
@@ -879,18 +880,18 @@ fn public_runner_prioritizes_cancellation_after_stale_snapshot_validation() {
     use std::sync::atomic::Ordering;
 
     let _guard = lock_resource_intensive_runner_test();
-    let fixture = Fixture::new_with_snapshot_noise(5_000);
+    let fixture = Fixture::new_with_snapshot_noise(1);
     let (mut request, mut profile) = fixture.runner_input();
     let wrapper = fixture.tools.path().join("stale-snapshot-provider");
     let mutation_marker = fixture.tools.path().join("stale-snapshot-mutation-ready");
-    let exit_marker = fixture.tools.path().join("stale-snapshot-provider-exiting");
+    let mutation_done = fixture.tools.path().join("stale-snapshot-mutation-done");
     fs::write(
         &wrapper,
         format!(
-            "#!/bin/sh\n'{}' \"$@\"\nprintf ready > '{}'\nsleep 0.2\nprintf exiting > '{}'\n",
+            "#!/bin/sh\n'{}' \"$@\"\nprintf ready > '{}'\nwhile [ ! -f '{}' ]; do :; done\n",
             fixture.executable.display(),
             mutation_marker.display(),
-            exit_marker.display()
+            mutation_done.display()
         ),
     )
     .unwrap();
@@ -908,7 +909,6 @@ fn public_runner_prioritizes_cancellation_after_stale_snapshot_validation() {
     .unwrap();
 
     let cancellation = Arc::new(AtomicBool::new(false));
-    let watched_cancellation = Arc::clone(&cancellation);
     let stale_file = fixture.snapshot.path().join("postflight-noise/0000");
     let watcher = std::thread::spawn(move || {
         while !mutation_marker.exists() {
@@ -917,19 +917,22 @@ fn public_runner_prioritizes_cancellation_after_stale_snapshot_validation() {
         fs::set_permissions(&stale_file, fs::Permissions::from_mode(0o644)).unwrap();
         fs::write(&stale_file, b"changed").unwrap();
         fs::set_permissions(&stale_file, fs::Permissions::from_mode(0o444)).unwrap();
-        while !exit_marker.exists() {
-            std::thread::yield_now();
-        }
-        std::thread::sleep(Duration::from_millis(20));
-        watched_cancellation.store(true, Ordering::Release);
+        fs::write(mutation_done, b"done").unwrap();
     });
-    let result = run_repository_context_provider(ProviderInvocation {
-        snapshot: &fixture.snapshot,
-        model: &fixture.model,
-        request: &request,
-        profile: &profile,
-        cancellation,
-    });
+    let postflight_cancellation = Arc::clone(&cancellation);
+    let cancel_after_snapshot_validation = || {
+        postflight_cancellation.store(true, Ordering::Release);
+    };
+    let result = run_repository_context_provider_with_postflight_snapshot_hook(
+        ProviderInvocation {
+            snapshot: &fixture.snapshot,
+            model: &fixture.model,
+            request: &request,
+            profile: &profile,
+            cancellation,
+        },
+        &cancel_after_snapshot_validation,
+    );
     watcher.join().unwrap();
 
     assert_eq!(

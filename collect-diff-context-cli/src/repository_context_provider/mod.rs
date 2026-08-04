@@ -121,6 +121,21 @@ pub fn run_repository_context_provider_with_postflight_elapsed_ms(
 }
 
 #[cfg(feature = "test-fixture")]
+pub fn run_repository_context_provider_with_postflight_snapshot_hook(
+    invocation: ProviderInvocation<'_>,
+    hook: &dyn Fn(),
+) -> Result<RepositoryContextProviderReport, ProviderError> {
+    run_repository_context_provider_with_policy_and_position_encoding_preference(
+        invocation,
+        ProviderResourcePolicy::production(),
+        PositionEncodingPreference::default(),
+        None,
+        Some(hook),
+    )
+    .map(|measurement| measurement.report)
+}
+
+#[cfg(feature = "test-fixture")]
 pub fn run_repository_context_provider_with_position_encoding_preference(
     invocation: ProviderInvocation<'_>,
     preferred_encoding: contract::PositionEncoding,
@@ -129,6 +144,7 @@ pub fn run_repository_context_provider_with_position_encoding_preference(
         invocation,
         ProviderResourcePolicy::production(),
         PositionEncodingPreference::preferred(preferred_encoding),
+        None,
         None,
     )
     .map(|measurement| measurement.report)
@@ -153,6 +169,7 @@ fn run_repository_context_provider_with_policy(
         policy,
         PositionEncodingPreference::default(),
         postflight_elapsed_floor_ms,
+        None,
     )
 }
 
@@ -161,6 +178,7 @@ fn run_repository_context_provider_with_policy_and_position_encoding_preference(
     policy: ProviderResourcePolicy,
     position_encoding_preference: PositionEncodingPreference,
     postflight_elapsed_floor_ms: Option<u64>,
+    postflight_snapshot_hook: Option<&dyn Fn()>,
 ) -> Result<ProviderRunMeasurement, ProviderError> {
     invocation
         .profile
@@ -228,6 +246,7 @@ fn run_repository_context_provider_with_policy_and_position_encoding_preference(
                 limits.deadline_ms,
                 false,
                 postflight_elapsed_floor_ms,
+                postflight_snapshot_hook,
             )?;
             return finalize_report(
                 report,
@@ -270,6 +289,7 @@ fn run_repository_context_provider_with_policy_and_position_encoding_preference(
                 limits.deadline_ms,
                 status == RepositoryContextProviderStatus::Timeout,
                 postflight_elapsed_floor_ms,
+                postflight_snapshot_hook,
             )?;
             return finalize_report(
                 report,
@@ -323,6 +343,7 @@ fn run_repository_context_provider_with_policy_and_position_encoding_preference(
                 limits.deadline_ms,
                 status == RepositoryContextProviderStatus::Timeout,
                 postflight_elapsed_floor_ms,
+                postflight_snapshot_hook,
             )?;
             return finalize_report(
                 report,
@@ -357,6 +378,7 @@ fn run_repository_context_provider_with_policy_and_position_encoding_preference(
             limits.deadline_ms,
             status == RepositoryContextProviderStatus::Timeout,
             postflight_elapsed_floor_ms,
+            postflight_snapshot_hook,
         )?;
         return finalize_report(
             report,
@@ -376,6 +398,7 @@ fn run_repository_context_provider_with_policy_and_position_encoding_preference(
         limits.deadline_ms,
         false,
         postflight_elapsed_floor_ms,
+        postflight_snapshot_hook,
     )?;
 
     let report = report_from_traversal(
@@ -498,6 +521,7 @@ fn postflight(
     deadline_ms: u64,
     internal_timeout: bool,
     elapsed_floor_ms: Option<u64>,
+    snapshot_hook: Option<&dyn Fn()>,
 ) -> Result<(), ProviderError> {
     let check_runtime = || {
         check_runtime_deadline(cancellation, started, deadline_ms, internal_timeout)?;
@@ -507,6 +531,9 @@ fn postflight(
     };
     check_runtime()?;
     let snapshot_validation = snapshot.verify_unchanged();
+    if let Some(hook) = snapshot_hook {
+        hook();
+    }
     check_runtime()?;
     snapshot_validation.map_err(|_| ProviderError::StaleBinding)?;
     let model_validation = model.validate();
