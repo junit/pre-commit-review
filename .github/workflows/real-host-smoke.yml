@@ -18,7 +18,9 @@ permissions:
 
 jobs:
   smoke:
-    runs-on: self-hosted
+    # checkout v7 runs on Node 24; only dispatch to runners carrying this
+    # label after they have been upgraded to Actions Runner v2.327.1+.
+    runs-on: [self-hosted, node24]
     strategy:
       fail-fast: false
       matrix:

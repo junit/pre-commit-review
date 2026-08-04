@@ -201,6 +201,25 @@ rtk cargo +nightly fuzz run repository_context_frame --fuzz-dir collect-diff-con
 rtk cargo +nightly fuzz run repository_context_messages --fuzz-dir collect-diff-context-cli/fuzz -- -runs=256 -timeout=5
 ```
 
+## Real-Host Smoke Runner Contract
+
+`.github/workflows/real-host-smoke.yml` targets the `self-hosted,node24`
+runner label. The label is an operator-managed admission check: the runner
+must be Actions Runner `v2.327.1` or newer because the pinned
+`actions/checkout` v7 action executes with Node 24. Before enabling the label,
+verify the installed runner package version on the host and confirm the
+repository registration exposes both `self-hosted` and `node24` labels:
+
+```text
+gh api repos/junit/pre-commit-review/actions/runners \
+  --jq '.runners[] | {name,version,status,labels:[.labels[].name]}'
+```
+
+As of the `08be23e` maintenance baseline, this repository has no registered
+self-hosted runners (`total_count: 0`), so real-host smoke remains
+infrastructure-blocked until an upgraded runner is registered. No CI result
+claims that this path has executed.
+
 ## Delivery 5 Distribution Boundary
 
 Delivery 5B distributes the pinned real `rust-analyzer` for the four supported
