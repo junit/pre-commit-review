@@ -14,6 +14,10 @@ Highlights:
 - Release evidence includes pinned manifests, sidecar SHA-256 files, Cargo
   SBOM data, and GitHub build attestations.
 
-Validation for this release is recorded by the tagged GitHub Actions run. The
-repository does not claim a line-coverage threshold until the dedicated
-coverage gate is added in a follow-up maintenance change.
+Pre-tag validation for commit `9bdbf5a` is recorded by GitHub Actions run
+[`30911831086`](https://github.com/junit/pre-commit-review/actions/runs/30911831086),
+which passed the Rust, integration, fuzz, release-trust, and multi-platform
+gates. The dedicated coverage job enforces at least 80 percent line coverage
+and reported 80.01 percent (31,383 of 39,223 production lines). Its denominator
+excludes only feature-gated fixture harness sources. The tagged release
+workflow remains the final build and publication evidence for `v0.1.0`.
