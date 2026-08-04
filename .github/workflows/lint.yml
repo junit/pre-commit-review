@@ -130,8 +130,30 @@ jobs:
       - name: Install pinned cargo-llvm-cov
         run: cargo +1.95.0 install --locked --version 0.8.7 cargo-llvm-cov
       - name: Enforce 80 percent line coverage
-        run: cargo +1.95.0 llvm-cov --locked --all-features --fail-under-lines 80
-        working-directory: collect-diff-context-cli
+        shell: bash
+        run: |
+          set -euo pipefail
+          cd collect-diff-context-cli
+          source <(cargo +1.95.0 llvm-cov show-env --sh)
+          cargo +1.95.0 llvm-cov clean --workspace
+          cargo +1.95.0 test --release --locked
+          cargo +1.95.0 build --release --locked --bins
+          cd "$GITHUB_WORKSPACE"
+          export PRE_COMMIT_REVIEW_RUST_BIN="$GITHUB_WORKSPACE/collect-diff-context-cli/target/release/collect-diff-context-cli"
+          export PRE_COMMIT_REVIEW_STATIC_ANALYSIS_BIN="$GITHUB_WORKSPACE/collect-diff-context-cli/target/release/static-analysis-cli"
+          export PRE_COMMIT_REVIEW_REPOSITORY_CONTEXT_BIN="$GITHUB_WORKSPACE/collect-diff-context-cli/target/release/repository-context-cli"
+          export PRE_COMMIT_REVIEW_REPOSITORY_CONTEXT_PROVIDER_BIN="$GITHUB_WORKSPACE/collect-diff-context-cli/target/release/repository-context-provider-cli"
+          ./tests/collect_diff_context_test.sh
+          ./tests/secret_gate_test.sh
+          ./tests/static_analysis_evidence_test.sh
+          ./tests/static_analysis_execution_test.sh
+          ./tests/static_analysis_execution_modes_test.sh
+          ./tests/static_analysis_orchestration_test.sh
+          ./tests/repository_index_test.sh
+          ./tests/repository_context_test.sh
+          ./tests/repository_context_provider_cli_test.sh
+          cd collect-diff-context-cli
+          cargo +1.95.0 llvm-cov report --release --fail-under-lines 80
 
   rust-1-95:
     name: Rust 1.95 locked provider gates
