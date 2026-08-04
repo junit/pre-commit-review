@@ -2,9 +2,10 @@ use collect_diff_context_cli::artifacts::{
     contract::{
         canonical_json, sha256_bytes, ArtifactFileBinding, ArtifactManifest, ArtifactPackRecord,
         ArtifactRole, ArtifactState, PackFileRecord, PackFileRole, PackFormat, PackManifest,
-        ProbeId, SourceLock,
+        ProbeId, RevocationIndex, SourceLock,
     },
     pack::{verify_pack, VerifyLimits},
+    writer::{write_core_pack, CorePackOptions},
 };
 use flate2::{write::GzEncoder, Compression, GzBuilder};
 use serde_json::json;
@@ -627,6 +628,97 @@ fn rust_writer_emits_a_complete_verifiable_gitleaks_record() {
             .and_then(serde_json::Value::as_str),
         Some("unknown")
     );
+}
+
+#[test]
+fn core_writer_emits_a_bound_manifest_and_record() {
+    let temporary = tempfile::tempdir().unwrap();
+    let source_root = temporary.path().join("payload");
+    for directory in [
+        "agents",
+        "references",
+        "docs",
+        "THIRD_PARTY_LICENSES",
+        "collect-diff-context-cli/schemas",
+        "scripts/bin",
+    ] {
+        fs::create_dir_all(source_root.join(directory)).unwrap();
+    }
+    fs::write(source_root.join("SKILL.md"), b"skill\n").unwrap();
+    fs::write(source_root.join("LICENSE"), b"license\n").unwrap();
+    fs::write(source_root.join("install.sh"), b"#!/bin/sh\n").unwrap();
+    fs::write(source_root.join("agents/reviewer.md"), b"reviewer\n").unwrap();
+    fs::write(source_root.join("references/policy.md"), b"policy\n").unwrap();
+    fs::write(source_root.join("docs/release.md"), b"release\n").unwrap();
+    fs::write(
+        source_root.join("THIRD_PARTY_LICENSES/provider.txt"),
+        b"provider\n",
+    )
+    .unwrap();
+    fs::write(
+        source_root.join("collect-diff-context-cli/schemas/core.json"),
+        b"{}\n",
+    )
+    .unwrap();
+    fs::write(source_root.join("scripts/helper.sh"), b"#!/bin/sh\n").unwrap();
+    for name in [
+        "collect_diff_context-linux-amd64",
+        "static_analysis-linux-amd64",
+        "repository_context-linux-amd64",
+        "repository_context_provider-linux-amd64",
+    ] {
+        fs::write(source_root.join("scripts/bin").join(name), name.as_bytes()).unwrap();
+    }
+
+    let revocations = RevocationIndex {
+        schema_version: 1,
+        kind: "third_party_artifact_revocations".to_string(),
+        entries: Vec::new(),
+    };
+    let revocation_bytes = canonical_json(&revocations).unwrap();
+    let distribution = ArtifactManifest {
+        schema_version: 1,
+        kind: "third_party_artifacts".to_string(),
+        release_repository: "junit/pre-commit-review".to_string(),
+        revocation_index_sha256: sha256_bytes(&revocation_bytes),
+        packs: Vec::new(),
+    };
+    let distribution_bytes = canonical_json(&distribution).unwrap();
+    let manifest_path = temporary.path().join("manifest.json");
+    let revocations_path = temporary.path().join("revocations.json");
+    fs::write(&manifest_path, &distribution_bytes).unwrap();
+    fs::write(&revocations_path, &revocation_bytes).unwrap();
+    let output_path = temporary.path().join("core.tar.gz");
+    let record_path = temporary.path().join("core.record.json");
+
+    let record = write_core_pack(&CorePackOptions {
+        platform_id: "linux-amd64",
+        pack_version: "0.1.0",
+        source_root: &source_root,
+        manifest_path: &manifest_path,
+        revocations_path: &revocations_path,
+        output_path: &output_path,
+        record_output: Some(&record_path),
+    })
+    .unwrap();
+
+    let pack_bytes = fs::read(&output_path).unwrap();
+    assert_eq!(record["kind"], "core");
+    assert_eq!(record["platform_id"], "linux-amd64");
+    assert_eq!(record["target_triple"], "x86_64-unknown-linux-musl");
+    assert_eq!(record["pack_size"], pack_bytes.len());
+    assert_eq!(record["core_manifest_sha256"].as_str().unwrap().len(), 64);
+    let members = record["members"].as_array().unwrap();
+    assert!(members.iter().any(|member| {
+        member["path"] == "runtime/distribution/manifest.json"
+            && member["sha256"] == sha256_bytes(&distribution_bytes)
+    }));
+    assert!(members.iter().any(|member| {
+        member["path"] == "runtime/distribution/revocations.json"
+            && member["sha256"] == sha256_bytes(&revocation_bytes)
+    }));
+    let record_bytes = fs::read(&record_path).unwrap();
+    assert_eq!(canonical_json(&record).unwrap(), record_bytes);
 }
 
 #[test]

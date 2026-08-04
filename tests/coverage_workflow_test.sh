@@ -53,8 +53,25 @@ for integration_test in \
   grep -Fq "./tests/$integration_test" <<<"$job" \
     || fail "coverage job does not run $integration_test"
 done
-grep -Fq 'cargo +1.95.0 llvm-cov report --release --fail-under-lines 80' <<<"$job" \
-  || fail 'coverage job does not enforce 80 percent line coverage'
+fixture_ignore_regex='(^|/)(bin/(repository_context_provider_fixture|static_analysis_fixture)\.rs|repository_context_provider/baseline_fixture(\.rs|/fixture_tree\.rs))$'
+grep -Fq "cargo +1.95.0 llvm-cov report --release --ignore-filename-regex '$fixture_ignore_regex' --fail-under-lines 80" <<<"$job" \
+  || fail 'coverage job does not exclude only test-fixture sources while enforcing 80 percent line coverage'
+for fixture_source in \
+  src/bin/repository_context_provider_fixture.rs \
+  src/bin/static_analysis_fixture.rs \
+  src/repository_context_provider/baseline_fixture.rs \
+  src/repository_context_provider/baseline_fixture/fixture_tree.rs; do
+  [[ "$fixture_source" =~ $fixture_ignore_regex ]] \
+    || fail "fixture exclusion does not match $fixture_source"
+done
+for production_source in \
+  src/bin/repository_context_provider_cli.rs \
+  src/repository_context_provider/mod.rs \
+  src/repository_context_provider/baseline.rs; do
+  if [[ "$production_source" =~ $fixture_ignore_regex ]]; then
+    fail "fixture exclusion also matches production source $production_source"
+  fi
+done
 if grep -Fq 'continue-on-error: true' <<<"$job"; then
   fail 'coverage job is non-blocking'
 fi
