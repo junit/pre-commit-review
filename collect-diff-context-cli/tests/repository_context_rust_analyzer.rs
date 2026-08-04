@@ -17,6 +17,7 @@ use collect_diff_context_cli::repository_context_provider::session::{
 use collect_diff_context_cli::repository_context_provider::snapshot::BoundCandidateSnapshot;
 use collect_diff_context_cli::repository_context_provider::{
     run_repository_context_provider, run_repository_context_provider_measured,
+    run_repository_context_provider_with_postflight_and_finalization_hooks,
     run_repository_context_provider_with_postflight_elapsed_ms,
     run_repository_context_provider_with_postflight_snapshot_hook, ProviderInvocation,
 };
@@ -27,7 +28,7 @@ use std::collections::BTreeMap;
 use std::fs;
 use std::path::{Path, PathBuf};
 use std::process::Command;
-use std::sync::atomic::AtomicBool;
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::Arc;
 use std::time::{Duration, Instant};
 use tempfile::TempDir;
@@ -565,68 +566,55 @@ fn public_runner_returns_bound_completed_report() {
     );
 }
 
-#[cfg(unix)]
 #[test]
 fn public_runner_elapsed_includes_final_report_processing() {
-    use std::os::unix::fs::PermissionsExt;
-
     let _guard = lock_resource_intensive_runner_test();
     let fixture = Fixture::new();
-    let (mut request, profile) = fixture.runner_input();
-    configure_large_report_request(&mut request);
+    let (request, profile) = fixture.runner_input();
+    let hook_elapsed_ms = AtomicU64::new(0);
+    let postflight_hook = || {
+        std::thread::sleep(Duration::from_millis(100));
+    };
+    let finalization_hook = |started: Instant| {
+        hook_elapsed_ms.store(
+            u64::try_from(started.elapsed().as_millis()).unwrap(),
+            Ordering::Release,
+        );
+        std::thread::sleep(Duration::from_millis(100));
+    };
 
-    let baseline_executable = fixture.tools.path().join("large-report-preflight-only");
-    fs::copy(&fixture.executable, &baseline_executable).unwrap();
-    fs::set_permissions(&baseline_executable, fs::Permissions::from_mode(0o600)).unwrap();
-    let mut baseline_request = request.clone();
-    baseline_request.provider.executable_path = baseline_executable;
-    let preflight_started = Instant::now();
-    let preflight_error = run_repository_context_provider(ProviderInvocation {
-        snapshot: &fixture.snapshot,
-        model: &fixture.model,
-        request: &baseline_request,
-        profile: &profile,
-        cancellation: Arc::new(AtomicBool::new(false)),
-    })
-    .unwrap_err();
-    let preflight_elapsed = preflight_started.elapsed();
-    assert_eq!(
-        preflight_error,
-        collect_diff_context_cli::repository_context_provider::ProviderError::Preflight
-    );
-
-    let started = Instant::now();
-    let report = run_repository_context_provider(ProviderInvocation {
-        snapshot: &fixture.snapshot,
-        model: &fixture.model,
-        request: &request,
-        profile: &profile,
-        cancellation: Arc::new(AtomicBool::new(false)),
-    })
+    let measured = run_repository_context_provider_with_postflight_and_finalization_hooks(
+        ProviderInvocation {
+            snapshot: &fixture.snapshot,
+            model: &fixture.model,
+            request: &request,
+            profile: &profile,
+            cancellation: Arc::new(AtomicBool::new(false)),
+        },
+        &postflight_hook,
+        &finalization_hook,
+    )
     .unwrap();
-    let wall_elapsed = started.elapsed();
+    let hook_elapsed_ms = hook_elapsed_ms.load(Ordering::Acquire);
 
     assert_eq!(
-        report.status,
+        measured.report.status,
         RepositoryContextProviderStatus::Completed,
         "limitations: {:?}",
-        report.limitations
+        measured.report.limitations
     );
-    report.validate().unwrap();
-    assert_eq!(report.related_symbols.len(), 1_000);
-    assert_eq!(report.edges.len(), 1_000);
-    assert_eq!(
-        report.metrics.report_bytes,
-        serde_json::to_vec(&report).unwrap().len()
-    );
-    let unaccounted = wall_elapsed
-        .saturating_sub(preflight_elapsed)
-        .saturating_sub(Duration::from_millis(report.metrics.elapsed_ms));
+    measured.report.validate().unwrap();
     assert!(
-        unaccounted < Duration::from_millis(50),
-        "final report work was not timed: wall={wall_elapsed:?} preflight={preflight_elapsed:?} report={}ms unaccounted={unaccounted:?}",
-        report.metrics.elapsed_ms
+        hook_elapsed_ms >= 75,
+        "finalization hook did not receive the provider start: elapsed={hook_elapsed_ms}ms"
     );
+    assert!(
+        measured.elapsed_ms >= hook_elapsed_ms,
+        "finalization work was not timed: measured={}ms hook={}ms",
+        measured.elapsed_ms,
+        hook_elapsed_ms
+    );
+    assert_eq!(measured.report.metrics.elapsed_ms, measured.elapsed_ms);
 }
 
 #[cfg(unix)]

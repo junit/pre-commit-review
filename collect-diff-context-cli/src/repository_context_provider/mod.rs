@@ -131,8 +131,25 @@ pub fn run_repository_context_provider_with_postflight_snapshot_hook(
         PositionEncodingPreference::default(),
         None,
         Some(hook),
+        None,
     )
     .map(|measurement| measurement.report)
+}
+
+#[cfg(feature = "test-fixture")]
+pub fn run_repository_context_provider_with_postflight_and_finalization_hooks(
+    invocation: ProviderInvocation<'_>,
+    postflight_hook: &dyn Fn(),
+    finalization_hook: &dyn Fn(Instant),
+) -> Result<ProviderRunMeasurement, ProviderError> {
+    run_repository_context_provider_with_policy_and_position_encoding_preference(
+        invocation,
+        ProviderResourcePolicy::production(),
+        PositionEncodingPreference::default(),
+        None,
+        Some(postflight_hook),
+        Some(finalization_hook),
+    )
 }
 
 #[cfg(feature = "test-fixture")]
@@ -144,6 +161,7 @@ pub fn run_repository_context_provider_with_position_encoding_preference(
         invocation,
         ProviderResourcePolicy::production(),
         PositionEncodingPreference::preferred(preferred_encoding),
+        None,
         None,
         None,
     )
@@ -170,6 +188,7 @@ fn run_repository_context_provider_with_policy(
         PositionEncodingPreference::default(),
         postflight_elapsed_floor_ms,
         None,
+        None,
     )
 }
 
@@ -179,6 +198,7 @@ fn run_repository_context_provider_with_policy_and_position_encoding_preference(
     position_encoding_preference: PositionEncodingPreference,
     postflight_elapsed_floor_ms: Option<u64>,
     postflight_snapshot_hook: Option<&dyn Fn()>,
+    finalization_hook: Option<&dyn Fn(Instant)>,
 ) -> Result<ProviderRunMeasurement, ProviderError> {
     invocation
         .profile
@@ -253,6 +273,7 @@ fn run_repository_context_provider_with_policy_and_position_encoding_preference(
                 &invocation.cancellation,
                 started,
                 limits.deadline_ms,
+                finalization_hook,
             );
         }
         Err(_) => return Err(ProviderError::Preflight),
@@ -296,6 +317,7 @@ fn run_repository_context_provider_with_policy_and_position_encoding_preference(
                 &invocation.cancellation,
                 started,
                 limits.deadline_ms,
+                finalization_hook,
             );
         }
     };
@@ -350,6 +372,7 @@ fn run_repository_context_provider_with_policy_and_position_encoding_preference(
                 &invocation.cancellation,
                 started,
                 limits.deadline_ms,
+                finalization_hook,
             );
         }
     };
@@ -385,6 +408,7 @@ fn run_repository_context_provider_with_policy_and_position_encoding_preference(
             &invocation.cancellation,
             started,
             limits.deadline_ms,
+            finalization_hook,
         );
     }
     check_cancelled(&invocation.cancellation)?;
@@ -417,6 +441,7 @@ fn run_repository_context_provider_with_policy_and_position_encoding_preference(
         &invocation.cancellation,
         started,
         limits.deadline_ms,
+        finalization_hook,
     )
 }
 
@@ -785,6 +810,7 @@ fn finalize_report(
     cancellation: &Arc<AtomicBool>,
     started: Instant,
     deadline_ms: u64,
+    finalization_hook: Option<&dyn Fn(Instant)>,
 ) -> Result<ProviderRunMeasurement, ProviderError> {
     let internal_timeout = report.status == RepositoryContextProviderStatus::Timeout;
     let hard_deadline_ms = if internal_timeout {
@@ -793,6 +819,10 @@ fn finalize_report(
         deadline_ms
     };
     check_runtime_deadline(cancellation, started, deadline_ms, internal_timeout)?;
+    if let Some(hook) = finalization_hook {
+        hook(started);
+        check_runtime_deadline(cancellation, started, deadline_ms, internal_timeout)?;
+    }
     let observed_elapsed_ms = unbounded_elapsed_ms(started);
     report.metrics.elapsed_ms = observed_elapsed_ms.min(hard_deadline_ms);
     stabilize_report_size(
