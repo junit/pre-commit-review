@@ -333,9 +333,7 @@ fn canonicalize_graph(graph: &mut RepositoryGraph) {
 
 pub fn publish_graph(root: &Path, graph: &RepositoryGraph) -> PathBuf {
     let writer = RepositoryGraphWriter::new(cache_layout(root));
-    let mut budget = IndexBudget::deep_defaults();
-    budget.deadline = std::time::Duration::from_secs(2);
-    let mut tracker = IndexBudgetTracker::new(budget);
+    let mut tracker = IndexBudgetTracker::new(IndexBudget::deep_defaults());
     match writer
         .publish(graph, &mut tracker)
         .expect("bounded fuzz graph must publish")

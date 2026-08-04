@@ -412,6 +412,12 @@ fn fixture_stdio(log_path: Option<&str>) -> io::Result<()> {
         'e' => graph_with_health(log_path, "warning"),
         'f' => handshake_missing_capability(log_path),
         '7' => spawn_descendant_rss(log_path, None),
+        '8' => {
+            // Keep the large-report fixture alive while the parent stops RSS monitoring.
+            let result = graph(log_path);
+            thread::sleep(Duration::from_millis(50));
+            result
+        }
         _ => graph(log_path),
     }
 }
