@@ -1,0 +1,75 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "third-party-artifact-baseline.schema.json",
+  "title": "ThirdPartyArtifactBaseline",
+  "type": "object",
+  "required": ["schema_version", "kind", "artifact_id", "pack_version", "source_lock_sha256", "measurements"],
+  "properties": {
+    "schema_version": { "type": "integer", "const": 1 },
+    "kind": { "type": "string", "const": "third_party_artifact_baseline" },
+    "artifact_id": { "type": "string", "const": "rust-analyzer" },
+    "pack_version": { "type": "string", "const": "2026.07.27-pcr.3" },
+    "source_lock_sha256": {
+      "type": "string",
+      "const": "298bc6c0339fe2c58fd35bfbd53db285ea7ff34e40734a4f0c36ccb3fe60d862"
+    },
+    "measurements": {
+      "type": "array",
+      "minItems": 1,
+      "maxItems": 64,
+      "items": { "$ref": "#/$defs/measurement" }
+    }
+  },
+  "$defs": {
+    "measurement": {
+      "type": "object",
+      "required": [
+        "platform_id", "pack_sha256", "executable_sha256", "runner_sha256", "profile_sha256", "fixture_id",
+        "fixture_sha256", "request_sha256", "runner_class", "toolchain", "timing_scope",
+        "provisioning_included", "samples_ms", "p95_ms", "peak_process_tree_rss_bytes"
+      ],
+      "properties": {
+        "platform_id": { "$ref": "third-party-artifacts.schema.json#/$defs/platformId" },
+        "pack_sha256": { "$ref": "third-party-artifacts.schema.json#/$defs/sha256" },
+        "executable_sha256": { "$ref": "third-party-artifacts.schema.json#/$defs/sha256" },
+        "runner_sha256": { "$ref": "third-party-artifacts.schema.json#/$defs/sha256" },
+        "profile_sha256": { "$ref": "third-party-artifacts.schema.json#/$defs/sha256" },
+        "fixture_id": { "$ref": "third-party-artifacts.schema.json#/$defs/identifier" },
+        "fixture_sha256": { "$ref": "third-party-artifacts.schema.json#/$defs/sha256" },
+        "request_sha256": { "$ref": "third-party-artifacts.schema.json#/$defs/sha256" },
+        "runner_class": { "$ref": "third-party-artifacts.schema.json#/$defs/identifier" },
+        "toolchain": { "type": "string", "const": "rust-1.95.0-locked" },
+        "timing_scope": { "type": "string", "const": "provider-run-only-v1" },
+        "provisioning_included": { "type": "boolean", "const": false },
+        "samples_ms": {
+          "type": "array",
+          "minItems": 20,
+          "maxItems": 100,
+          "items": { "type": "integer", "minimum": 1, "maximum": 30000 }
+        },
+        "p95_ms": { "type": "integer", "minimum": 1, "maximum": 30000 },
+        "peak_process_tree_rss_bytes": { "type": "integer", "minimum": 1, "maximum": 2147483648 }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "platform_id": { "const": "darwin-amd64" } }, "required": ["platform_id"] },
+          "then": { "properties": { "runner_class": { "const": "github-hosted-macos-15-intel" } } }
+        },
+        {
+          "if": { "properties": { "platform_id": { "const": "darwin-arm64" } }, "required": ["platform_id"] },
+          "then": { "properties": { "runner_class": { "const": "github-hosted-macos-14-arm64" } } }
+        },
+        {
+          "if": { "properties": { "platform_id": { "const": "linux-amd64" } }, "required": ["platform_id"] },
+          "then": { "properties": { "runner_class": { "const": "github-hosted-ubuntu-24-x64" } } }
+        },
+        {
+          "if": { "properties": { "platform_id": { "const": "windows-amd64" } }, "required": ["platform_id"] },
+          "then": { "properties": { "runner_class": { "const": "github-hosted-windows-2025-x64" } } }
+        }
+      ],
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

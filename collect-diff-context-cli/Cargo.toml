@@ -2,12 +2,87 @@
 name = "collect-diff-context-cli"
 version = "0.1.0"
 edition = "2021"
+rust-version = "1.95"
+autobins = false
+
+[features]
+test-fixture = []
+
+[[bin]]
+name = "collect-diff-context-cli"
+path = "src/main.rs"
+
+[[bin]]
+name = "static-analysis-cli"
+path = "src/bin/static_analysis.rs"
+
+[[bin]]
+name = "repository-context-cli"
+path = "src/bin/repository_context.rs"
+
+[[bin]]
+name = "repository-context-provider-cli"
+path = "src/bin/repository_context_provider.rs"
+
+[[bin]]
+name = "artifact-pack-writer"
+path = "src/bin/artifact_pack_writer.rs"
+
+[[bin]]
+name = "static-analysis-fixture"
+path = "src/bin/static_analysis_fixture.rs"
+required-features = ["test-fixture"]
+
+[[bin]]
+name = "repository-context-provider-fixture"
+path = "src/bin/repository_context_provider_fixture.rs"
+required-features = ["test-fixture"]
+
+[[bin]]
+name = "provider-baseline-sample-runner"
+path = "src/bin/provider_baseline_sample_runner.rs"
+required-features = ["test-fixture"]
 
 [dependencies]
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 regex = "1.10"
 sha2 = "0.10"
+tempfile = "3"
+percent-encoding = "2"
+tree-sitter = "=0.26.11"
+tree-sitter-rust = "=0.24.2"
+rusqlite = { version = "=0.40.1", default-features = false, features = ["bundled"] }
+toml = { version = "=1.1.3", default-features = false, features = ["std", "serde", "parse"] }
+url = "=2.5.7"
+tar = { version = "=0.4.46", default-features = false }
+flate2 = { version = "=1.1.9", default-features = false, features = ["rust_backend"] }
+ureq = { version = "=3.3.0", default-features = false, features = ["rustls"] }
+
+[target.'cfg(unix)'.dependencies]
+libc = "0.2"
+
+[target.'cfg(windows)'.dependencies]
+windows-sys = { version = "0.59", features = [
+  "Win32_Foundation",
+  "Win32_Security",
+  "Win32_Storage_FileSystem",
+  "Win32_System_Diagnostics_ToolHelp",
+  "Win32_System_JobObjects",
+  "Win32_System_ProcessStatus",
+  "Win32_System_Threading",
+] }
+
+[dev-dependencies]
+criterion = { version = "=0.5.1", default-features = false, features = ["cargo_bench_support"] }
+
+[[bench]]
+name = "impact_context"
+harness = false
+
+[[bench]]
+name = "repository_index"
+harness = false
 
 [profile.release]
 opt-level = 3

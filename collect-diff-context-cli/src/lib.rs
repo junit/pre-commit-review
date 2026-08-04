@@ -1,0 +1,18 @@
+mod app;
+pub mod artifacts;
+pub mod candidate;
+mod git_policy;
+pub mod impact_context;
+mod process_group;
+pub mod provider_resources;
+pub mod repository_context_provider;
+pub mod review_scope;
+pub mod secret_scan;
+pub mod static_analysis;
+mod trusted_runtime;
+#[cfg(windows)]
+mod windows_acl;
+
+pub fn collect_diff_context_main() -> i32 {
+    app::main_entry()
+}

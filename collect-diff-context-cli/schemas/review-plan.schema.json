@@ -4,9 +4,9 @@
   "title": "ReviewPlan",
   "description": "The complete review plan JSON output containing groups, units, and coverage information.",
   "type": "object",
-  "required": ["schema_version", "source", "group_target_bytes", "group_hard_bytes", "manifest_units", "review_groups", "split_required_groups", "high_risk_units", "context_mode", "state_snapshot_section", "semantic_context_section", "groups", "coverage_validation"],
+  "required": ["schema_version", "source", "group_target_bytes", "group_hard_bytes", "manifest_units", "review_groups", "split_required_groups", "high_risk_units", "context_mode", "state_snapshot_section", "impact_context", "groups", "coverage_validation"],
   "properties": {
-    "schema_version": { "type": "integer", "const": 1 },
+    "schema_version": { "type": "integer", "const": 2 },
     "source": { "type": "string", "description": "Diff source mode (staged, unstaged, branch)" },
     "group_target_bytes": { "type": "integer", "minimum": 0 },
     "group_hard_bytes": { "type": "integer", "minimum": 0 },
@@ -16,7 +16,16 @@
     "high_risk_units": { "type": "integer", "minimum": 0 },
     "context_mode": { "type": "string" },
     "state_snapshot_section": { "type": "string" },
-    "semantic_context_section": { "type": "string" },
+    "impact_context": {
+      "type": "object",
+      "required": ["contract", "retrieval", "coverage_credit"],
+      "properties": {
+        "contract": { "type": "string", "const": "impact_context/v1" },
+        "retrieval": { "type": "string", "const": "review_control_plane.command_templates.impact_context" },
+        "coverage_credit": { "type": "string", "const": "none" }
+      },
+      "additionalProperties": false
+    },
     "groups": {
       "type": "array",
       "items": {

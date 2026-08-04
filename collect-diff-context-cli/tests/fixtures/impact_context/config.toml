@@ -1,0 +1,7 @@
+[database]
+url = "postgres://localhost/review"
+authorization = "bearer-token"
+cache_backend = "redis"
+
+[service]
+endpoint = "https://api.example.test/v1"

@@ -9,57 +9,208 @@ permissions:
   contents: read
 
 jobs:
+  artifact-release-trust:
+    name: Verify release trust fixtures
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout reviewed verifier
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - name: Verify sidecars, scoped attestations, and revocation bounds
+        run: ./scripts/verify_release_artifacts.sh --fixture tests/fixtures/release
+      - name: Set up Python
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.13'
+      - name: Install schema validator
+        run: |
+          python3 -m pip install --disable-pip-version-check 'jsonschema==4.25.1'
+          python3 -c 'import jsonschema; from referencing import Registry, Resource'
+      - name: Validate artifact schemas
+        run: python3 scripts/validate_schemas.py
+      - name: Check verifier shell syntax
+        run: bash -n scripts/verify_release_artifacts.sh
+      - name: Assert ordinary review reachability
+        run: ./tests/artifact_reachability_test.sh
+
   shellcheck:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
       - name: Run shellcheck
-        uses: ludeeus/action-shellcheck@2.0.0
+        uses: ludeeus/action-shellcheck@00cae500b08a931fb5698e11e79bfbd38e612a38
         env:
           SHELLCHECK_OPTS: -s bash
         with:
           severity: warning
           additional_paths: scripts install.sh tests evals
+      - name: Set up Go for actionlint
+        uses: actions/setup-go@d35c59abb061a4a6fb18e82ac0862c26744d6ab5
+        with:
+          go-version: '1.25.x'
+      - name: Validate GitHub Actions workflows
+        run: go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.7 -oneline
 
   rust-checks:
     runs-on: ubuntu-latest
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
       - name: Set up Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c
         with:
+          toolchain: 1.95.0
           components: rustfmt, clippy
       - name: Cache cargo registry
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830
         with:
           path: |
             ~/.cargo/registry/index/
             ~/.cargo/registry/cache/
             ~/.cargo/git/db/
             collect-diff-context-cli/target/
-          key: ${{ runner.os }}-cargo-${{ hashFiles('collect-diff-context-cli/Cargo.lock') }}
+          key: ${{ runner.os }}-cargo-${{ hashFiles('collect-diff-context-cli/Cargo.lock', 'collect-diff-context-cli/fuzz/Cargo.lock') }}
       - name: Check formatting
-        run: cargo fmt --all -- --check
+        run: cargo +1.95.0 fmt --all -- --check
         working-directory: collect-diff-context-cli
-      - name: Run clippy
-        run: cargo clippy --all-targets -- -D warnings
+      - name: Check fuzz target formatting
+        run: cargo +1.95.0 fmt --all --manifest-path fuzz/Cargo.toml -- --check
+        working-directory: collect-diff-context-cli
+      - name: Run default-feature clippy
+        run: cargo +1.95.0 clippy --locked --all-targets -- -D warnings
+        working-directory: collect-diff-context-cli
+      - name: Run all-feature clippy
+        run: cargo +1.95.0 clippy --locked --all-targets --all-features -- -D warnings
         working-directory: collect-diff-context-cli
       - name: Run unit tests
-        run: cargo test
+        run: cargo +1.95.0 test --locked
+        working-directory: collect-diff-context-cli
+      - name: Run adversarial structural-context tests
+        run: cargo +1.95.0 test --locked --test impact_context_rust adversarial
         working-directory: collect-diff-context-cli
       - name: Compile release binary
-        run: cargo build --release
+        run: cargo +1.95.0 build --release --locked
+        working-directory: collect-diff-context-cli
+      - name: Run fast impact-context release gates
+        run: cargo +1.95.0 test --release --locked --test impact_context_performance -- --nocapture
+        working-directory: collect-diff-context-cli
+      - name: Run repository-index release gates
+        run: cargo +1.95.0 test --release --locked --test repository_index_integration -- --nocapture
+        working-directory: collect-diff-context-cli
+      - name: Smoke-test repository-index benchmark stages
+        run: cargo +1.95.0 bench --locked --bench repository_index -- --test
+        env:
+          PRE_COMMIT_REVIEW_SQLITE_SCALE_GATE: '1'
+        working-directory: collect-diff-context-cli
+      - name: Set up nightly fuzz toolchain
+        run: rustup toolchain install nightly-2026-07-29 --profile minimal
+      - name: Install cargo-fuzz
+        run: cargo +nightly-2026-07-29 install --locked --version 0.13.2 cargo-fuzz
+      - name: Compile structural-context fuzz targets
+        run: cargo +nightly-2026-07-29 fuzz build --fuzz-dir collect-diff-context-cli/fuzz
+      - name: Run bounded structural-context fuzz smoke
+        run: |
+          cargo +nightly-2026-07-29 fuzz run tree_sitter_rust --fuzz-dir collect-diff-context-cli/fuzz -- -max_total_time=10 -timeout=5
+          cargo +nightly-2026-07-29 fuzz run impact_contract --fuzz-dir collect-diff-context-cli/fuzz -- -max_total_time=10 -timeout=5
+          cargo +nightly-2026-07-29 fuzz run file_facts_decode --fuzz-dir collect-diff-context-cli/fuzz -- -runs=256 -timeout=5
+          cargo +nightly-2026-07-29 fuzz run repository_graph_row --fuzz-dir collect-diff-context-cli/fuzz -- -runs=256 -timeout=5
+          cargo +nightly-2026-07-29 fuzz run repository_overlay --fuzz-dir collect-diff-context-cli/fuzz -- -runs=256 -timeout=5
+          cargo +nightly-2026-07-29 fuzz run repository_traversal --fuzz-dir collect-diff-context-cli/fuzz -- -runs=256 -timeout=5
+
+  rust-1-95:
+    name: Rust 1.95 locked provider gates
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - name: Set up Rust 1.95
+        uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c
+        with:
+          toolchain: 1.95.0
+          components: rustfmt, clippy
+      - name: Check all targets and features
+        run: cargo +1.95.0 check --all-targets --all-features --locked
+        working-directory: collect-diff-context-cli
+      - name: Check provider formatting
+        run: cargo +1.95.0 fmt --all -- --check
+        working-directory: collect-diff-context-cli
+      - name: Run provider contract and protocol tests
+        run: cargo +1.95.0 test --locked --features test-fixture --test repository_context_provider_contracts --test repository_context_provider_cli_contracts --test repository_context_provider_model --test repository_context_provider_cli --test repository_context_provider_snapshot --test repository_context_json_rpc --test repository_context_session --test repository_context_rust_analyzer --test repository_context_provider_platform
+        working-directory: collect-diff-context-cli
+      - name: Build and smoke explicit provider CLI
+        run: |
+          cargo +1.95.0 build --locked --bin repository-context-provider-cli
+          target/debug/repository-context-provider-cli --help
+        working-directory: collect-diff-context-cli
+      - name: Run provider Clippy
+        run: cargo +1.95.0 clippy --locked --all-targets --all-features -- -D warnings
+        working-directory: collect-diff-context-cli
+
+  static-analysis-platforms:
+    name: Static analysis (${{ matrix.target }})
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-gnu
+            executable: static-analysis-cli
+            repository_executable: repository-context-cli
+            provider_executable: repository-context-provider-cli
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            executable: static-analysis-cli
+            repository_executable: repository-context-cli
+            provider_executable: repository-context-provider-cli
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            executable: static-analysis-cli.exe
+            repository_executable: repository-context-cli.exe
+            provider_executable: repository-context-provider-cli.exe
+    steps:
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - name: Set up Rust
+        uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c
+        with:
+          toolchain: 1.95.0
+          targets: ${{ matrix.target }}
+      - name: Cache cargo registry
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830
+        with:
+          path: |
+            ~/.cargo/registry/index/
+            ~/.cargo/registry/cache/
+            ~/.cargo/git/db/
+            collect-diff-context-cli/target/
+          key: ${{ runner.os }}-static-analysis-${{ matrix.target }}-${{ hashFiles('collect-diff-context-cli/Cargo.lock') }}
+      - name: Build analysis CLIs
+        run: cargo +1.95.0 build --release --locked --target ${{ matrix.target }} --bin static-analysis-cli --bin repository-context-cli --bin repository-context-provider-cli
+        working-directory: collect-diff-context-cli
+      - name: Smoke-test analysis CLIs
+        shell: bash
+        run: |
+          static_binary="collect-diff-context-cli/target/${{ matrix.target }}/release/${{ matrix.executable }}"
+          repository_binary="collect-diff-context-cli/target/${{ matrix.target }}/release/${{ matrix.repository_executable }}"
+          provider_binary="collect-diff-context-cli/target/${{ matrix.target }}/release/${{ matrix.provider_executable }}"
+          "$static_binary" collect --help
+          "$static_binary" run --help
+          "$static_binary" orchestrate --help
+          "$repository_binary" collect --help
+          "$repository_binary" index --help
+          "$provider_binary" --help
+      - name: Run focused Rust contracts
+        run: cargo +1.95.0 test --locked --target ${{ matrix.target }} --features test-fixture --test candidate_content --test impact_context_contracts --test repository_index_contracts --test static_evidence --test static_execution --test static_execution_modes --test static_execution_platform --test static_orchestration --test repository_context_provider_contracts --test repository_context_provider_cli_contracts --test repository_context_provider_model --test repository_context_provider_cli --test repository_context_provider_snapshot --test repository_context_json_rpc --test repository_context_session --test repository_context_rust_analyzer --test repository_context_provider_platform
         working-directory: collect-diff-context-cli
 
   integration-tests:
     runs-on: ubuntu-latest
-    needs: [rust-checks]
+    needs: [rust-checks, static-analysis-platforms]
     steps:
-      - uses: actions/checkout@v4
+      - uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
       - name: Set up Rust
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c
+        with:
+          toolchain: 1.95.0
       - name: Cache cargo registry
-        uses: actions/cache@v4
+        uses: actions/cache@0057852bfaa89a56745cba8c7296529d2fc39830
         with:
           path: |
             ~/.cargo/registry/index/
@@ -73,7 +224,7 @@ jobs:
         run: ./install.sh --doctor
       - name: Build current helper source
         run: |
-          cargo build --release --manifest-path collect-diff-context-cli/Cargo.toml
+          cargo +1.95.0 build --release --locked --manifest-path collect-diff-context-cli/Cargo.toml
           echo "PRE_COMMIT_REVIEW_RUST_BIN=$GITHUB_WORKSPACE/collect-diff-context-cli/target/release/collect-diff-context-cli" >> "$GITHUB_ENV"
       - name: Run collect_diff_context_test.sh
         run: ./tests/collect_diff_context_test.sh
@@ -85,12 +236,29 @@ jobs:
         run: ./tests/gitleaks_distribution_test.sh
       - name: Run install_gitleaks_test.sh
         run: ./tests/install_gitleaks_test.sh
+      - name: Install Python schema validator
+        run: |
+          python3 -m pip install --disable-pip-version-check 'jsonschema==4.25.1'
+          python3 -c 'import jsonschema; from referencing import Registry, Resource'
+      - name: Run static-analysis evidence integration
+        run: ./tests/static_analysis_evidence_test.sh
+      - name: Run controlled static-analysis execution integration
+        run: ./tests/static_analysis_execution_test.sh
+      - name: Run controlled static-analysis source modes
+        run: ./tests/static_analysis_execution_modes_test.sh
+      - name: Run static-analysis orchestration integration
+        run: ./tests/static_analysis_orchestration_test.sh
+      - name: Run repository-index reachability contract
+        run: ./tests/repository_index_workflow_test.sh
+      - name: Run repository-context integration
+        run: |
+          ./tests/repository_index_test.sh
+          ./tests/repository_context_test.sh
+          ./tests/repository_context_provider_cli_test.sh
       - name: Run output quality comparison self-test
         run: |
           ./evals/output_eval_runner_test.sh
           ./evals/compare_output_eval_quality_test.sh
           ./evals/eval_contract_test.sh
       - name: Validate JSON schemas
-        run: |
-          pip install jsonschema
-          python3 scripts/validate_schemas.py
+        run: python3 scripts/validate_schemas.py

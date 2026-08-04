@@ -1,0 +1,4 @@
+self-hosted-runner:
+  labels:
+    # GitHub-hosted Intel label added after actionlint 1.7.7's built-in catalog.
+    - macos-15-intel

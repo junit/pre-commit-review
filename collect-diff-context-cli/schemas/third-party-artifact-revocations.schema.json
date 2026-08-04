@@ -1,0 +1,34 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "third-party-artifact-revocations.schema.json",
+  "title": "ThirdPartyArtifactRevocations",
+  "type": "object",
+  "required": ["schema_version", "kind", "entries"],
+  "properties": {
+    "schema_version": { "type": "integer", "const": 1 },
+    "kind": { "type": "string", "const": "third_party_artifact_revocations" },
+    "entries": {
+      "type": "array",
+      "maxItems": 16384,
+      "items": { "$ref": "#/$defs/revocation" }
+    }
+  },
+  "$defs": {
+    "revocation": {
+      "type": "object",
+      "required": ["pack_sha256", "artifact_id", "platform_id", "pack_version", "reason", "replacement_pack_version"],
+      "properties": {
+        "pack_sha256": { "$ref": "third-party-artifacts.schema.json#/$defs/sha256" },
+        "artifact_id": { "$ref": "third-party-artifacts.schema.json#/$defs/identifier" },
+        "platform_id": { "$ref": "third-party-artifacts.schema.json#/$defs/platformId" },
+        "pack_version": { "$ref": "third-party-artifacts.schema.json#/$defs/text" },
+        "reason": { "$ref": "third-party-artifacts.schema.json#/$defs/text" },
+        "replacement_pack_version": {
+          "anyOf": [{ "$ref": "third-party-artifacts.schema.json#/$defs/text" }, { "type": "null" }]
+        }
+      },
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

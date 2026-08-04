@@ -1,4 +1,4 @@
-name: Release Multi-Platform Binaries
+name: Release Multi-Platform Packs
 
 on:
   push:
@@ -8,9 +8,11 @@ on:
 
 permissions:
   contents: write
+  id-token: write
+  attestations: write
 
 jobs:
-  build-binaries:
+  build-packs:
     name: Build (${{ matrix.target }})
     runs-on: ${{ matrix.os }}
     strategy:
@@ -20,96 +22,567 @@ jobs:
           - os: ubuntu-latest
             target: x86_64-unknown-linux-musl
             artifact_name: collect_diff_context-linux-amd64
-            gitleaks_platform: linux-amd64
+            static_artifact_name: static_analysis-linux-amd64
+            repository_artifact_name: repository_context-linux-amd64
+            provider_artifact_name: repository_context_provider-linux-amd64
+            platform: linux-amd64
             use_musl: true
-
           - os: macos-latest
             target: aarch64-apple-darwin
             artifact_name: collect_diff_context-darwin-arm64
-            gitleaks_platform: darwin-arm64
-
-          - os: macos-13
+            static_artifact_name: static_analysis-darwin-arm64
+            repository_artifact_name: repository_context-darwin-arm64
+            provider_artifact_name: repository_context_provider-darwin-arm64
+            platform: darwin-arm64
+          - os: macos-15-intel
             target: x86_64-apple-darwin
             artifact_name: collect_diff_context-darwin-amd64
-            gitleaks_platform: darwin-amd64
-
+            static_artifact_name: static_analysis-darwin-amd64
+            repository_artifact_name: repository_context-darwin-amd64
+            provider_artifact_name: repository_context_provider-darwin-amd64
+            platform: darwin-amd64
           - os: windows-latest
             target: x86_64-pc-windows-msvc
             artifact_name: collect_diff_context-windows-amd64.exe
-            gitleaks_platform: windows-amd64
+            static_artifact_name: static_analysis-windows-amd64.exe
+            repository_artifact_name: repository_context-windows-amd64.exe
+            provider_artifact_name: repository_context_provider-windows-amd64.exe
+            platform: windows-amd64
 
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
 
       - name: Install Rust toolchain
-        uses: dtolnay/rust-toolchain@stable
+        uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c
         with:
+          toolchain: 1.95.0
           targets: ${{ matrix.target }}
 
       - name: Install musl-tools (Linux)
         if: matrix.use_musl
         run: sudo apt-get update && sudo apt-get install -y musl-tools
 
-      - name: Build release binary
-        run: cargo build --release --target ${{ matrix.target }}
+      - name: Build release binaries
+        run: cargo +1.95.0 build --release --locked --target ${{ matrix.target }} --bins
         working-directory: collect-diff-context-cli
 
-      - name: Prepare binary artifact
+      - name: Prepare platform-owned binaries
         shell: bash
         run: |
+          set -euo pipefail
           mkdir -p dist
-          if [ "${{ matrix.os }}" = "windows-latest" ]; then
-            cp collect-diff-context-cli/target/${{ matrix.target }}/release/collect-diff-context-cli.exe dist/${{ matrix.artifact_name }}
-          else
-            cp collect-diff-context-cli/target/${{ matrix.target }}/release/collect-diff-context-cli dist/${{ matrix.artifact_name }}
+          suffix=''
+          if [ "${{ matrix.platform }}" = 'windows-amd64' ]; then
+            suffix='.exe'
+          fi
+          cp "collect-diff-context-cli/target/${{ matrix.target }}/release/collect-diff-context-cli${suffix}" \
+            "dist/${{ matrix.artifact_name }}"
+          cp "collect-diff-context-cli/target/${{ matrix.target }}/release/static-analysis-cli${suffix}" \
+            "dist/${{ matrix.static_artifact_name }}"
+          cp "collect-diff-context-cli/target/${{ matrix.target }}/release/repository-context-cli${suffix}" \
+            "dist/${{ matrix.repository_artifact_name }}"
+          cp "collect-diff-context-cli/target/${{ matrix.target }}/release/repository-context-provider-cli${suffix}" \
+            "dist/${{ matrix.provider_artifact_name }}"
+
+      - name: Smoke-test static-analysis binary
+        shell: bash
+        run: |
+          static_binary="dist/${{ matrix.static_artifact_name }}"
+          "$static_binary" collect --help
+          "$static_binary" run --help
+          "$static_binary" orchestrate --help
+
+      - name: Smoke-test repository-context binary
+        shell: bash
+        run: |
+          set -euo pipefail
+          control_binary="$PWD/dist/${{ matrix.artifact_name }}"
+          repository_binary="$PWD/dist/${{ matrix.repository_artifact_name }}"
+          "$repository_binary" collect --help
+          "$repository_binary" index --help
+          repository="$RUNNER_TEMP/pcr-index-smoke-repository"
+          cache="$RUNNER_TEMP/pcr-index-smoke-cache"
+          rm -rf "$repository" "$cache"
+          mkdir -p "$repository/src" "$cache"
+          git -C "$repository" init -q
+          git -C "$repository" config user.email release@example.test
+          git -C "$repository" config user.name Release
+          printf '[package]\nname="release_smoke"\nversion="0.1.0"\nedition="2021"\n' >"$repository/Cargo.toml"
+          printf 'pub fn base() {}\n' >"$repository/src/lib.rs"
+          git -C "$repository" add Cargo.toml src/lib.rs
+          git -C "$repository" commit -qm base
+          printf 'pub fn changed() {}\n' >"$repository/src/lib.rs"
+          git -C "$repository" add src/lib.rs
+          control_report="$(cd "$repository" && "$control_binary" --source staged --control-plane)"
+          scope="$(REPORT="$control_report" python3 - <<'PY'
+          import json
+          import os
+
+          lines = os.environ['REPORT'].splitlines()
+          marker = lines.index('## Review Control Plane JSON')
+          print(json.loads(lines[marker + 1])['scope_fingerprint'])
+          PY
+          )"
+          build_report="$(cd "$repository" && PRE_COMMIT_REVIEW_CACHE_DIR="$cache" \
+            "$repository_binary" index build --source staged --expect-scope "$scope")"
+          generation="$(REPORT="$build_report" python3 -c \
+            'import json, os; report=json.loads(os.environ["REPORT"]); assert report["status"] == "completed"; print(report["generation_key"])')"
+          doctor_report="$(cd "$repository" && "$repository_binary" index doctor --cache-dir "$cache" --generation "$generation")"
+          REPORT="$doctor_report" python3 -c \
+            'import json, os; report=json.loads(os.environ["REPORT"]); assert report["status"] == "completed"'
+          inspect_report="$(cd "$repository" && PRE_COMMIT_REVIEW_CACHE_DIR="$cache" \
+            "$repository_binary" index inspect --generation "$generation" --path src/lib.rs --max-rows 10)"
+          REPORT="$inspect_report" python3 -c \
+            'import json, os; report=json.loads(os.environ["REPORT"]); assert report["status"] in {"completed", "partial"}; assert report["metrics"]["query_rows"] > 0'
+          if find "$cache" -type f \( -name '*-wal' -o -name '*-shm' -o -name '*-journal' \) \
+            -print -quit | grep -q .; then
+            echo 'Repository index smoke left a published SQLite sidecar' >&2
+            exit 1
           fi
 
-      - name: Fetch pinned Gitleaks binary
+      - name: Smoke-test explicit provider CLI release shape
         shell: bash
-        run: ./scripts/fetch_gitleaks.sh --platform "${{ matrix.gitleaks_platform }}" --dest dist
+        run: |
+          provider_binary="dist/${{ matrix.provider_artifact_name }}"
+          "$provider_binary" --help
+          if find dist -type f -name 'rust-analyzer*' -print -quit | grep -q .; then
+            echo 'Release payload unexpectedly contains a rust-analyzer artifact' >&2
+            exit 1
+          fi
 
-      - name: Upload Build Artifact
-        uses: actions/upload-artifact@v4
+      - name: Fetch reviewed Gitleaks input
+        shell: bash
+        run: ./scripts/fetch_gitleaks.sh --platform "${{ matrix.platform }}" --dest dist
+
+      - name: Doctor reviewed Gitleaks input
+        shell: bash
+        run: |
+          set -euo pipefail
+          suffix=''
+          if [ "${{ matrix.platform }}" = 'windows-amd64' ]; then
+            suffix='.exe'
+          fi
+          PRE_COMMIT_REVIEW_GITLEAKS_BIN="$PWD/dist/gitleaks-${{ matrix.platform }}${suffix}" \
+            ./scripts/check_gitleaks.sh
+
+      - name: Build normalized Gitleaks pack
+        shell: bash
+        run: |
+          set -euo pipefail
+          suffix=''
+          writer="collect-diff-context-cli/target/${{ matrix.target }}/release/artifact-pack-writer"
+          if [ "${{ matrix.platform }}" = 'windows-amd64' ]; then
+            suffix='.exe'
+            writer="${writer}.exe"
+          fi
+          PRE_COMMIT_REVIEW_PACK_WRITER="$PWD/$writer" \
+            ./scripts/build_artifact_pack.sh \
+              --kind gitleaks \
+              --platform-id "${{ matrix.platform }}" \
+              --pack-version 8.30.1-pcr.1 \
+              --source-root "$PWD" \
+              --manifest "$PWD/third_party_artifacts/manifest.json" \
+              --source-lock "$PWD/third_party_artifacts/sources/gitleaks-8.30.1.json" \
+              --binary "$PWD/dist/gitleaks-${{ matrix.platform }}${suffix}" \
+              --output "$PWD/dist/pre-commit-review-gitleaks-8.30.1-pcr.1-${{ matrix.platform }}.tar.gz" \
+              --record-output "$PWD/dist/gitleaks-${{ matrix.platform }}.record.json"
+
+      - name: Upload platform build inputs
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
         with:
-          name: ${{ matrix.artifact_name }}
+          name: release-packs-${{ matrix.platform }}
           path: dist/*
 
-  create-release:
-    name: Create GitHub Release
-    needs: build-binaries
+  assemble-packs:
+    name: Assemble canonical packs
+    needs: build-packs
     runs-on: ubuntu-latest
-    if: startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch'
     steps:
       - name: Checkout repository
-        uses: actions/checkout@v4
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
 
-      - name: Download all artifacts
-        uses: actions/download-artifact@v4
+      - name: Install Rust toolchain
+        uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c
+        with:
+          toolchain: 1.95.0
+
+      - name: Download platform build inputs
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
         with:
           path: artifacts
 
-      - name: Build self-contained skill package
+      - name: Assert platform-owned repository inputs
         shell: bash
         run: |
-          mkdir -p dist/pre-commit-review
-          cp SKILL.md LICENSE dist/pre-commit-review/
-          cp -R agents references scripts THIRD_PARTY_LICENSES dist/pre-commit-review/
-          find artifacts -type f -name 'collect_diff_context-*' -exec cp {} dist/pre-commit-review/scripts/bin/ \;
-          find artifacts -type f -name 'gitleaks-*' -exec cp {} dist/pre-commit-review/scripts/bin/ \;
-          chmod +x dist/pre-commit-review/scripts/collect_diff_context.sh
-          chmod +x dist/pre-commit-review/scripts/check_gitleaks.sh
-          chmod +x dist/pre-commit-review/scripts/bin/collect_diff_context-* || true
-          chmod +x dist/pre-commit-review/scripts/bin/gitleaks-* || true
-          dist/pre-commit-review/scripts/check_gitleaks.sh
-          tar -czf dist/pre-commit-review-runtime.tar.gz -C dist pre-commit-review
+          set -euo pipefail
+          find artifacts -type f -name 'repository_context-*' -print -quit
+          find artifacts -type f -name 'repository_context_provider-*' -print -quit
 
-      - name: Create Release
-        uses: softprops/action-gh-release@v2
+      - name: Build host pack writer
+        run: cargo +1.95.0 build --release --locked --bin artifact-pack-writer
+        working-directory: collect-diff-context-cli
+
+      - name: Build platform core packs from one canonical manifest
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p dist scripts/bin
+          cp third_party_artifacts/manifest.json dist/manifest.json
+          writer="$PWD/collect-diff-context-cli/target/release/artifact-pack-writer"
+          for platform in darwin-amd64 darwin-arm64 linux-amd64 windows-amd64; do
+            suffix=''
+            if [ "$platform" = 'windows-amd64' ]; then
+              suffix='.exe'
+            fi
+            input="artifacts/release-packs-${platform}"
+            cp "$input/collect_diff_context-${platform}${suffix}" \
+              "scripts/bin/collect_diff_context-${platform}${suffix}"
+            cp "$input/static_analysis-${platform}${suffix}" \
+              "scripts/bin/static_analysis-${platform}${suffix}"
+            cp "$input/repository_context-${platform}${suffix}" \
+              "scripts/bin/repository_context-${platform}${suffix}"
+            cp "$input/repository_context_provider-${platform}${suffix}" \
+              "scripts/bin/repository_context_provider-${platform}${suffix}"
+            cp "$input/gitleaks-${platform}${suffix}" "dist/gitleaks-${platform}${suffix}"
+            PRE_COMMIT_REVIEW_PACK_WRITER="$writer" \
+              ./scripts/build_artifact_pack.sh \
+                --kind gitleaks \
+                --platform-id "$platform" \
+                --pack-version 8.30.1-pcr.1 \
+                --source-root "$PWD" \
+                --manifest "$PWD/dist/manifest.json" \
+                --source-lock "$PWD/third_party_artifacts/sources/gitleaks-8.30.1.json" \
+                --binary "$PWD/dist/gitleaks-${platform}${suffix}" \
+                --output "$PWD/dist/pre-commit-review-gitleaks-8.30.1-pcr.1-${platform}.tar.gz" \
+                --record-output "$PWD/dist/gitleaks-${platform}.record.json" \
+                --manifest-output "$PWD/dist/manifest.json"
+          done
+          for platform in darwin-amd64 darwin-arm64 linux-amd64 windows-amd64; do
+            core_version='0.1.0-dev'
+            if [[ "$GITHUB_REF" == refs/tags/v* ]]; then
+              core_version="${GITHUB_REF_NAME#v}"
+            fi
+            PRE_COMMIT_REVIEW_PACK_WRITER="$writer" \
+              ./scripts/build_artifact_pack.sh \
+                --kind core \
+                --platform-id "$platform" \
+                --pack-version "$core_version" \
+                --source-root "$PWD" \
+                --manifest "$PWD/dist/manifest.json" \
+                --revocations "$PWD/third_party_artifacts/revocations.json" \
+                --output "$PWD/dist/pre-commit-review-core-${core_version}-${platform}.tar.gz" \
+              --record-output "$PWD/dist/core-${platform}.record.json"
+          done
+          for archive in dist/*.tar.gz; do
+            (cd "$(dirname "$archive")" && sha256sum "$(basename "$archive")") > "$archive.sha256"
+          done
+          python3 - dist/manifest.json <<'PY'
+          import hashlib
+          import json
+          from pathlib import Path
+          import sys
+
+          manifest = json.loads(Path(sys.argv[1]).read_text(encoding='utf-8'))
+          records = manifest['packs']
+          expected = ['darwin-amd64', 'darwin-arm64', 'linux-amd64', 'windows-amd64']
+          records_by_artifact = {}
+          for record in records:
+              records_by_artifact.setdefault(record['artifact_id'], []).append(record)
+          if set(records_by_artifact) - {'gitleaks', 'rust-analyzer'}:
+              raise SystemExit('canonical manifest contains an unexpected artifact')
+
+          gitleaks_records = records_by_artifact.get('gitleaks', [])
+          if [record['platform_id'] for record in gitleaks_records] != expected:
+              raise SystemExit('canonical manifest does not contain four ordered Gitleaks records')
+          if any(
+              record['state'] != 'active'
+              or record['pack_version'] != '8.30.1-pcr.1'
+              or record['project_release_tag'] != 'artifact-gitleaks-8.30.1-pcr.1'
+              for record in gitleaks_records
+          ):
+              raise SystemExit('canonical Gitleaks records differ from the release inputs')
+
+          provider_records = records_by_artifact.get('rust-analyzer', [])
+          if provider_records:
+              if [record['platform_id'] for record in provider_records] != expected:
+                  raise SystemExit('canonical manifest does not contain four ordered provider records')
+              baseline_path = Path(
+                  'third_party_artifacts/baselines/rust-analyzer-2026.07.27-pcr.3.json'
+              )
+              if not baseline_path.is_file():
+                  raise SystemExit('reviewed provider baseline is absent')
+              baseline_sha256 = hashlib.sha256(baseline_path.read_bytes()).hexdigest()
+              if any(
+                  record['state'] != 'active'
+                  or record['pack_version'] != '2026.07.27-pcr.3'
+                  or record['project_release_tag']
+                  != 'artifact-rust-analyzer-2026.07.27-pcr.3'
+                  or record['quality_baseline_sha256'] != baseline_sha256
+                  for record in provider_records
+              ):
+                  raise SystemExit('canonical provider records differ from reviewed publication inputs')
+          PY
+
+          mkdir -p dist/pre-commit-review/scripts/bin \
+            dist/pre-commit-review/scripts/lib \
+            dist/pre-commit-review/references/security \
+            dist/pre-commit-review/THIRD_PARTY_LICENSES
+          cp scripts/collect_impact_context.sh \
+            scripts/index_repository_context.sh \
+            scripts/collect_static_evidence.sh \
+            scripts/run_static_analysis.sh \
+            scripts/orchestrate_static_analysis.sh \
+            dist/pre-commit-review/scripts/
+          cp scripts/lib/static_analysis_cli.sh \
+            scripts/lib/repository_context_cli.sh \
+            scripts/lib/repository_context_provider_cli.sh \
+            dist/pre-commit-review/scripts/lib/
+          cp scripts/check_gitleaks.sh dist/pre-commit-review/scripts/check_gitleaks.sh
+          cp scripts/lib/gitleaks_integrity.sh \
+            dist/pre-commit-review/scripts/lib/gitleaks_integrity.sh
+          cp scripts/gitleaks.version scripts/gitleaks-binaries.sha256 \
+            dist/pre-commit-review/scripts/
+          cp references/security/gitleaks.toml \
+            dist/pre-commit-review/references/security/gitleaks.toml
+          cp THIRD_PARTY_LICENSES/gitleaks-LICENSE \
+            dist/pre-commit-review/THIRD_PARTY_LICENSES/gitleaks-LICENSE
+          cp dist/gitleaks-linux-amd64 \
+            dist/pre-commit-review/scripts/bin/gitleaks-linux-amd64
+          chmod +x dist/pre-commit-review/scripts/check_gitleaks.sh \
+            dist/pre-commit-review/scripts/collect_impact_context.sh \
+            dist/pre-commit-review/scripts/index_repository_context.sh \
+            dist/pre-commit-review/scripts/collect_static_evidence.sh \
+            dist/pre-commit-review/scripts/run_static_analysis.sh \
+            dist/pre-commit-review/scripts/orchestrate_static_analysis.sh \
+            dist/pre-commit-review/scripts/bin/gitleaks-linux-amd64
+          chmod +x dist/pre-commit-review/scripts/orchestrate_static_analysis.sh
+          chmod +x dist/pre-commit-review/scripts/collect_impact_context.sh
+          chmod +x dist/pre-commit-review/scripts/index_repository_context.sh
+          dist/pre-commit-review/scripts/check_gitleaks.sh
+
+      - name: Generate and verify Cargo SBOM
+        shell: bash
+        run: |
+          set -euo pipefail
+          test -f THIRD_PARTY_LICENSES/rusqlite-LICENSE
+          test -f THIRD_PARTY_LICENSES/sqlite-PUBLIC-DOMAIN.md
+          cargo +1.95.0 install --locked --version 0.5.9 cargo-cyclonedx
+          cargo cyclonedx --manifest-path collect-diff-context-cli/Cargo.toml \
+            --format json --spec-version 1.5 --override-filename pre-commit-review.cdx
+          mv collect-diff-context-cli/pre-commit-review.cdx.json dist/pre-commit-review.cdx.json
+          python3 - <<'PY'
+          import json
+          from pathlib import Path
+
+          sbom = json.loads(Path('dist/pre-commit-review.cdx.json').read_text(encoding='utf-8'))
+          components = {f"{item['name']}@{item['version']}" for item in sbom['components']}
+          required = {
+              'tree-sitter@0.26.11',
+              'tree-sitter-rust@0.24.2',
+              'rusqlite@0.40.1',
+              'libsqlite3-sys@0.38.1',
+              'toml@1.1.3+spec-1.1.0',
+              'toml_datetime@1.1.1+spec-1.1.0',
+              'toml_parser@1.1.2+spec-1.1.0',
+              'toml_writer@1.1.2+spec-1.1.0',
+              'winnow@1.0.4',
+              'url@2.5.7',
+          }
+          missing = required - components
+          if missing:
+              raise SystemExit(f'SBOM missing pinned components: {sorted(missing)}')
+          PY
+
+      - name: Record release toolchain and lockfile evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import hashlib
+          import json
+          from pathlib import Path
+
+          def digest(path):
+              return hashlib.sha256(path.read_bytes()).hexdigest()
+
+          archives = []
+          for path in sorted(Path('dist').glob('*.tar.gz')):
+              archives.append({
+                  'name': path.name,
+                  'size': path.stat().st_size,
+                  'sha256': digest(path),
+              })
+          evidence = {
+              'schema_version': 1,
+              'kind': 'pre_commit_review_release_evidence',
+              'rust_toolchain': '1.95.0',
+              'cargo_lock_sha256': digest(Path('collect-diff-context-cli/Cargo.lock')),
+              'fuzz_cargo_lock_sha256': digest(Path('collect-diff-context-cli/fuzz/Cargo.lock')),
+              'manifest_sha256': digest(Path('dist/manifest.json')),
+              'cargo_sbom_sha256': digest(Path('dist/pre-commit-review.cdx.json')),
+              'archives': archives,
+          }
+          Path('dist/release-evidence.json').write_text(
+              json.dumps(evidence, separators=(',', ':')), encoding='utf-8'
+          )
+          PY
+
+      - name: Upload canonical release inputs
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: canonical-release-packs
+          path: |
+            dist/*.tar.gz
+            dist/*.tar.gz.sha256
+            dist/*.record.json
+            dist/manifest.json
+            dist/pre-commit-review.cdx.json
+            dist/release-evidence.json
+
+  verify-release-inputs:
+    name: Verify external release sidecars
+    needs: assemble-packs
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout verifier
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - name: Download canonical release inputs
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: canonical-release-packs
+          path: artifacts
+      - name: Verify release-readiness reachability contracts
+        shell: bash
+        run: |
+          set -euo pipefail
+          ./tests/artifact_reachability_test.sh
+          ./tests/repository_index_workflow_test.sh
+      - name: Verify archive sidecars before any extraction
+        shell: bash
+        run: |
+          set -euo pipefail
+          find artifacts -name '*.tar.gz.sha256' -print0 | while IFS= read -r -d '' sidecar; do
+            (cd "$(dirname "$sidecar")" && sha256sum -c "$(basename "$sidecar")")
+          done
+
+  provider-real-release:
+    name: Verify exact published provider
+    uses: ./.github/workflows/provider-real-server.yml
+    secrets: inherit
+
+  provider-fuzz-release:
+    name: Run provider release fuzz tier
+    uses: ./.github/workflows/provider-fuzz-scheduled.yml
+    with:
+      release_gate: true
+
+  attest-release-inputs:
+    name: Attest canonical release inputs
+    needs: [assemble-packs, verify-release-inputs, provider-real-release, provider-fuzz-release]
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download canonical packs
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: canonical-release-packs
+          path: artifacts
+      - name: Attest release archive subjects
+        uses: actions/attest-build-provenance@96b4a1ef7235a096b17240c259729fdd70c83d45
+        with:
+          subject-path: |
+            artifacts/*.tar.gz
+            artifacts/manifest.json
+            artifacts/pre-commit-review.cdx.json
+            artifacts/release-evidence.json
+
+  verify-attested-release-inputs:
+    name: Verify canonical release attestations as a clean consumer
+    needs: attest-release-inputs
+    if: startsWith(github.ref, 'refs/tags/')
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      attestations: read
+    steps:
+      - name: Download canonical packs in a clean job
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: canonical-release-packs
+          path: artifacts
+      - name: Verify sidecars before attestation lookup
+        shell: bash
+        run: |
+          set -euo pipefail
+          find artifacts -name '*.tar.gz.sha256' -print0 | while IFS= read -r -d '' sidecar; do
+            (cd "$(dirname "$sidecar")" && sha256sum -c "$(basename "$sidecar")")
+          done
+      - name: Verify GitHub attestations for every release subject
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          set -euo pipefail
+          subjects=(
+            artifacts/*.tar.gz
+            artifacts/manifest.json
+            artifacts/pre-commit-review.cdx.json
+            artifacts/release-evidence.json
+          )
+          for subject in "${subjects[@]}"; do
+            [ -f "$subject" ] || {
+              echo "attested release subject is absent: $subject" >&2
+              exit 1
+            }
+            gh attestation verify "$subject" --repo "$GITHUB_REPOSITORY"
+          done
+
+  create-release:
+    name: Create GitHub Release
+    needs: verify-attested-release-inputs
+    runs-on: ubuntu-latest
+    if: startsWith(github.ref, 'refs/tags/')
+    steps:
+      - name: Download canonical packs
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          name: canonical-release-packs
+          path: artifacts
+
+      - name: Require GitHub release immutability
+        shell: bash
+        run: |
+          set -euo pipefail
+          : "${GH_TOKEN:?RELEASE_ADMIN_TOKEN is required to verify release immutability}"
+          immutable="$(gh api "repos/$GITHUB_REPOSITORY/immutable-releases" --jq '.enabled')"
+          [ "$immutable" = 'true' ] || {
+            echo 'GitHub release immutability is not enabled' >&2
+            exit 1
+          }
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_ADMIN_TOKEN }}
+
+      - name: Publish Gitleaks artifact release
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65
+        with:
+          tag_name: artifact-gitleaks-8.30.1-pcr.1
+          files: |
+            artifacts/pre-commit-review-gitleaks-*.tar.gz
+            artifacts/pre-commit-review-gitleaks-*.tar.gz.sha256
+            artifacts/gitleaks-*.record.json
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+      - name: Publish core artifact release
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65
         with:
           files: |
-            artifacts/**/collect_diff_context-*
-            artifacts/**/gitleaks-*
-            dist/pre-commit-review-runtime.tar.gz
+            artifacts/pre-commit-review-core-*.tar.gz
+            artifacts/pre-commit-review-core-*.tar.gz.sha256
+            artifacts/core-*.record.json
+            artifacts/manifest.json
+            artifacts/pre-commit-review.cdx.json
+            artifacts/release-evidence.json
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

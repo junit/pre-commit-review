@@ -1,6 +1,6 @@
 # pre-commit-review
 
-[![Lint](https://img.shields.io/github/actions/workflow/status/wifibaby4u/pre-commit-review/lint.yml?branch=main&label=lint&logo=github)](https://github.com/wifibaby4u/pre-commit-review/actions/workflows/lint.yml)
+[![Lint](https://img.shields.io/github/actions/workflow/status/junit/pre-commit-review/lint.yml?branch=main&label=lint&logo=github)](https://github.com/junit/pre-commit-review/actions/workflows/lint.yml)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue)](./LICENSE)
 [![Shell](https://img.shields.io/badge/shell-bash-4EAA25?logo=gnubash&logoColor=white)](https://www.shellcheck.net/)
 
@@ -57,6 +57,12 @@ It then gives one of three verdicts:
 - `DO_NOT_COMMIT` — a blocking issue was found; fix it first
 
 It focuses on what matters for a commit decision: correctness, security, data-handling, regressions, and — only where it counts — performance on hot paths, queries, loops, or network/IO calls. It never modifies your repository; a read-only helper gathers the Git context.
+
+When you explicitly supply a precomputed SARIF 2.1.0 or normalized JSON report, the skill can also ingest it as snapshot-bound static-analysis evidence. This optional lane maps findings to the authoritative diff and changed lines; it never discovers reports or runs analyzers automatically.
+
+When you additionally authorize an absolute `static_analysis_profile/v1` path with its exact SHA256, the Phase 2 runner can execute that hash-pinned external analyzer in a bounded, read-only tracked-file snapshot. It uses no shell, does not search `PATH`, and emits linked execution provenance plus Phase 1 evidence. See [Controlled Static Analysis Execution](./docs/static-analysis-execution.md) for the trust boundary.
+
+When you explicitly authorize an absolute orchestration manifest path and the exact SHA256 of those manifest bytes, the Rust orchestrator can preflight an ordered analyzer set and run it serially against one shared snapshot. It records cumulative budgets and honest `completed`, `partial`, or `failed` coverage states while keeping each analyzer's findings independent. This lane is limited to self-contained source-only offline tools; build-coupled analyzers should supply precomputed evidence instead. See [Static Analysis Orchestration](./docs/static-analysis-orchestration.md).
 
 ## Example Output
 
@@ -133,6 +139,9 @@ For a blocking issue the verdict is `DO_NOT_COMMIT` with a `🔒`-marked blocker
 
 - A supported AI coding agent runtime that can load skills (Codex, Claude Code, Gemini CLI, or Kiro). The skill package ships no runtime of its own.
 - `git` on `PATH` for local diff collection. The review still works without it when you paste a diff or code directly.
+- The static-analysis product runtime is Rust-only. `collect_static_evidence.sh`, `run_static_analysis.sh`, and `orchestrate_static_analysis.sh` are compatibility wrappers over `static-analysis-cli collect`, `static-analysis-cli run`, and `static-analysis-cli orchestrate`.
+- Self-contained releases include `static_analysis-<platform>` next to the diff helper binary. Source builds may use `collect-diff-context-cli/target/release/static-analysis-cli`, and `PRE_COMMIT_REVIEW_STATIC_ANALYSIS_BIN` may explicitly select an absolute executable. The wrappers never search `PATH` for it.
+- Python 3 is required only for the optional development schema validator, `scripts/validate_schemas.py`, which additionally requires the `jsonschema` package.
 - Network access is optional. From a source clone, `install.sh` attempts to download the pinned Gitleaks `8.30.1` binary and verify both the release archive and extracted executable SHA256. Self-contained release packages already include the verified executable. If download is disabled, unavailable, or fails, installation and review still work without local secret redaction. Implicit `PATH` discovery is not allowed.
 - A Unix-compatible shell to run `install.sh` and the helper. On Windows use Git Bash, MSYS2, or WSL.
 
@@ -174,6 +183,35 @@ Useful flags:
 - `--dry-run` prints what would happen without changing anything
 - `--no-download` skips the optional Gitleaks download; review remains available without secret redaction
 - `--doctor` diagnoses scanner source, version, bundled SHA256, trusted configuration, and stdin/JSON capability without installing a skill; it exits non-zero when redaction is unavailable but does not imply that review is blocked
+- `--doctor-target /absolute/managed-skill` runs the read-only artifact doctor for an installed target; it never downloads, repairs, or selects a replacement
+
+Release artifact trust is checked outside the extracted core payload. A release consumer verifies the archive's published `.sha256` sidecar before opening it, then verifies the project attestation for the exact archive subject. The attestation must bind `junit/pre-commit-review`, the expected release workflow, an immutable version tag and commit, the GitHub Actions OIDC issuer, and the pack composition digests. `scripts/verify_release_artifacts.sh --fixture <fixture>` is the build-only verifier used by CI; an unscoped subject-only attestation is rejected.
+
+Manual `workflow_dispatch` runs of the core release workflow are build-and-verify only. Core attestations and publication are reachable only from a pushed immutable `v*` version tag.
+
+Third-party packs use the project-owned immutable release tag and never fall back to `latest`, `nightly`, another source, or a remote revocation service. Target-local revocations are sorted and digest-pinned with 16,384-entry and 8 MiB ceilings. An offline core installation cannot learn a revocation published after that core was built, so operators must install a newer reviewed core when the distribution manifest changes.
+
+### Optional rust-analyzer Provider
+
+The rust-analyzer provider is never installed or started by a normal review,
+Fast Mode, repository index, SQLite cache, or static-analysis workflow. Install
+it only with an explicit copy-mode request:
+
+```bash
+./install.sh --agent codex --copy --with-rust-analyzer
+```
+
+`--no-download --with-rust-analyzer` accepts only a previously verified
+current-platform pack in the canonical cache; a cache miss fails before the
+target replacement commit point. `--with-rust-analyzer --link` is rejected
+before any download or target mutation. A successful installation writes the
+profile and registry only under the managed target at
+`runtime/providers/rust-analyzer.profile.json` and
+`runtime/providers/provider-registry.json`; callers pass their absolute paths
+and exact SHA256 values explicitly to `repository-context-provider-cli run`.
+The provider never downloads at runtime, searches `PATH`, invokes `rustup` or a
+package manager, resolves a direct upstream asset, or discovers a global
+registry.
 
 Examples:
 
@@ -236,12 +274,16 @@ This package is intentionally conservative:
 - it supports coverage-led commit-readiness by requiring every manifest unit to be accounted for before claiming full scope
 - it keeps long-review reducer state compact and explicit instead of relying on implicit conversation memory
 - it treats semantic context queries as bounded read-only hints, not arbitrary shell commands or coverage substitutes
+- it accepts static-analysis reports only through explicit paths, binds them to the authoritative fingerprint, and never treats tool output as manifest coverage
+- it executes a static analyzer only through an explicitly authorized, hash-pinned profile and external executable, inside a bounded tracked-file snapshot
 
 ## Limitations
 
 - This repository does not include the runtime that loads or executes the skill.
 - The included installer covers common Codex, Claude Code, and Gemini CLI locations, but some local setups may still require `--dir` overrides.
 - The helper script expects a working `git` executable in the environment.
+- Static-analysis evidence ingestion and controlled execution use the bundled Rust CLI. Python is needed only for the optional `scripts/validate_schemas.py` development validator and its `jsonschema` dependency.
+- Controlled execution is process isolation for a trusted hash-pinned tool, not an operating-system hostile-code or network sandbox.
 - On Windows, the helper script and installer require a Unix-compatible environment (such as Git Bash, MSYS2, or WSL) to run correctly.
 - The current repository itself may be used outside Git, but local diff collection only works inside a Git repository.
 
@@ -265,7 +307,10 @@ This repository is not an application or framework. It is a small, portable skil
 │   ├── Cargo.toml
 │   └── src/
 ├── docs/
-│   └── superpowers/
+│   ├── helper-capabilities.md
+│   ├── static-analysis-evidence.md
+│   ├── static-analysis-execution.md
+│   └── static-analysis-orchestration.md
 ├── references/
 ├── scripts/
 │   ├── bin/
@@ -273,6 +318,13 @@ This repository is not an application or framework. It is a small, portable skil
 │   ├── build_with_docker.sh
 │   ├── collect_diff_context.sh
 │   ├── collect_diff_context.legacy.sh
+│   ├── collect_impact_context.sh
+│   ├── collect_static_evidence.sh
+│   ├── index_repository_context.sh
+│   ├── lib/repository_context_cli.sh
+│   ├── lib/static_analysis_cli.sh
+│   ├── orchestrate_static_analysis.sh
+│   ├── run_static_analysis.sh
 │   └── validate_schemas.py
 ├── tests/
 │   ├── lib/
@@ -283,7 +335,14 @@ This repository is not an application or framework. It is a small, portable skil
 │   ├── install_smoke_test.sh
 │   ├── parity_assets_test.sh
 │   ├── parity_golden_test.sh
-│   └── skill_contract_test.sh
+│   ├── repository_context_test.sh
+│   ├── repository_index_test.sh
+│   ├── repository_index_workflow_test.sh
+│   ├── skill_contract_test.sh
+│   ├── static_analysis_evidence_test.sh
+│   ├── static_analysis_execution_test.sh
+│   ├── static_analysis_execution_modes_test.sh
+│   └── static_analysis_orchestration_test.sh
 └── evals/
     ├── output/
     ├── taxonomy/
@@ -309,7 +368,7 @@ Loaded on demand by `SKILL.md`. References are now layered by responsibility:
 
 | Layer | Files | Loaded when | Purpose |
 |------|-------|-------------|---------|
-| `decision/` | `verdict-rules.md`, `risk-taxonomy.md`, `finding-verification.md` | Every routine review, plus finding verification when strong claims are surfaced | Verdict selection, blocker thresholds, finding markers, tally rules, evidence discipline, and high-impact claim verification |
+| `decision/` | `verdict-rules.md`, `risk-taxonomy.md`, `finding-verification.md`, `static-analysis-evidence.md`, `static-analysis-execution.md`, `static-analysis-orchestration.md` | Every routine review, plus finding verification for strong claims, explicit SARIF/JSON evidence, explicitly authorized controlled execution, or an explicitly authorized orchestration manifest | Verdict selection, blocker thresholds, evidence discipline, high-impact claim verification, static-tool reduction, execution authorization, and multi-analyzer coverage honesty |
 | `rendering/` | `output-en.md`, `output-zh.md`, `visual-output.md`, `review-meta.md` | When rendering the response | Per-language review skeletons, optional visual presentation guidance, and machine-readable metadata |
 | `advanced/` | `coverage-led-review.md`, `visual-review-rules.md`, `grading-compat.md` | Only for complex workflows | Coverage-led review flow, UI/visual review rules, and grading-sensitive exact phrases |
 | `examples/` | `default-tiny-en.md`, `default-tiny-zh.md`, `complex-visual-and-coverage.md` | Optional calibration only | Concrete examples for aligning structure and tone without redefining the rules |
@@ -332,15 +391,21 @@ A read-only helper script that gathers local repository context for the review w
 
 1. **Diff source resolution** — detects whether the cwd is a Git repository, prefers staged changes, falls back to unstaged or branch-vs-base, and reports diff stats, file lists, status, truncation, high-risk candidates, generated-like/lock files, and top-churn files. Rename, delete, binary, mode-only, and submodule pointer changes are recorded as manifest units.
 2. **A bounded control plane** — emits a compact `--control-plane` JSON gateway with an authoritative full-scope content fingerprint, per-unit fingerprints, bounded units/groups, work order, and reusable command templates; supports `--expect-scope <fingerprint>` on follow-up retrieval so stale output fails closed; and disables external diff/textconv drivers so snapshot identity and inspected content stay aligned.
-3. **Coverage-led + test-selection hints** — emits a Review Manifest/Groups and reducer-friendly structured sections (Review Plan JSON, split suggestions, ledgers, work packets, finalization templates), bounded read-only Semantic Context Queries, and Test Selection Hints for changed test files that look environment-dependent, including common JVM/Spring/Quarkus/Micronaut, Maven/Gradle integration naming, JUnit tags, Testcontainers, Docker Compose, WireMock/MockServer, pytest markers, Playwright/Cypress/Node e2e, Go build tags, Rust ignored/integration tests, and database/cache/broker/search service configuration.
+3. **Coverage-led planning + on-demand impact context** — emits a Review Manifest/Groups and reducer-friendly structured sections (Review Plan JSON v2, split suggestions, ledgers, work packets, finalization templates). Review Plan v2 points to the fingerprint-bound `impact_context/v1` command in the authoritative control plane; structural, text-query, dependency, framework, configuration, and test-selection context is retrieved separately only when needed.
 4. **Optional local secret redaction** — when a trusted Gitleaks installation is available, scans and redacts each full selected diff before applying its output byte limit, replaces detected match ranges with `[redacted:<rule-id>]`, rescans the sanitized view, and sanitizes captured wrapper stdout/stderr. This ordering prevents a detected credential crossing the truncation boundary from leaking as an unmatched prefix. If the scanner is disabled, unavailable, times out, or returns no finding, review continues with the original output. If Gitleaks returns a finding but local span mapping or verification fails, the helper reports `status: redaction-failed` rather than calling the scanner unavailable; this path also continues with the original output and never withholds the review material.
+
+The optional `scripts/collect_static_evidence.sh` lane accepts explicitly supplied SARIF 2.1.0 or normalized JSON after the control plane is opened. It requires the same scope fingerprint, maps findings to manifest units and added lines, emits reducer-ready dispositions, and revalidates the snapshot before returning. It never runs an analyzer. See [`docs/static-analysis-evidence.md`](./docs/static-analysis-evidence.md).
+
+The separate `scripts/run_static_analysis.sh` lane requires an explicitly supplied absolute profile path and exact profile SHA256. Profiles that trust repository configuration additionally require `--allow-repository-configuration`. It verifies both profile and external executable bytes, materializes the selected tracked candidate without Git metadata or checkout filters, invokes the fixed arguments directly without a shell, enforces time/output/snapshot limits, and returns `static_analysis_execution/v1` linked to the Phase 1 evidence. It never auto-discovers a tool or profile. See [`docs/static-analysis-execution.md`](./docs/static-analysis-execution.md).
+
+The multi-analyzer `scripts/orchestrate_static_analysis.sh` lane requires an explicitly supplied absolute manifest path and exact manifest SHA256. It preflights every referenced profile and executable before execution, shares one bounded read-only candidate snapshot, runs profiles serially under cumulative budgets, and emits linked `static_analysis_orchestration/v1` plus combined `static_analysis_evidence/v1`. Failed, timed-out, invalidated, and not-run profiles remain visible limitations; findings from separate executions remain independent. It never discovers analyzers or prepares builds/dependencies. See [`docs/static-analysis-orchestration.md`](./docs/static-analysis-orchestration.md).
 
 The full list of emitted sections (Coverage Ledger Template, Group Review Work Packets, Reducer State Snapshot, etc.) is documented in [`docs/helper-capabilities.md`](./docs/helper-capabilities.md) for integrators building reducer/subagent automation.
 
-The review entrypoint does not fetch, stage, reset, install, or modify files. During an explicit user-initiated installation, `install.sh` invokes `scripts/fetch_gitleaks.sh` when the current-platform binary is not already bundled. The fetcher downloads only repository-pinned upstream assets and verifies pinned SHA256 values for both the archive and extracted executable. Download progress is shown automatically on an interactive terminal; use `PRE_COMMIT_REVIEW_FETCH_PROGRESS=always` when output is captured, or `never` to suppress it. `--dry-run` never downloads, and `--no-download` skips this optional installer behavior. Run `./install.sh --doctor` to diagnose whether local redaction is available.
-It does not run, rewrite, or skip tests. Test Selection Hints are read-only guidance for choosing focused verification commands and for distinguishing sandbox failures from code failures. A `no-known-env-heavy-marker` hint is not proof that a test is isolated; it only means the helper did not match a known environment-heavy marker.
+The ordinary review entrypoint does not fetch, stage, reset, install, or modify files. Controlled static analysis runs only after the separate profile-path and exact-SHA256 authorization gate, and operates on a temporary candidate snapshot rather than the business repository. During an explicit user-initiated installation, `install.sh` invokes `scripts/fetch_gitleaks.sh` when the current-platform binary is not already bundled. The fetcher downloads only repository-pinned upstream assets and verifies pinned SHA256 values for both the archive and extracted executable. Download progress is shown automatically on an interactive terminal; use `PRE_COMMIT_REVIEW_FETCH_PROGRESS=always` when output is captured, or `never` to suppress it. `--dry-run` never downloads, and `--no-download` skips this optional installer behavior. Run `./install.sh --doctor` to diagnose whether local redaction is available.
+It does not run, rewrite, or skip tests. `test-selection` summaries in `impact_context/v1` are read-only guidance for choosing focused verification commands and for distinguishing environment failures from code failures. Built-in summaries cover common JVM/Spring/Quarkus/Micronaut, Maven/Gradle integration naming, JUnit tags, Testcontainers, Docker Compose, WireMock/MockServer, pytest markers, Playwright/Cypress/Node e2e, Go build tags, Rust ignored/integration tests, and database/cache/broker/search service configuration. A `no-known-env-heavy-marker` summary is not proof that a test is isolated; it only means no known heavy-environment marker matched.
 
-The review workflow starts with `scripts/collect_diff_context.sh --control-plane`. This bounded gateway emits no raw diff and is authoritative only when its collection-start and collection-end fingerprints match. The legacy default output remains plan-first and may omit the global raw diff. `PRE_COMMIT_REVIEW_INLINE_DIFF_BYTES` (default `60000`) controls when that default output inlines the global diff. `PRE_COMMIT_REVIEW_MAX_DIFF_BYTES` (default `200000`) controls truncation for a diff that is actually emitted; use `0` only when printing the full diff is safe.
+The review workflow starts with `scripts/collect_diff_context.sh --control-plane`. This bounded gateway emits no raw diff and is authoritative only when its collection-start and collection-end fingerprints match. The default report remains plan-first and may omit the global raw diff. `PRE_COMMIT_REVIEW_INLINE_DIFF_BYTES` (default `60000`) controls when that default output inlines the global diff. `PRE_COMMIT_REVIEW_MAX_DIFF_BYTES` (default `200000`) controls truncation for a diff that is actually emitted; use `0` only when printing the full diff is safe.
 
 The default budgets are intentionally conservative even when the selected model advertises a 200K+ context window. CLI hosts can persist or preview large tool stdout before it ever reaches the model, long raw diffs increase latency and multi-turn token cost, and broad diffs can reduce review focus. Treat the defaults as a stable cross-host baseline rather than a model-context maximum.
 
@@ -361,7 +426,7 @@ The entrypoint wrapper `scripts/collect_diff_context.sh` supports multiple execu
 - `PRE_COMMIT_REVIEW_SHADOW_DIFF_LOG`: Optional path for writing shadow mismatch diffs. By default, shadow mode does not write diff content to `/tmp`.
 - `PRE_COMMIT_REVIEW_DISABLE_FALLBACK`: If set to `1`, disables the legacy script fallback, strictly propagating Rust CLI process failures.
 - `PRE_COMMIT_REVIEW_SECRET_SCAN`: Controls optional local redaction: `auto` (default) uses a verified scanner when available; `off` skips scanning and continues review unredacted.
-- `PRE_COMMIT_REVIEW_GITLEAKS_BIN`: Explicit trusted absolute scanner path for development, tests, or controlled offline environments. It must match the pinned version and pass the stdin/JSON capability test. Setting it is an explicit trust decision; otherwise only the SHA256-verified bundled binary is accepted, and `PATH` is never searched.
+- `PRE_COMMIT_REVIEW_GITLEAKS_BIN`: Explicit trusted absolute scanner path for development, tests, or controlled offline environments. It must match the pinned version and pass the stdin/JSON capability test. Setting it is an explicit trust decision; otherwise the target-owned artifact (or legacy SHA256-verified bundle) is accepted, and `PATH` is never searched.
 - `PRE_COMMIT_REVIEW_GITLEAKS_CONFIG`: Explicit trusted scanner config path for development/tests. Do not point this at configuration from the repository being reviewed.
 - `PRE_COMMIT_REVIEW_GITLEAKS_TIMEOUT_MS`: Per-process Gitleaks deadline in milliseconds. The default is `30000`; accepted overrides are `50` through `120000`. A timeout kills and reaps the scanner, reports `scanner-timeout`, and continues review without redaction.
 - `PRE_COMMIT_REVIEW_FETCH_PROGRESS`: Controls Gitleaks download progress: `auto` (default), `always`, or `never`.
@@ -372,9 +437,50 @@ Use `scripts/collect_diff_context.sh --plan-only` or `--include-diff never` to r
 
 Use `scripts/collect_diff_context.sh --source <staged|unstaged|branch> --group <group_id> --expect-scope <fingerprint>` to retrieve one in-budget review group's diff after opening the control plane. Use `--path <path>` with the same fingerprint for file-level follow-up when a group needs narrower context or has been split. Rerun `--control-plane` before the verdict; snapshot drift invalidates the old ledger instead of being merged into a false complete review. `split-required` groups must be reviewed through bounded replacements instead of as one group.
 
+Use `scripts/collect_impact_context.sh --source <staged|unstaged|branch> --expect-scope <fingerprint> --mode fast` when structural or cross-file context can materially affect the review. Fast mode parses complete changed Rust files with Tree-sitter and applies bounded text/configuration rules to changed candidate files only. The returned `impact_context/v1` must match the authoritative scope fingerprint; partial or unavailable context stays visible and never satisfies manifest coverage.
+
+### Persistent Repository Index
+
+Fast Mode performs zero persistent writes. It may read a compatible immutable SQLite generation and compose an exact in-memory staged or working-tree overlay; a missing, stale, incompatible, or corrupt generation becomes an explicit cache miss and ordinary changed-file review continues without waiting for a writer.
+
+Deep/index operations write cache only when explicitly invoked. They persist content-addressed, path-independent FileFacts and an immutable heuristic repository graph for the exact candidate. The graph is not compiler-complete: Tree-sitter and the passive Cargo model can resolve supported Rust modules, imports, references, and unique direct calls, but macro expansion, cfg selection, trait/method dispatch, generated targets, external dependencies, and runtime dispatch remain partial or unresolved.
+
+The platform cache defaults are `$HOME/Library/Caches/pre-commit-review` on macOS, `$XDG_CACHE_HOME/pre-commit-review` or `$HOME/.cache/pre-commit-review` on other Unix systems, and `%LOCALAPPDATA%\pre-commit-review` on Windows. `PRE_COMMIT_REVIEW_CACHE_DIR` must be an absolute path outside the reviewed worktree and Git common directory. The cache stores derived facts and immutable graph rows, not raw source files; it is repository-sensitive but disposable. `index clean` is dry-run by default, and `--execute` is required for deletion.
+
+These POSIX-shell examples use the same explicit limits in both READMEs:
+
+```bash
+PRE_COMMIT_REVIEW_CACHE_DIR=/absolute/cache \
+  repository-context-cli index build \
+  --source staged \
+  --expect-scope <fingerprint> \
+  --deadline-ms 30000 \
+  --max-file-bytes 2097152 \
+  --max-query-rows 50000 \
+  --max-graph-depth 2
+
+repository-context-cli index doctor \
+  --cache-dir /absolute/cache \
+  --generation <generation-digest>
+
+PRE_COMMIT_REVIEW_CACHE_DIR=/absolute/cache \
+  repository-context-cli index inspect \
+  --generation <generation-digest> \
+  --path src/lib.rs \
+  --max-rows 100
+
+PRE_COMMIT_REVIEW_CACHE_DIR=/absolute/cache \
+  repository-context-cli index clean \
+  --dry-run \
+  --max-bytes 2147483648 \
+  --retain-generations 2
+```
+
+`index build` and `collect --mode deep` are explicit operator actions. They never run Cargo, build scripts, package managers, dependency installation, repository executables, or network discovery. `index doctor` and `index inspect` are read-only; `index clean --execute` mutates only the validated repository cache namespace.
+
 Project-specific risk hints can live in `.pre-commit-review/risk-paths` and `.pre-commit-review/risk-content`. Each non-empty, non-comment line is an extended regular expression; matches promote files into high-risk ordering but do not change coverage requirements.
 
-Project-specific semantic context hints can live in `.pre-commit-review/context-queries`. Each non-empty, non-comment line is an extended regular expression executed only through bounded read-only `git grep`; these matches can guide dependency or caller checks but never satisfy review coverage.
+Project-specific text context hints can live in `.pre-commit-review/context-queries`. Each non-empty, non-comment line is an extended regular expression evaluated by the bounded text adapter over changed candidate files; these matches can guide dependency or caller checks but never satisfy review coverage.
 
 Project-specific test selection hints can live in `.pre-commit-review/test-hints`. Each non-comment line is a TSV row:
 
@@ -382,15 +488,15 @@ Project-specific test selection hints can live in `.pre-commit-review/test-hints
 rule_id<TAB>path_regex<TAB>content_regex<TAB>test_kind<TAB>environment_dependency<TAB>confidence<TAB>hint
 ```
 
-The helper emits the first custom hint whose path or content regex matches a changed test file, ahead of built-in hints. Built-ins cover popular cross-ecosystem conventions, but project-specific config should still be used for local profiles, naming schemes, proprietary test harnesses, and service-backed suites that are not visible from path/content markers alone.
+The impact-context collector emits the first custom hint whose path or content regex matches a changed test file, alongside built-in classification. Built-ins cover popular cross-ecosystem conventions, but project-specific config should still be used for local profiles, naming schemes, proprietary test harnesses, and service-backed suites that are not visible from path/content markers alone.
 
-Review-planning tables and `Dependency Summary` use TSV because paths, commands, and dependency details may contain commas.
+Human-readable review-planning tables use TSV because paths and commands may contain commas.
 
-Reducer and subagent automation should prefer authoritative `Review Control Plane JSON`; the older Review Plan/Manifest/Ledger sections remain compatibility output. TSV tables are primarily for human scanning. Automation must not reconstruct scope from direct `git status` or `git diff --name-only` after the helper has emitted a manifest.
+Reducer and subagent automation must use authoritative `Review Control Plane JSON` for scope. Review Plan/Manifest/Ledger sections are report views over that scope; `impact_context/v1` is optional evidence with `coverage_credit: none`. TSV tables are primarily for human scanning. Automation must not reconstruct scope from direct `git status` or `git diff --name-only` after the helper has emitted a manifest.
 
 ### `tests/`
 
-Deterministic shell tests with no model dependency. `skill_contract_test.sh` pins the cross-document contract between `SKILL.md` and `references/` (forbidden placeholders, required labels, the untranslatable `VERDICT` field). `collect_diff_context_test.sh`, `control_plane_test.sh`, and `full_review_workflow_test.sh` exercise normal output, authoritative snapshot pinning/drift failure, schemas, and full reduction against temporary real Git repositories. `parity_golden_test.sh` reuses shared parity fixtures plus a dedicated normalizer to keep legacy-vs-Rust comparisons stable. `install_smoke_test.sh` and `install_agent_matrix_test.sh` verify the installer across copy/link/dry-run modes and the supported agent matrix. All of them avoid model calls and are safe in CI.
+Deterministic shell tests with no model dependency. `skill_contract_test.sh` pins the cross-document contract between `SKILL.md` and `references/` (forbidden placeholders, required labels, the untranslatable `VERDICT` field). `collect_diff_context_test.sh`, `control_plane_test.sh`, and `full_review_workflow_test.sh` exercise normal output, authoritative snapshot pinning/drift failure, schemas, and full reduction against temporary real Git repositories. `static_analysis_evidence_test.sh`, `static_analysis_execution_test.sh`, `static_analysis_execution_modes_test.sh`, and `static_analysis_orchestration_test.sh` cover report ingestion, exact authorization, bounded single/multi-analyzer execution, shared snapshots, cumulative budgets, terminal states, all three candidate snapshot modes, and gitlink omission. `parity_golden_test.sh` reuses shared parity fixtures plus a dedicated normalizer to compare the retained legacy-vs-Rust report contracts while excluding intentionally migrated context sections. `install_smoke_test.sh` and `install_agent_matrix_test.sh` verify the installer across copy/link/dry-run modes and the supported agent matrix. All of them avoid model calls and are safe in CI.
 
 ### `evals/`
 
@@ -518,6 +624,8 @@ If you already maintain a larger skills repository, copy this directory in as on
 
 - `SKILL.md`
 - `scripts/collect_diff_context.sh`
+- `scripts/collect_static_evidence.sh`
+- `scripts/run_static_analysis.sh`
 - `references/`
 - `agents/openai.yaml`
 

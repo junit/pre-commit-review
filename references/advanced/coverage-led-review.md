@@ -79,14 +79,12 @@ A coverage-led review may call itself a full review only when coverage validatio
 Use these inputs in descending authority:
 
 1. authoritative `Review Control Plane JSON`
-2. legacy `Review Plan JSON`
-3. legacy `Review Manifest JSONL`
-4. legacy `Review Groups JSONL`
+2. `Review Plan JSON` v2
+3. `Review Manifest JSONL`
+4. `Review Groups JSONL`
 5. human-readable `Review Manifest`
 6. human-readable `Review Groups`
 7. `Split Suggestions`
-8. `Dependency Summary`
-9. `Semantic Context Queries`
 
 Rules:
 
@@ -94,8 +92,9 @@ Rules:
 - record its `scope_fingerprint`; treat its compact units as the authoritative list of review units for that exact snapshot
 - treat `Review Groups` as the default work plan, not the ground truth of coverage
 - treat `Split Suggestions` as replacement planning for oversized units
-- treat `Dependency Summary` and `Semantic Context Queries` as best-effort context only
-- never let contextual hints mark a unit as reviewed
+- retrieve optional `impact_context/v1` only through the control plane's fingerprint-bound `command_templates.impact_context` command
+- require the impact-context scope fingerprint and source to match the authoritative control plane; preserve partial, failed, invalidated, unavailable, and limitation states
+- never let impact-context symbols, edges, summaries, or other contextual hints mark a unit as reviewed
 - never merge coverage or findings carrying different scope fingerprints
 
 ## Review Units
@@ -264,6 +263,8 @@ After coverage validation and before final verdict:
 
 Do not perform cross-file reduction before coverage validation.
 
+When snapshot-bound static-analysis evidence exists, attach each mapped finding to its owning manifest unit or group result before cross-file reduction. Preserve the static `finding_id`, report ids, tool/rule identity, line scope, baseline state, and initial disposition. Static evidence can strengthen or challenge a finding, but it never changes a unit's coverage status from pending to reviewed.
+
 ## Review Limits
 
 A review limit is the user-visible representation of an actual unreviewed gap.
@@ -366,3 +367,4 @@ Before producing the final review, verify:
 7. high-impact reducer findings passed the finding verification gate or were downgraded
 8. the final verdict matches the actual coverage state
 9. the opening and final authoritative scope fingerprints match
+10. all mapped static findings were reduced with their owning units and every blocking/priority candidate has a final disposition

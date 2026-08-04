@@ -1,0 +1,502 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "impact-context.schema.json",
+  "title": "ImpactContextV1",
+  "description": "Bounded, scope-bound repository impact context without review coverage or verdict authority.",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "kind",
+    "scope",
+    "mode",
+    "status",
+    "providers",
+    "units",
+    "changed_symbols",
+    "impact_edges",
+    "domain_summaries",
+    "coverage",
+    "limitations",
+    "metrics"
+  ],
+  "properties": {
+    "schema_version": { "type": "integer", "const": 1 },
+    "kind": { "type": "string", "const": "impact_context" },
+    "scope": { "$ref": "#/$defs/scope" },
+    "mode": { "type": "string", "enum": ["fast", "deep"] },
+    "status": {
+      "type": "string",
+      "enum": ["completed", "partial", "unavailable", "invalidated", "failed"]
+    },
+    "providers": {
+      "type": "array",
+      "maxItems": 16,
+      "items": { "$ref": "#/$defs/provider" }
+    },
+    "units": {
+      "type": "array",
+      "maxItems": 30,
+      "items": { "$ref": "#/$defs/unit" }
+    },
+    "changed_symbols": {
+      "type": "array",
+      "maxItems": 5000,
+      "items": { "$ref": "#/$defs/symbol" }
+    },
+    "impact_edges": {
+      "type": "array",
+      "maxItems": 500,
+      "items": { "$ref": "#/$defs/edge" }
+    },
+    "domain_summaries": {
+      "type": "array",
+      "maxItems": 1000,
+      "items": { "$ref": "#/$defs/summary" }
+    },
+    "coverage": { "$ref": "#/$defs/coverage" },
+    "limitations": {
+      "type": "array",
+      "maxItems": 1000,
+      "items": { "$ref": "#/$defs/limitation" }
+    },
+    "metrics": { "$ref": "#/$defs/metrics" }
+  },
+  "additionalProperties": false,
+  "$defs": {
+    "id": {
+      "type": "string",
+      "pattern": "^(?:[0-9a-f]{16}|[0-9a-f]{64})$"
+    },
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "fingerprint": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}([0-9a-f]{24})?$"
+    },
+    "path": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 4096,
+      "pattern": "^(?!/)(?![A-Za-z]:)(?!.*(?:^|/)\\.\\.(?:/|$))(?!.*\\\\)[^\\u0000]+$"
+    },
+    "boundedText": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 1000
+    },
+    "idArray": {
+      "type": "array",
+      "maxItems": 5000,
+      "items": { "$ref": "#/$defs/id" }
+    },
+    "scope": {
+      "type": "object",
+      "required": ["fingerprint", "source", "candidate_digest"],
+      "properties": {
+        "fingerprint": { "$ref": "#/$defs/fingerprint" },
+        "source": { "type": "string", "enum": ["staged", "unstaged", "branch"] },
+        "candidate_digest": { "$ref": "#/$defs/sha256" }
+      },
+      "additionalProperties": false
+    },
+    "sourceRange": {
+      "type": "object",
+      "required": [
+        "start_line",
+        "start_column",
+        "end_line",
+        "end_column",
+        "start_byte",
+        "end_byte"
+      ],
+      "properties": {
+        "start_line": { "type": "integer", "minimum": 1 },
+        "start_column": { "type": "integer", "minimum": 1 },
+        "end_line": { "type": "integer", "minimum": 1 },
+        "end_column": { "type": "integer", "minimum": 1 },
+        "start_byte": { "type": "integer", "minimum": 0 },
+        "end_byte": { "type": "integer", "minimum": 0 }
+      },
+      "additionalProperties": false
+    },
+    "providerStatus": {
+      "type": "string",
+      "enum": [
+        "completed",
+        "partial",
+        "unsupported",
+        "timeout",
+        "budget-exhausted",
+        "stale",
+        "invalid-output",
+        "unavailable"
+      ]
+    },
+    "provider": {
+      "type": "object",
+      "required": [
+        "provider_id",
+        "provider_kind",
+        "provider_version",
+        "configuration_digest",
+        "status",
+        "elapsed_ms",
+        "input_files",
+        "input_bytes",
+        "output_fact_count",
+        "cache_hits",
+        "cache_misses",
+        "cache_stale",
+        "cache_corrupt",
+        "limitation_ids"
+      ],
+      "properties": {
+        "provider_id": { "$ref": "#/$defs/id" },
+        "provider_kind": { "type": "string", "minLength": 1, "maxLength": 100 },
+        "provider_version": { "type": "string", "minLength": 1, "maxLength": 100 },
+        "configuration_digest": { "$ref": "#/$defs/sha256" },
+        "status": { "$ref": "#/$defs/providerStatus" },
+        "elapsed_ms": { "type": "integer", "minimum": 0 },
+        "input_files": { "type": "integer", "minimum": 0 },
+        "input_bytes": { "type": "integer", "minimum": 0 },
+        "output_fact_count": { "type": "integer", "minimum": 0 },
+        "cache_hits": { "type": "integer", "minimum": 0 },
+        "cache_misses": { "type": "integer", "minimum": 0 },
+        "cache_stale": { "type": "integer", "minimum": 0 },
+        "cache_corrupt": { "type": "integer", "minimum": 0 },
+        "limitation_ids": { "$ref": "#/$defs/idArray" }
+      },
+      "additionalProperties": false
+    },
+    "unitStatus": {
+      "type": "string",
+      "enum": ["completed", "partial", "unsupported", "budget-exhausted", "unavailable"]
+    },
+    "unit": {
+      "type": "object",
+      "required": [
+        "manifest_unit_id",
+        "path",
+        "language",
+        "content_sha256",
+        "content_bytes",
+        "presence",
+        "syntax_eligible",
+        "syntax_status",
+        "text_status",
+        "parse_quality",
+        "provider_ids",
+        "changed_ranges",
+        "error_node_count",
+        "missing_node_count",
+        "parse_affected_ranges",
+        "parse_affected_symbol_ids",
+        "changed_symbol_ids",
+        "limitation_ids"
+      ],
+      "properties": {
+        "manifest_unit_id": { "type": "string", "minLength": 1, "maxLength": 4096 },
+        "path": { "$ref": "#/$defs/path" },
+        "language": { "type": "string", "minLength": 1, "maxLength": 100 },
+        "content_sha256": {
+          "oneOf": [{ "$ref": "#/$defs/sha256" }, { "type": "null" }]
+        },
+        "content_bytes": {
+          "oneOf": [{ "type": "integer", "minimum": 0 }, { "type": "null" }]
+        },
+        "presence": { "type": "string", "enum": ["present", "deleted", "gitlink"] },
+        "syntax_eligible": { "type": "boolean" },
+        "syntax_status": { "$ref": "#/$defs/unitStatus" },
+        "text_status": { "$ref": "#/$defs/unitStatus" },
+        "parse_quality": {
+          "oneOf": [
+            { "type": "string", "enum": ["clean", "recovered", "degraded"] },
+            { "type": "null" }
+          ]
+        },
+        "provider_ids": { "$ref": "#/$defs/idArray" },
+        "changed_ranges": {
+          "type": "array",
+          "maxItems": 1000,
+          "items": { "$ref": "#/$defs/sourceRange" }
+        },
+        "error_node_count": { "type": "integer", "minimum": 0 },
+        "missing_node_count": { "type": "integer", "minimum": 0 },
+        "parse_affected_ranges": {
+          "type": "array",
+          "maxItems": 1000,
+          "items": { "$ref": "#/$defs/sourceRange" }
+        },
+        "parse_affected_symbol_ids": { "$ref": "#/$defs/idArray" },
+        "changed_symbol_ids": { "$ref": "#/$defs/idArray" },
+        "limitation_ids": { "$ref": "#/$defs/idArray" }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "presence": { "const": "present" } }, "required": ["presence"] },
+          "then": {
+            "oneOf": [
+              {
+                "properties": {
+                  "content_sha256": { "$ref": "#/$defs/sha256" },
+                  "content_bytes": { "type": "integer", "minimum": 0 }
+                }
+              },
+              {
+                "properties": {
+                  "content_sha256": { "type": "null" },
+                  "content_bytes": { "type": "null" }
+                }
+              }
+            ]
+          },
+          "else": {
+            "properties": {
+              "content_sha256": { "type": "null" },
+              "content_bytes": { "type": "null" }
+            }
+          }
+        }
+      ],
+      "additionalProperties": false
+    },
+    "confidence": {
+      "type": "string",
+      "enum": ["high", "medium", "low"]
+    },
+    "symbol": {
+      "type": "object",
+      "required": [
+        "symbol_id",
+        "provider_id",
+        "path",
+        "language",
+        "kind",
+        "name",
+        "owner",
+        "signature",
+        "visibility",
+        "range",
+        "confidence"
+      ],
+      "properties": {
+        "symbol_id": { "$ref": "#/$defs/id" },
+        "provider_id": { "$ref": "#/$defs/id" },
+        "path": { "$ref": "#/$defs/path" },
+        "language": { "type": "string", "minLength": 1, "maxLength": 100 },
+        "kind": { "type": "string", "minLength": 1, "maxLength": 100 },
+        "name": { "$ref": "#/$defs/boundedText" },
+        "owner": {
+          "oneOf": [{ "$ref": "#/$defs/boundedText" }, { "type": "null" }]
+        },
+        "signature": {
+          "oneOf": [{ "$ref": "#/$defs/boundedText" }, { "type": "null" }]
+        },
+        "visibility": {
+          "oneOf": [
+            { "type": "string", "minLength": 1, "maxLength": 100 },
+            { "type": "null" }
+          ]
+        },
+        "range": { "$ref": "#/$defs/sourceRange" },
+        "confidence": { "$ref": "#/$defs/confidence" }
+      },
+      "additionalProperties": false
+    },
+    "edge": {
+      "type": "object",
+      "required": [
+        "edge_id",
+        "kind",
+        "from_symbol",
+        "to_symbol",
+        "unresolved_target",
+        "path",
+        "range",
+        "provider_id",
+        "resolution",
+        "confidence"
+      ],
+      "properties": {
+        "edge_id": { "$ref": "#/$defs/id" },
+        "kind": {
+          "type": "string",
+          "enum": ["defines", "references", "imports", "exports", "calls", "implements", "overrides"]
+        },
+        "from_symbol": { "$ref": "#/$defs/boundedText" },
+        "to_symbol": {
+          "oneOf": [{ "$ref": "#/$defs/id" }, { "type": "null" }]
+        },
+        "unresolved_target": {
+          "oneOf": [{ "$ref": "#/$defs/boundedText" }, { "type": "null" }]
+        },
+        "path": { "$ref": "#/$defs/path" },
+        "range": { "$ref": "#/$defs/sourceRange" },
+        "provider_id": { "$ref": "#/$defs/id" },
+        "resolution": {
+          "type": "string",
+          "enum": [
+            "syntactic",
+            "lexical",
+            "resolved-reference",
+            "semantic",
+            "polymorphic-candidate",
+            "unresolved"
+          ]
+        },
+        "confidence": { "$ref": "#/$defs/confidence" }
+      },
+      "anyOf": [
+        { "properties": { "to_symbol": { "$ref": "#/$defs/id" } } },
+        { "properties": { "unresolved_target": { "$ref": "#/$defs/boundedText" } } }
+      ],
+      "additionalProperties": false
+    },
+    "summary": {
+      "type": "object",
+      "required": [
+        "summary_id",
+        "summary_kind",
+        "path",
+        "symbol_id",
+        "confidence",
+        "message",
+        "evidence_fact_ids"
+      ],
+      "properties": {
+        "summary_id": { "$ref": "#/$defs/id" },
+        "summary_kind": {
+          "type": "string",
+          "enum": [
+            "dependency-change",
+            "interface-change",
+            "text-query-match",
+            "test-selection",
+            "framework-effect",
+            "configuration-effect",
+            "authorization-effect",
+            "storage-effect",
+            "network-effect",
+            "lifecycle-effect"
+          ]
+        },
+        "path": { "$ref": "#/$defs/path" },
+        "symbol_id": {
+          "oneOf": [{ "$ref": "#/$defs/id" }, { "type": "null" }]
+        },
+        "confidence": { "$ref": "#/$defs/confidence" },
+        "message": { "$ref": "#/$defs/boundedText" },
+        "evidence_fact_ids": { "$ref": "#/$defs/idArray" }
+      },
+      "additionalProperties": false
+    },
+    "completeness": {
+      "type": "string",
+      "enum": ["complete", "partial", "unavailable"]
+    },
+    "coverage": {
+      "type": "object",
+      "required": [
+        "total_candidate_files",
+        "changed_candidate_files",
+        "syntax_eligible_files",
+        "parsed_files",
+        "clean_parse_files",
+        "recovered_parse_files",
+        "degraded_parse_files",
+        "unsupported_files",
+        "resource_limited_files",
+        "unavailable_files",
+        "cache_hits",
+        "cache_misses",
+        "cache_stale",
+        "cache_corrupt",
+        "requested_graph_depth",
+        "reached_graph_depth",
+        "graph_index_completeness",
+        "graph_query_completeness",
+        "output_truncated"
+      ],
+      "properties": {
+        "total_candidate_files": { "type": "integer", "minimum": 0 },
+        "changed_candidate_files": { "type": "integer", "minimum": 0 },
+        "syntax_eligible_files": { "type": "integer", "minimum": 0 },
+        "parsed_files": { "type": "integer", "minimum": 0 },
+        "clean_parse_files": { "type": "integer", "minimum": 0 },
+        "recovered_parse_files": { "type": "integer", "minimum": 0 },
+        "degraded_parse_files": { "type": "integer", "minimum": 0 },
+        "unsupported_files": { "type": "integer", "minimum": 0 },
+        "resource_limited_files": { "type": "integer", "minimum": 0 },
+        "unavailable_files": { "type": "integer", "minimum": 0 },
+        "cache_hits": { "type": "integer", "minimum": 0 },
+        "cache_misses": { "type": "integer", "minimum": 0 },
+        "cache_stale": { "type": "integer", "minimum": 0 },
+        "cache_corrupt": { "type": "integer", "minimum": 0 },
+        "requested_graph_depth": { "type": "integer", "minimum": 0 },
+        "reached_graph_depth": { "type": "integer", "minimum": 0 },
+        "graph_index_completeness": { "$ref": "#/$defs/completeness" },
+        "graph_query_completeness": { "$ref": "#/$defs/completeness" },
+        "output_truncated": { "type": "boolean" }
+      },
+      "additionalProperties": false
+    },
+    "limitation": {
+      "type": "object",
+      "required": [
+        "limitation_id",
+        "code",
+        "provider_id",
+        "path",
+        "symbol_id",
+        "reason",
+        "interpretation",
+        "improvable_in_deep_mode"
+      ],
+      "properties": {
+        "limitation_id": { "$ref": "#/$defs/id" },
+        "code": { "type": "string", "minLength": 1, "maxLength": 100 },
+        "provider_id": {
+          "oneOf": [{ "$ref": "#/$defs/id" }, { "type": "null" }]
+        },
+        "path": {
+          "oneOf": [{ "$ref": "#/$defs/path" }, { "type": "null" }]
+        },
+        "symbol_id": {
+          "oneOf": [{ "$ref": "#/$defs/id" }, { "type": "null" }]
+        },
+        "reason": { "$ref": "#/$defs/boundedText" },
+        "interpretation": { "$ref": "#/$defs/boundedText" },
+        "improvable_in_deep_mode": { "type": "boolean" }
+      },
+      "additionalProperties": false
+    },
+    "metrics": {
+      "type": "object",
+      "required": [
+        "elapsed_ms",
+        "candidate_input_files",
+        "candidate_input_bytes",
+        "nodes_visited",
+        "max_nesting_depth",
+        "facts_emitted",
+        "edges_emitted",
+        "summaries_emitted",
+        "output_bytes"
+      ],
+      "properties": {
+        "elapsed_ms": { "type": "integer", "minimum": 0 },
+        "candidate_input_files": { "type": "integer", "minimum": 0 },
+        "candidate_input_bytes": { "type": "integer", "minimum": 0 },
+        "nodes_visited": { "type": "integer", "minimum": 0 },
+        "max_nesting_depth": { "type": "integer", "minimum": 0 },
+        "facts_emitted": { "type": "integer", "minimum": 0 },
+        "edges_emitted": { "type": "integer", "minimum": 0 },
+        "summaries_emitted": { "type": "integer", "minimum": 0 },
+        "output_bytes": { "type": "integer", "minimum": 0 }
+      },
+      "additionalProperties": false
+    }
+  }
+}

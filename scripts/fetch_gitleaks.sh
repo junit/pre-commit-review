@@ -78,6 +78,23 @@ case "$(uname -m)" in
   *) printf 'unsupported architecture\n' >&2; exit 1 ;;
 esac
 
+# A packaged target owns its manifest, cache, receipt, and final executable.
+# Delegate to the Rust manager when this destination belongs to such a target;
+# source-tree fetches retain the legacy compatibility path below.
+if [ "$MODE" != 'all' ]; then
+  managed_platform="${REQUESTED_PLATFORM:-${CURRENT_OS}-${CURRENT_ARCH}}"
+  managed_root="$(CDPATH='' cd -- "${DEST_DIR}/../.." 2>/dev/null && pwd -P || true)"
+  managed_status=0
+  gitleaks_artifact_provision "$managed_root" "$managed_platform" \
+    || managed_status=$?
+  if [ "$managed_status" -eq 0 ]; then
+    exit 0
+  elif [ "$managed_status" -eq 2 ]; then
+    printf 'target-owned Gitleaks artifact was rejected\n' >&2
+    exit 1
+  fi
+fi
+
 TMP_DIR="$(mktemp -d)"
 cleanup() {
   rm -rf "$TMP_DIR"

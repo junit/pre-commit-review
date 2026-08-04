@@ -177,6 +177,26 @@ Before marking a finding as blocking, verify:
 
 Do not escalate reliability, idempotency, logging, or maintainability issues into blockers unless the trigger and consequence satisfy the main verdict rules.
 
+For static-analysis findings, also verify:
+
+- the evidence fingerprint matches the authoritative commit candidate;
+- the reported file and line map to the claimed manifest unit and changed line;
+- the tool completed successfully and the rule category is not merely severity-configured style or maintainability policy;
+- the result is new in this diff, either through an analyzer baseline or because it maps to an added line;
+- when the result came from controlled execution, the execution and evidence objects share the authoritative scope and `execution_id`, the profile/tool identity matches, and `result_accepted` is true;
+- the reported path is reachable or otherwise intrinsically blocking under the verdict rules;
+- local suppressions, framework behavior, generated code, or tool limitations do not invalidate the conclusion.
+
+For multi-analyzer orchestration, additionally verify:
+
+- the orchestration and combined evidence share the authoritative opening scope and matching report/finding id sets;
+- only `executed` profiles with `status: completed` and `result_accepted: true` supplied the candidate;
+- failed, timed-out, output-limited, invalid-output, invalidated, and not-run profiles remain visible as unavailable verification rather than clean coverage;
+- the candidate remains independent from similar findings produced by other executions and was not promoted through implicit corroboration weighting;
+- final scope, manifest, profile, and executable authorization revalidation succeeded.
+
+A deterministic tool result can raise confidence in the reported pattern. It does not independently prove reachability, business impact, exploitability, or the absence of mitigating controls.
+
 ## Gate 6: Challenge Reverification
 
 If the user or another reviewer provides concrete counterevidence, reverify the original claim from primary evidence.
@@ -217,3 +237,4 @@ Before producing the final review, verify:
 7. unverified material concerns are visible as review limits or suggested verification rather than overstated findings
 8. no priority-threshold boundary, contract, data, or security residual was hidden as a clean-code smell or removed for brevity
 9. every material candidate in the internal disposition ledger has a user-visible final report location or a justified disproven/low-confidence omission
+10. every static `blocking-candidate` or `priority-candidate` was verified, downgraded, or rejected visibly

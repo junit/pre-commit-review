@@ -32,6 +32,8 @@ Internal rendering rules (do not output this text to the user): write `Unreviewe
    - Confidence: <High | Medium | Low> - <only explain when not high-confidence>
    - Blocking reason: <include only for blockers>
 
+When snapshot-bound static-analysis evidence materially supports a finding, name the tool and rule in `Evidence` and state whether it mapped to an added line. For controlled execution, also cite the `execution_id` when provenance matters. Do not create a separate finding when tool and model evidence share the same root cause and corrective action. Never describe a clean tool run as proof that the entire change is safe.
+
 Only when there are no blocker, non-blocking risk, test-gap, or review-limit items that meet the priority-finding threshold, write:
 
 None.

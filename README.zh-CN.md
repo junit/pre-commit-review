@@ -1,6 +1,6 @@
 # pre-commit-review
 
-[![Lint](https://img.shields.io/github/actions/workflow/status/wifibaby4u/pre-commit-review/lint.yml?branch=main&label=lint&logo=github)](https://github.com/wifibaby4u/pre-commit-review/actions/workflows/lint.yml)
+[![Lint](https://img.shields.io/github/actions/workflow/status/junit/pre-commit-review/lint.yml?branch=main&label=lint&logo=github)](https://github.com/junit/pre-commit-review/actions/workflows/lint.yml)
 [![License](https://img.shields.io/badge/license-Apache--2.0-blue)](./LICENSE)
 [![Shell](https://img.shields.io/badge/shell-bash-4EAA25?logo=gnubash&logoColor=white)](https://www.shellcheck.net/)
 
@@ -57,6 +57,12 @@
 - `DO_NOT_COMMIT`——发现阻塞项，请先修复
 
 它聚焦于对提交决策真正重要的方面：正确性、安全、数据处理、回归风险，以及——仅在有影响时——热路径、查询、循环或网络/IO 调用上的性能。它绝不修改你的仓库；由一个只读辅助脚本收集 Git 上下文。
+
+当你显式提供预生成的 SARIF 2.1.0 或规范化 JSON 报告时，skill 还可以把它作为绑定快照的静态分析证据接入。这个可选通道会把 findings 映射到权威 diff 和变更行；它不会自动发现报告，也不会自动执行分析器。
+
+当你进一步提供绝对路径的 `static_analysis_profile/v1` 及其精确 SHA256 作为授权时，第二阶段 runner 可以在有界、只读的 tracked-file 快照中执行哈希固定的外部分析器。它不经过 shell、不搜索 `PATH`，并输出关联的执行 provenance 与第一阶段 evidence。信任边界见[受控静态分析执行](./docs/static-analysis-execution.md)。
+
+当你显式授权一个绝对路径的编排 manifest 及其精确 SHA256 时，Rust orchestrator 会先预检有序分析器集合，再让它们串行使用同一份候选快照。它记录累计预算和诚实的 `completed`、`partial`、`failed` 覆盖状态，同时保持不同分析器的 findings 相互独立。此通道仅支持自包含、只读源码、离线工具；与构建耦合的分析器应改为提供预计算 evidence。详见[静态分析编排](./docs/static-analysis-orchestration.md)。
 
 ## 输出示例
 
@@ -133,6 +139,9 @@
 
 - 一个能加载 skill 的受支持 AI 编程 agent 运行时（Codex、Claude Code、Gemini CLI 或 Kiro）。skill 包本身不附带运行时。
 - 本地 diff 收集需要 `PATH` 中存在 `git`。当你直接粘贴 diff 或代码时，无需 git 也能审查。
+- 静态分析产品运行时仅使用 Rust。`collect_static_evidence.sh`、`run_static_analysis.sh` 与 `orchestrate_static_analysis.sh` 分别是 `static-analysis-cli collect`、`static-analysis-cli run` 和 `static-analysis-cli orchestrate` 的兼容包装器。
+- 自包含 release 会在 diff helper 二进制旁提供 `static_analysis-<platform>`。源码构建可使用 `collect-diff-context-cli/target/release/static-analysis-cli`，也可通过 `PRE_COMMIT_REVIEW_STATIC_ANALYSIS_BIN` 显式指定绝对可执行文件；包装器不会搜索 `PATH`。
+- 只有可选的开发期 Schema 校验器 `scripts/validate_schemas.py` 需要 Python 3，并额外依赖 `jsonschema` 包。
 - 网络访问是可选的。从源码 clone 安装时，`install.sh` 会尝试下载当前平台固定的 Gitleaks `8.30.1`，并同时校验 release archive 与解压后 executable 的 SHA256。自包含 release 包已经附带验证过的二进制。下载被关闭、不可用或失败时，skill 仍会完成安装并继续审查，只是不提供本地密钥打码；不会隐式搜索 `PATH`。
 - 运行 `install.sh` 和辅助脚本需要 Unix 兼容 shell。Windows 上请使用 Git Bash、MSYS2 或 WSL。
 
@@ -174,6 +183,23 @@
 - `--dry-run` 只打印将执行的动作，不真正修改文件
 - `--no-download` 跳过可选的 Gitleaks 下载；没有密钥打码时审查仍可继续
 - `--doctor` 在不安装 skill 的情况下诊断 scanner 来源、版本、bundled SHA256、可信配置和 stdin/JSON 能力；打码不可用时会非零退出，但不代表审查被阻塞
+- `--doctor-target /absolute/managed-skill` 对已安装目标执行只读 artifact 诊断；不会下载、修复或选择替代版本
+
+Release 产物的信任校验发生在 core payload 解压之前。使用方先验证 archive 外部发布的 `.sha256` sidecar，再验证精确 archive subject 的项目 attestation。Attestation 必须绑定 `junit/pre-commit-review`、预期 release workflow、不可变版本 tag 与 commit、GitHub Actions OIDC issuer，以及 pack composition digests。CI 使用 `scripts/verify_release_artifacts.sh --fixture <fixture>` 做仅构建验证；只有 subject、没有作用域约束的 attestation 会被拒绝。
+
+手动触发 core release workflow 只执行构建和验证。Core attestation 与发布仅能由已推送的不可变 `v*` 版本 tag 触发。
+
+第三方 pack 使用项目自有的不可变 release tag，不会回退到 `latest`、`nightly`、其他来源或远程 revocation service。目标内 revocation 按顺序保存并绑定 digest，上限为 16,384 条或 8 MiB。离线安装的旧 core 无法获知其构建后才发布的撤销记录；distribution manifest 变化后，operator 必须安装更新且已审查的 core。
+
+### 可选 rust-analyzer Provider
+
+普通审查、Fast Mode、repository index、SQLite cache 和 static-analysis workflow 都不会安装或启动 rust-analyzer provider。只有显式 copy-mode 安装会 provision 它：
+
+```bash
+./install.sh --agent codex --copy --with-rust-analyzer
+```
+
+`--no-download --with-rust-analyzer` 只接受 canonical cache 中已经验证的当前平台 pack；cache miss 会在替换目标前失败。`--with-rust-analyzer --link` 会在下载或修改目标前被拒绝。成功安装只会在 managed target 下生成 `runtime/providers/rust-analyzer.profile.json` 和 `runtime/providers/provider-registry.json`；调用方必须把它们的绝对路径和精确 SHA256 显式传给 `repository-context-provider-cli run`。Provider 运行时不会下载、搜索 `PATH`、调用 `rustup` 或 package manager、解析直接 upstream asset，也不会发现全局 registry。
 
 示例：
 
@@ -236,12 +262,16 @@
 - 支持 coverage-led commit-readiness；只有每个 manifest unit 都被记录覆盖后，才能声称完整审查
 - 会把长流程 reducer state 保持为紧凑、显式的状态对象，而不是依赖隐式对话记忆
 - 会把语义上下文查询当成有界只读提示，而不是任意 shell command 或覆盖替代品
+- 只通过显式路径接收静态分析报告，把它绑定到权威 fingerprint，并且绝不把工具结果当作 manifest 覆盖
+- 只在显式授权哈希固定的 profile 与外部 executable 后执行分析器，并使用有界 tracked-file 快照
 
 ## 限制
 
 - 该仓库不包含加载或执行 skill 的运行时本身
 - 仓库自带安装脚本，覆盖 Codex、Claude Code、Gemini CLI 的常见目录；如果你的本地布局不同，可能仍需要通过 `--dir` 指定目标位置
 - 辅助脚本依赖环境中可用的 `git`
+- 静态分析证据接入与受控执行使用捆绑的 Rust CLI。只有可选的开发期校验器 `scripts/validate_schemas.py` 及其 `jsonschema` 依赖需要 Python
+- 受控执行面向可信且哈希固定的工具，属于进程隔离，不是操作系统级恶意代码或网络沙箱
 - 在 Windows 环境下，辅助脚本与安装器需要类 Unix 环境（如 Git Bash、MSYS2 或 WSL）支持才能正常运行。
 - 当前仓库即使脱离 Git 也能作为内容包存在，但本地 diff 收集只有在 Git 仓库内才有效
 
@@ -265,7 +295,10 @@
 │   ├── Cargo.toml
 │   └── src/
 ├── docs/
-│   └── superpowers/
+│   ├── helper-capabilities.md
+│   ├── static-analysis-evidence.md
+│   ├── static-analysis-execution.md
+│   └── static-analysis-orchestration.md
 ├── references/
 ├── scripts/
 │   ├── bin/
@@ -273,6 +306,13 @@
 │   ├── build_with_docker.sh
 │   ├── collect_diff_context.sh
 │   ├── collect_diff_context.legacy.sh
+│   ├── collect_impact_context.sh
+│   ├── collect_static_evidence.sh
+│   ├── index_repository_context.sh
+│   ├── lib/repository_context_cli.sh
+│   ├── lib/static_analysis_cli.sh
+│   ├── orchestrate_static_analysis.sh
+│   ├── run_static_analysis.sh
 │   └── validate_schemas.py
 ├── tests/
 │   ├── lib/
@@ -283,7 +323,14 @@
 │   ├── install_smoke_test.sh
 │   ├── parity_assets_test.sh
 │   ├── parity_golden_test.sh
-│   └── skill_contract_test.sh
+│   ├── repository_context_test.sh
+│   ├── repository_index_test.sh
+│   ├── repository_index_workflow_test.sh
+│   ├── skill_contract_test.sh
+│   ├── static_analysis_evidence_test.sh
+│   ├── static_analysis_execution_test.sh
+│   ├── static_analysis_execution_modes_test.sh
+│   └── static_analysis_orchestration_test.sh
 └── evals/
     ├── output/
     ├── taxonomy/
@@ -309,7 +356,7 @@
 
 | 层级 | 文件 | 加载时机 | 用途 |
 |------|------|----------|------|
-| `decision/` | `verdict-rules.md`、`risk-taxonomy.md`、`finding-verification.md` | 所有常规审查；强结论进入报告前额外执行 finding verification | verdict 选择、阻塞阈值、finding 标记、统计口径、证据约束与高影响结论验证 |
+| `decision/` | `verdict-rules.md`、`risk-taxonomy.md`、`finding-verification.md`、`static-analysis-evidence.md`、`static-analysis-execution.md`、`static-analysis-orchestration.md` | 所有常规审查；强结论验证；显式 SARIF/JSON 证据；显式授权的受控执行；或显式授权的编排 manifest | verdict 选择、阻塞阈值、证据约束、高影响结论验证、静态工具 reduction、执行授权与多分析器覆盖诚实性 |
 | `rendering/` | `output-en.md`、`output-zh.md`、`visual-output.md`、`review-meta.md` | 生成输出时 | 中英文审查骨架、可选视觉化呈现指导，以及机器可读元数据 |
 | `advanced/` | `coverage-led-review.md`、`visual-review-rules.md`、`grading-compat.md` | 仅复杂工作流 | coverage-led 审查流程、UI/视觉审查规则，以及评测兼容精确术语 |
 | `examples/` | `default-tiny-en.md`、`default-tiny-zh.md`、`complex-visual-and-coverage.md` | 仅在需要校准结构时 | 用于对齐结构与语气的具体示例，不重新定义规则 |
@@ -332,15 +379,21 @@
 
 1. **diff 来源解析** —— 判断当前目录是否是 Git 仓库，存在 staged 时优先使用 staged，否则回退到 unstaged 或 branch-vs-base；输出 diff 统计、文件列表、状态、截断状态、基于路径/内容的高风险候选、疑似生成文件、lockfile 和高 churn 文件。rename、delete、binary、mode-only 和 submodule 指针更新都会记录为 manifest units。
 2. **有界 control plane** —— 通过 `--control-plane` 输出紧凑 JSON gateway，包含完整 scope 内容指纹、逐单元指纹、有界 units/groups、work order 与可复用命令模板；后续补取支持 `--expect-scope <fingerprint>`，快照过期时 fail closed；指纹和实际审查字节都会禁用外部 diff/textconv driver，确保快照身份与模型检查到的内容保持同一语义。
-3. **coverage-led 与测试选择提示** —— 输出 Review Manifest/Groups 以及 reducer 友好的结构化段落（Review Plan JSON、split 建议、ledgers、work packets、finalization 模板）、有界只读 Semantic Context Queries，以及对变更中测试文件的 Test Selection Hints，用于识别常见 JVM/Spring/Quarkus/Micronaut、Maven/Gradle 集成测试命名、JUnit tags、Testcontainers、Docker Compose、WireMock/MockServer、pytest markers、Playwright/Cypress/Node e2e、Go build tags、Rust ignored/integration tests，以及数据库/缓存/消息/搜索服务配置等环境依赖测试。
+3. **coverage-led 规划与按需影响上下文** —— 输出 Review Manifest/Groups 以及 reducer 友好的结构化段落（Review Plan JSON v2、split 建议、ledgers、work packets、finalization 模板）。Review Plan v2 指向 authoritative control plane 中绑定 fingerprint 的 `impact_context/v1` 命令；结构、文本查询、依赖、框架、配置和测试选择上下文只在需要时单独获取。
 4. **可选的本地密钥打码** —— 可信 Gitleaks 可用时，先扫描和打码完整的所选 diff，再应用输出字节上限，将命中范围替换为 `[redacted:<rule-id>]` 后复扫，并对 wrapper 捕获的完整 stdout/stderr 做打码。这个顺序能防止已检测到的密钥跨越截断边界时以无法匹配的前缀泄露。scanner 被关闭、不可用、超时或没有返回命中时，审查继续使用原始输出。若 Gitleaks 已返回命中，但本地坐标映射或复核失败，helper 会明确报告 `status: redaction-failed`，而不是把它说成 scanner 不可用；此路径同样继续输出原始内容，不暂扣审查材料。
+
+可选的 `scripts/collect_static_evidence.sh` 通道会在 control plane 打开后接收显式提供的 SARIF 2.1.0 或规范化 JSON。它要求同一个 scope fingerprint，把 findings 映射到 manifest units 和新增行，输出可供 reducer 使用的 disposition，并在返回前再次验证快照。它绝不会执行分析器。协议与命令示例见 [`docs/static-analysis-evidence.md`](./docs/static-analysis-evidence.md)。
+
+独立的 `scripts/run_static_analysis.sh` 通道要求显式提供绝对 profile 路径及其精确 SHA256；信任仓库配置的 profile 还必须单独传入 `--allow-repository-configuration`。它会验证 profile 和外部 executable 的字节，生成不含 Git 元数据或 checkout filter 的 tracked candidate 快照，不经 shell 直接调用固定参数，执行时间、输出和快照上限，并返回与第一阶段 evidence 关联的 `static_analysis_execution/v1`。它绝不会自动发现工具或 profile。详见 [`docs/static-analysis-execution.md`](./docs/static-analysis-execution.md)。
+
+多分析器 `scripts/orchestrate_static_analysis.sh` 通道要求显式提供绝对 manifest 路径及其精确 SHA256。它在运行前预检全部 profile 与 executable，让它们串行共享一份有界只读候选快照，执行累计预算，并输出关联的 `static_analysis_orchestration/v1` 与合并后的 `static_analysis_evidence/v1`。失败、超时、失效与未运行 profile 都会保留为限制；不同 execution 的 findings 保持独立。它不会发现分析器，也不会准备构建或依赖。详见 [`docs/static-analysis-orchestration.md`](./docs/static-analysis-orchestration.md)。
 
 完整输出段落清单（Coverage Ledger Template、Group Review Work Packets、Reducer State Snapshot 等）见 [`docs/helper-capabilities.md`](./docs/helper-capabilities.md)，供构建 reducer/subagent 自动化的集成者参考。
 
-审查入口不会执行 fetch、stage、reset、install，也不会修改任何文件。用户显式执行安装时，如果当前平台二进制尚未 bundled，`install.sh` 会调用 `scripts/fetch_gitleaks.sh`；该脚本只下载仓库固定的上游 release asset，并同时校验 archive 与解压后 executable 的固定 SHA256。交互式终端默认显示下载进度；输出被宿主捕获时可设置 `PRE_COMMIT_REVIEW_FETCH_PROGRESS=always` 强制显示，或设为 `never` 关闭。`--dry-run` 不会下载，`--no-download` 会跳过这项可选安装行为，Agent 审查期间也绝不会联网安装 Gitleaks。可运行 `./install.sh --doctor` 诊断本地打码是否可用。
-它不会运行、改写或跳过测试。Test Selection Hints 只是只读提示，用于选择更聚焦的验证命令，并区分沙箱环境失败和代码失败。`no-known-env-heavy-marker` 并不证明测试是隔离单测，只表示 helper 没匹配到已知的重环境标记。
+普通审查入口不会执行 fetch、stage、reset、install，也不会修改任何文件。受控静态分析只有通过独立的 profile 路径与精确 SHA256 授权门后才运行，并在临时候选快照而非业务仓库上工作。用户显式执行安装时，如果当前平台二进制尚未 bundled，`install.sh` 会调用 `scripts/fetch_gitleaks.sh`；该脚本只下载仓库固定的上游 release asset，并同时校验 archive 与解压后 executable 的固定 SHA256。交互式终端默认显示下载进度；输出被宿主捕获时可设置 `PRE_COMMIT_REVIEW_FETCH_PROGRESS=always` 强制显示，或设为 `never` 关闭。`--dry-run` 不会下载，`--no-download` 会跳过这项可选安装行为，Agent 审查期间也绝不会联网安装 Gitleaks。可运行 `./install.sh --doctor` 诊断本地打码是否可用。
+它不会运行、改写或跳过测试。`impact_context/v1` 中的 `test-selection` 摘要只是只读提示，用于选择更聚焦的验证命令，并区分环境失败和代码失败。内置摘要覆盖常见 JVM/Spring/Quarkus/Micronaut、Maven/Gradle 集成测试命名、JUnit tags、Testcontainers、Docker Compose、WireMock/MockServer、pytest markers、Playwright/Cypress/Node e2e、Go build tags、Rust ignored/integration tests，以及数据库/缓存/消息/搜索服务配置。`no-known-env-heavy-marker` 并不证明测试是隔离单测，只表示没有匹配到已知的重环境标记。
 
-审查流程首先运行 `scripts/collect_diff_context.sh --control-plane`。这个有界 gateway 不输出 raw diff，且只有 collection-start 与 collection-end 指纹一致时才标记为 authoritative。兼容用的默认输出仍是 plan-first，并可能省略全局 raw diff。`PRE_COMMIT_REVIEW_INLINE_DIFF_BYTES`（默认 `60000`）控制该默认输出何时内联全局 diff。`PRE_COMMIT_REVIEW_MAX_DIFF_BYTES`（默认 `200000`）只控制已经被选择输出的 diff 如何截断；只有在确认完整的已打码 diff 输出安全时才设为 `0`。
+审查流程首先运行 `scripts/collect_diff_context.sh --control-plane`。这个有界 gateway 不输出 raw diff，且只有 collection-start 与 collection-end 指纹一致时才标记为 authoritative。默认报告仍是 plan-first，并可能省略全局 raw diff。`PRE_COMMIT_REVIEW_INLINE_DIFF_BYTES`（默认 `60000`）控制该默认输出何时内联全局 diff。`PRE_COMMIT_REVIEW_MAX_DIFF_BYTES`（默认 `200000`）只控制已经被选择输出的 diff 如何截断；只有在确认完整的已打码 diff 输出安全时才设为 `0`。
 
 即使所选模型标称支持 200K 以上上下文，默认预算仍然有意保持保守。CLI 宿主可能在内容进入模型之前就把大型工具 stdout 持久化或只返回 preview；大段 raw diff 还会增加延迟和多轮 token 成本，并削弱审查焦点。请把默认值视为跨宿主稳定基线，而不是模型上下文上限。
 
@@ -372,9 +425,50 @@ Review group 预算默认目标值为 120KB，硬上限为 160KB。可通过 `PR
 
 打开控制面后，可用 `scripts/collect_diff_context.sh --source <staged|unstaged|branch> --group <group_id> --expect-scope <fingerprint>` 只输出一个未超硬预算 review group 的 diff。需要更窄上下文或 group 已拆分时，用带同一 fingerprint 的 `--path <path>` 补取。最终 verdict 前必须重跑 `--control-plane`；快照漂移会使旧 ledger 失效，不能把两个版本拼成一次“完整审查”。`split-required` group 必须通过有界 replacement 审查，不能作为一个整体 group 审查。
 
+当结构或跨文件上下文可能实质影响审查时，使用 `scripts/collect_impact_context.sh --source <staged|unstaged|branch> --expect-scope <fingerprint> --mode fast`。Fast 模式用 Tree-sitter 解析完整的变更 Rust 文件，并只对变更候选文件应用有界文本/配置规则。返回的 `impact_context/v1` 必须匹配 authoritative scope fingerprint；partial 或 unavailable 状态必须保留，且永远不能满足 manifest coverage。
+
+### 持久化全仓索引
+
+Fast Mode 零持久化写入。它可以读取兼容的不可变 SQLite generation，并在内存中组合精确的 staged 或 working-tree overlay；generation 缺失、过期、不兼容或损坏时会明确降级为 cache miss，普通变更文件审查继续执行，且不会等待 writer。
+
+Deep/index 仅在显式调用时写入缓存。它们会为精确 candidate 持久化内容寻址、路径无关的 FileFacts，以及不可变的启发式全仓图谱。该图谱并非编译器完备：Tree-sitter 与被动 Cargo model 可以解析受支持的 Rust module、import、reference 和唯一直接调用，但 macro expansion、cfg selection、trait/method dispatch、generated target、外部依赖与 runtime dispatch 必须保持 partial 或 unresolved。
+
+macOS 默认缓存目录是 `$HOME/Library/Caches/pre-commit-review`；其他 Unix 系统使用 `$XDG_CACHE_HOME/pre-commit-review` 或 `$HOME/.cache/pre-commit-review`；Windows 使用 `%LOCALAPPDATA%\pre-commit-review`。`PRE_COMMIT_REVIEW_CACHE_DIR` 必须是 reviewed worktree 与 Git common directory 之外的绝对路径。缓存只存 derived facts 与不可变 graph rows，不存 raw source files；它包含仓库敏感信息，但可安全丢弃。`index clean` 默认只做 dry-run，只有显式传入 `--execute` 才会删除。
+
+下面的 POSIX shell 示例与英文 README 使用完全相同的命令和限制：
+
+```bash
+PRE_COMMIT_REVIEW_CACHE_DIR=/absolute/cache \
+  repository-context-cli index build \
+  --source staged \
+  --expect-scope <fingerprint> \
+  --deadline-ms 30000 \
+  --max-file-bytes 2097152 \
+  --max-query-rows 50000 \
+  --max-graph-depth 2
+
+repository-context-cli index doctor \
+  --cache-dir /absolute/cache \
+  --generation <generation-digest>
+
+PRE_COMMIT_REVIEW_CACHE_DIR=/absolute/cache \
+  repository-context-cli index inspect \
+  --generation <generation-digest> \
+  --path src/lib.rs \
+  --max-rows 100
+
+PRE_COMMIT_REVIEW_CACHE_DIR=/absolute/cache \
+  repository-context-cli index clean \
+  --dry-run \
+  --max-bytes 2147483648 \
+  --retain-generations 2
+```
+
+`index build` 与 `collect --mode deep` 都是显式 operator action。它们不会自动运行 Cargo、build script、package manager、dependency installation、repository executable 或 network discovery。`index doctor` 与 `index inspect` 保持只读；`index clean --execute` 只会修改经过校验的 repository cache namespace。
+
 项目级风险提示可以放在 `.pre-commit-review/risk-paths` 和 `.pre-commit-review/risk-content`。每个非空、非注释行都是一个扩展正则表达式；匹配项只会提升到 high-risk 审查顺序，不会改变覆盖要求。
 
-项目级语义上下文提示可以放在 `.pre-commit-review/context-queries`。每个非空、非注释行都是一个扩展正则表达式，只会通过有界、只读的 `git grep` 执行；匹配结果可辅助依赖或调用方检查，但永远不能满足审查覆盖。
+项目级文本上下文提示可以放在 `.pre-commit-review/context-queries`。每个非空、非注释行都是一个扩展正则表达式，由有界 text adapter 在变更候选文件上执行；匹配结果可辅助依赖或调用方检查，但永远不能满足审查覆盖。
 
 项目级测试选择提示可以放在 `.pre-commit-review/test-hints`。每个非注释行是一条 TSV 规则：
 
@@ -382,15 +476,15 @@ Review group 预算默认目标值为 120KB，硬上限为 160KB。可通过 `PR
 rule_id<TAB>path_regex<TAB>content_regex<TAB>test_kind<TAB>environment_dependency<TAB>confidence<TAB>hint
 ```
 
-helper 会优先输出第一条路径或内容正则匹配变更测试文件的自定义提示，再回退到内置提示。内置规则覆盖热门跨生态约定，但项目级配置仍应用于本地 profile、命名约定、私有测试框架，以及无法仅从路径/内容标记稳定识别的服务依赖测试套件。
+impact-context collector 会输出第一条路径或内容正则匹配变更测试文件的自定义提示，并结合内置分类。内置规则覆盖热门跨生态约定，但项目级配置仍应用于本地 profile、命名约定、私有测试框架，以及无法仅从路径/内容标记稳定识别的服务依赖测试套件。
 
-Review-planning 表和 `Dependency Summary` 使用 TSV，因为路径、命令和依赖详情中可能包含逗号。
+面向人工阅读的 Review-planning 表使用 TSV，因为路径和命令中可能包含逗号。
 
-Reducer 和 subagent 自动化应优先使用 authoritative `Review Control Plane JSON`；旧的 Review Plan/Manifest/Ledger section 继续作为兼容输出。TSV 表主要用于人工快速浏览。helper 已输出 manifest 后，自动化不得再通过直接 `git status` 或 `git diff --name-only` 重建审查范围。
+Reducer 和 subagent 自动化必须使用 authoritative `Review Control Plane JSON` 确定 scope。Review Plan/Manifest/Ledger section 是该 scope 的报告视图；`impact_context/v1` 是 `coverage_credit: none` 的可选证据。TSV 表主要用于人工快速浏览。helper 已输出 manifest 后，自动化不得再通过直接 `git status` 或 `git diff --name-only` 重建审查范围。
 
 ### `tests/`
 
-确定性 shell 测试，不依赖模型。`skill_contract_test.sh` 固化 `SKILL.md` 与 `references/` 之间的跨文档契约（禁止的占位符、必需的标签、不可翻译的 `VERDICT` 字段）。`collect_diff_context_test.sh`、`control_plane_test.sh` 和 `full_review_workflow_test.sh` 针对临时真实 Git 仓库验证普通输出、权威快照 pinning/漂移 fail-closed、schema 与完整 reduction。`parity_golden_test.sh` 复用共享 parity 夹具和专用 normalize 脚本，确保 legacy 与 Rust 的比对结果稳定。`install_smoke_test.sh` 和 `install_agent_matrix_test.sh` 在 copy/link/dry-run 模式和受支持的 agent 矩阵上验证安装器。它们不调用模型，可在 CI 中安全运行。
+确定性 shell 测试，不依赖模型。`skill_contract_test.sh` 固化 `SKILL.md` 与 `references/` 之间的跨文档契约（禁止的占位符、必需的标签、不可翻译的 `VERDICT` 字段）。`collect_diff_context_test.sh`、`control_plane_test.sh` 和 `full_review_workflow_test.sh` 针对临时真实 Git 仓库验证普通输出、权威快照 pinning/漂移 fail-closed、schema 与完整 reduction。`static_analysis_evidence_test.sh`、`static_analysis_execution_test.sh`、`static_analysis_execution_modes_test.sh` 与 `static_analysis_orchestration_test.sh` 覆盖报告接入、精确授权、有界单/多分析器执行、共享快照、累计预算、终态、三种候选快照模式与 gitlink 省略。`parity_golden_test.sh` 复用共享 parity 夹具和专用 normalize 脚本，严格比较 legacy 与 Rust 仍共同保留的报告契约，同时排除已迁移的 context section。`install_smoke_test.sh` 和 `install_agent_matrix_test.sh` 在 copy/link/dry-run 模式和受支持的 agent 矩阵上验证安装器。它们不调用模型，可在 CI 中安全运行。
 
 ### `evals/`
 
@@ -518,6 +612,8 @@ your-skills/
 
 - `SKILL.md`
 - `scripts/collect_diff_context.sh`
+- `scripts/collect_static_evidence.sh`
+- `scripts/run_static_analysis.sh`
 - `references/`
 - `agents/openai.yaml`
 

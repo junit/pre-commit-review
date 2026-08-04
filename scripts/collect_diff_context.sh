@@ -8,30 +8,31 @@ set -uo pipefail
 SCRIPT_DIR="$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd -P)"
 LEGACY_SCRIPT="${SCRIPT_DIR}/collect_diff_context.legacy.sh"
 WRAPPER_SCRIPT="${SCRIPT_DIR}/collect_diff_context.sh"
+IMPACT_CONTEXT_HELPER="${SCRIPT_DIR}/collect_impact_context.sh"
+export PRE_COMMIT_REVIEW_IMPACT_CONTEXT_HELPER_PATH="$IMPACT_CONTEXT_HELPER"
 
-OS="$(uname -s | tr '[:upper:]' '[:lower:]')"
-ARCH="$(uname -m)"
-
-# Normalize OS and ARCH
-case "$OS" in
-  darwin)  OS_NAME="darwin" ;;
-  linux)   OS_NAME="linux" ;;
-  msys*|mingw*|cygwin*) OS_NAME="windows" ;;
-  *)       OS_NAME="linux" ;;
-esac
-
-case "$ARCH" in
-  x86_64|amd64) ARCH_NAME="amd64" ;;
-  arm64|aarch64) ARCH_NAME="arm64" ;;
-  *)            ARCH_NAME="amd64" ;;
-esac
-
-BINARY_NAME="collect_diff_context-${OS_NAME}-${ARCH_NAME}"
-if [ "$OS_NAME" = "windows" ]; then
-  BINARY_NAME="${BINARY_NAME}.exe"
+if [ -r "$SCRIPT_DIR/lib/collect_diff_context_cli.sh" ]; then
+  # shellcheck source=/dev/null
+  . "$SCRIPT_DIR/lib/collect_diff_context_cli.sh"
+  BINARY_PATH="$(resolve_packaged_collect_diff_context_cli "$SCRIPT_DIR" 2>/dev/null || true)"
+else
+  OS="$(uname -s | tr '[:upper:]' '[:lower:]')"
+  ARCH="$(uname -m)"
+  case "$OS" in
+    darwin) OS_NAME="darwin" ;;
+    linux) OS_NAME="linux" ;;
+    msys*|mingw*|cygwin*) OS_NAME="windows" ;;
+    *) OS_NAME="linux" ;;
+  esac
+  case "$ARCH" in
+    x86_64|amd64) ARCH_NAME="amd64" ;;
+    arm64|aarch64) ARCH_NAME="arm64" ;;
+    *) ARCH_NAME="amd64" ;;
+  esac
+  BINARY_NAME="collect_diff_context-${OS_NAME}-${ARCH_NAME}"
+  [ "$OS_NAME" = "windows" ] && BINARY_NAME="${BINARY_NAME}.exe"
+  BINARY_PATH="${SCRIPT_DIR}/bin/${BINARY_NAME}"
 fi
-
-BINARY_PATH="${SCRIPT_DIR}/bin/${BINARY_NAME}"
 SECRET_SCAN_MODE="${PRE_COMMIT_REVIEW_SECRET_SCAN:-auto}"
 SANITIZER_BIN=''
 SCAN_REPORT_FILES=''
@@ -50,10 +51,8 @@ for arg in "$@"; do
   fi
 done
 
-# Fallback binary if precompiled not found
-CARGO_RELEASE_BIN="${SCRIPT_DIR}/../collect-diff-context-cli/target/release/collect-diff-context-cli"
-
 TEMP_FILES=''
+LOCAL_RELEASE_BIN="${SCRIPT_DIR}/../collect-diff-context-cli/target/release/collect-diff-context-cli"
 register_temp_file() {
   [ -n "${1:-}" ] || return 0
   TEMP_FILES="${TEMP_FILES}${TEMP_FILES:+
@@ -89,8 +88,8 @@ ensure_sanitizer_bin() {
   if [ -n "${PRE_COMMIT_REVIEW_SANITIZER_BIN:-}" ] \
     && [ -x "$PRE_COMMIT_REVIEW_SANITIZER_BIN" ]; then
     SANITIZER_BIN="$PRE_COMMIT_REVIEW_SANITIZER_BIN"
-  elif [ -x "$CARGO_RELEASE_BIN" ]; then
-    SANITIZER_BIN="$CARGO_RELEASE_BIN"
+  elif [ -x "$LOCAL_RELEASE_BIN" ]; then
+    SANITIZER_BIN="$LOCAL_RELEASE_BIN"
   elif [ -x "$BINARY_PATH" ]; then
     SANITIZER_BIN="$BINARY_PATH"
   else
@@ -198,6 +197,9 @@ release_captured_output() {
   local stderr_file="$2"
   local command_exit="$3"
   sanitize_captured_pair "$stdout_file" "$stderr_file" 'yes'
+  if grep -Fq '## Review Control Plane JSON' "$stdout_file"; then
+    CONTROL_PLANE_REQUEST='yes'
+  fi
   cat "$stdout_file"
   emit_optional_scan_summary
   cat "$stderr_file" >&2
@@ -207,19 +209,11 @@ release_captured_output() {
 get_rust_binary() {
   if [ -n "${PRE_COMMIT_REVIEW_RUST_BIN:-}" ] && [ -x "$PRE_COMMIT_REVIEW_RUST_BIN" ]; then
     echo "$PRE_COMMIT_REVIEW_RUST_BIN"
-  elif [ -f "$BINARY_PATH" ]; then
+  elif [ -x "$LOCAL_RELEASE_BIN" ]; then
+    echo "$LOCAL_RELEASE_BIN"
+  elif [ -x "$BINARY_PATH" ]; then
     echo "$BINARY_PATH"
-  elif [ -f "$CARGO_RELEASE_BIN" ]; then
-    echo "$CARGO_RELEASE_BIN"
   else
-    # Build it
-    if command -v cargo >/dev/null 2>&1; then
-      (cd "${SCRIPT_DIR}/../collect-diff-context-cli" && cargo build --release >/dev/null 2>&1)
-      if [ -f "$CARGO_RELEASE_BIN" ]; then
-        echo "$CARGO_RELEASE_BIN"
-        return 0
-      fi
-    fi
     return 1
   fi
 }
@@ -253,7 +247,7 @@ run_legacy() {
 run_rust_only() {
   local bin
   if ! bin="$(get_rust_binary)" || [ -z "$bin" ]; then
-    echo "Error: Rust binary not found and cargo build failed." >&2
+    echo "Error: Rust binary not found; provide an explicit binary or packaged target." >&2
     exit 1
   fi
   export PRE_COMMIT_REVIEW_HELPER_PATH="$WRAPPER_SCRIPT"

@@ -77,7 +77,7 @@ The helper is control-plane-first. The initial `--control-plane` output is bound
 
 Gitleaks is an optional, best-effort local redaction layer. It applies to repository-sourced helper output and improves model-input safety when available, but its absence, disablement, or failure must not block or shorten the code review. The trusted scanner configuration lives in the skill package, not in the repository being reviewed. Repository `.gitleaks.toml`, `.gitleaksignore`, and `gitleaks:allow` directives must not weaken the scanner configuration.
 
-When present, the default scanner must be the platform-specific bundled executable whose version and SHA256 match the skill-owned manifests. Never discover Gitleaks implicitly through `PATH`. `PRE_COMMIT_REVIEW_GITLEAKS_BIN` is reserved for an absolute path explicitly trusted by the user; it still must match the pinned version and pass an empty-stdin JSON capability check before use. Version, capability, and content scans have a bounded deadline; `scanner-timeout` is an unavailable-redaction state and must never block the review.
+When present, the default scanner must be the target-owned, platform-specific artifact executable whose version and SHA256 match the skill-owned manifests, with its receipt, active manifest record, revocation index, capability, and default configuration digest also agreeing. Legacy source bundles retain the same version/SHA256 checks for compatibility. Never discover Gitleaks implicitly through `PATH`. `PRE_COMMIT_REVIEW_GITLEAKS_BIN` is reserved for an absolute path explicitly trusted by the user; it still must match the pinned version and pass an empty-stdin JSON capability check before use. Version, capability, and content scans have a bounded deadline; `scanner-timeout` is an unavailable-redaction state and must never block the review.
 
 When helper output contains `## Secret Scan`:
 
@@ -92,9 +92,84 @@ When helper output contains `## Secret Scan`:
 - a secret finding is a security signal, not a review-completion condition: do not select or render the final verdict until the normal review scope is complete, and continue enumerating independent authorization, data, compatibility, reliability, and test risks after any credential blocker is found
 - never cap, merge away, or omit an independently actionable finding merely because a secret already makes the verdict blocking; for coverage-accounted reviews, every manifest unit must still reach a terminal coverage state before finalization
 
-If the helper emits `Test Selection Hints`, use them only as read-only guidance for verification planning. They do not prove test safety, do not replace CI, and must not be described as skipped or stripped tests. Built-in hints cover common JVM/Spring/Quarkus/Micronaut, pytest, Node e2e, Go, Rust, container, HTTP-stub, and external-service markers; project-specific `.pre-commit-review/test-hints` rules still take precedence for local conventions. Treat env-dependent tests such as `@SpringBootTest`, Testcontainers, or DB slices as verification that may require CI/local profile support, not as sandbox-safe unit tests. Treat `no-known-env-heavy-marker` as "no known marker matched", not as proof that the test is a pure unit test.
+### Artifact Diagnostics
 
-If a legacy/default helper invocation is persisted because it is too large and only returns a preview:
+Artifact diagnostics are explicit operator actions, never an ordinary review prerequisite. When asked to diagnose an installed payload, resolve `scripts/check_artifacts.sh` relative to the skill package and pass exactly one explicit absolute managed-skill target root. The target-owned `artifacts doctor` invocation must not infer a target from the repository or current directory, download, repair, migrate, or select a replacement.
+
+When structural, text-query, dependency, framework, or test-selection context could materially affect finding verification or verification planning, invoke the control plane command template at `command_templates.impact_context` with the same `scope_fingerprint`. Accept only `impact_context/v1` whose scope fingerprint and source match the authoritative control plane. Preserve `partial`, `failed`, `invalidated`, and `unavailable` status plus every emitted limitation; do not infer missing symbols, edges, or summaries as absent behavior. Impact context never marks a manifest unit reviewed and has no coverage credit.
+
+When the control plane provides a fingerprint-bound Fast repository-index command, the skill may consume its compatible read-only context. Never automatically run `repository-context-cli index build`, `collect --mode deep`, `index doctor`, `index clean`, rust-analyzer, or any other cache-writing operation during ordinary review.
+
+Treat `test-selection` domain summaries from `impact_context/v1` only as read-only guidance for verification planning. They do not prove test safety, do not replace CI, and must not be described as skipped or stripped tests. Built-in hints cover common JVM/Spring/Quarkus/Micronaut, pytest, Node e2e, Go, Rust, container, HTTP-stub, and external-service markers; project-specific `.pre-commit-review/test-hints` rules still take precedence for local conventions. Treat env-dependent tests such as `@SpringBootTest`, Testcontainers, or DB slices as verification that may require CI/local profile support, not as sandbox-safe unit tests. Treat `no-known-env-heavy-marker` as "no known marker matched", not as proof that the test is a pure unit test.
+
+### Optional Static Analysis Evidence
+
+When the user explicitly provides a SARIF or normalized JSON static-analysis report for the commit candidate, load `references/decision/static-analysis-evidence.md` and follow it before final synthesis. Static evidence is optional and supplements the normal diff review; it never satisfies manifest coverage by itself.
+
+After opening the authoritative control plane, run the skill-owned collector with the same selected source and fingerprint:
+
+```bash
+scripts/collect_static_evidence.sh \
+  --source <staged|unstaged|branch> \
+  --expect-scope <scope_fingerprint> \
+  --result <explicit-result-path>
+```
+
+Resolve the collector relative to the skill package containing this `SKILL.md`. Never auto-discover result files and never execute a repository-provided analyzer, package script, plugin, build target, or remote rule download merely because a report or analyzer configuration exists.
+
+Use only authoritative evidence whose `scope.fingerprint` matches the opening control plane. SARIF without an embedded scope may use `--result-scope <scope_fingerprint>` only when the user or trusted CI context explicitly asserts that the report was produced from that exact snapshot. A report mismatch, malformed input, unavailable collector, or failed tool result must not be presented as successful static verification.
+
+Treat `blocking-candidate` and `priority-candidate` as hypotheses that require the normal finding verification gate. Merge them into the candidate disposition ledger and reducer findings; do not let static evidence mark a manifest unit reviewed. Historical, unbaselined unchanged, failed-report, maintainability-only, and outside-scope findings cannot block by themselves. The final control-plane refresh must still match the static evidence fingerprint.
+
+If static evidence reports `truncated: true`, rerun it with a higher bounded `--max-findings` value before claiming complete static-evidence review. Any undisposed material candidate hidden by remaining truncation is a review limitation with verdict impact.
+
+### Optional Controlled Static Analysis Execution
+
+Run an analyzer only when the user or trusted CI policy explicitly authorizes all of the following: an absolute `static_analysis_profile/v1` path, its exact lowercase SHA256, and `repository_configuration: explicitly-trusted` when that trust level is present. Load `references/decision/static-analysis-execution.md` before executing. Never discover or select a profile, executable, argument, configuration, plugin, package script, or build target on the user's behalf.
+
+After opening the authoritative control plane, resolve the skill-owned runner relative to the package containing this `SKILL.md` and run:
+
+```bash
+scripts/run_static_analysis.sh \
+  --source <staged|unstaged|branch> \
+  --expect-scope <scope_fingerprint> \
+  --profile <absolute-profile-path> \
+  --expect-profile-sha256 <exact-profile-sha256> \
+  [--allow-repository-configuration]
+```
+
+Pass `--allow-repository-configuration` only when the authorized profile says `repository_configuration: explicitly-trusted` and the user or trusted CI policy separately accepted that trust decision. The runner fails if the flag is missing for such a profile or is supplied for a `disabled` profile.
+
+The runner accepts only a hash-pinned executable at an absolute path outside the reviewed repository. It materializes a bounded, read-only tracked-file snapshot without `.git`, invokes the exact argument array directly without a shell, supplies an allowlisted environment, enforces time and output limits, and feeds accepted stdout through the Phase 1 collector. Do not substitute an executable from `PATH`, pass the original repository path, or weaken profile limits.
+
+This is controlled execution for a trusted tool, not an operating-system hostile-code sandbox. `network_access: offline-required` is enforced only through a restricted environment and best-effort proxy poisoning; authorize only a tool whose fixed invocation independently operates offline. If the executable or tracked configuration is not trusted at the exact authorized bytes, do not run it.
+
+Accept controlled output only when `static_analysis_execution/v1` and linked `static_analysis_evidence/v1` share the opening scope and `execution_id`. Only `completed` with `result_accepted: true` is accepted tool evidence. Treat `failed`, `timeout`, `output-limit`, and `invalid-output` as unavailable verification, never as a clean result. Controlled evidence remains subject to candidate verification, does not mark manifest units reviewed, and does not replace the final authoritative control-plane refresh.
+
+### Optional Static Analysis Orchestration
+
+Run orchestration only when the user or trusted CI policy explicitly authorizes an absolute manifest path and the exact lowercase SHA256 of those manifest bytes. Load `references/decision/static-analysis-orchestration.md` before executing. Never discover or select an orchestration manifest, profile, analyzer, configuration, plugin, package script, build target, or dependency preparation step.
+
+This lane supports self-contained source-only offline analyzers that require no build, dependency installation, generated resources, daemon, or repository-owned executable configuration. Route build-coupled tools through explicitly supplied precomputed SARIF 2.1.0 or `static_analysis_input/v1` evidence instead of adding build preparation to orchestration.
+
+After opening the authoritative control plane, resolve the skill-owned wrapper relative to the package containing this `SKILL.md` and run:
+
+```bash
+scripts/orchestrate_static_analysis.sh \
+  --source <staged|unstaged|branch> \
+  --expect-scope <scope_fingerprint> \
+  --manifest <absolute-manifest-path> \
+  --expect-manifest-sha256 <exact-manifest-sha256> \
+  [--allow-repository-configuration]
+```
+
+The orchestrator must preflight the complete declared profile and executable set before opening one bounded read-only shared snapshot. Profiles run serially in manifest order under cumulative time, output, finding, file, and byte budgets. Entrypoint hashing authorizes the declared bytes; it is not a complete dependency closure or hostile-code sandbox for an arbitrary analyzer.
+
+Accept only an authoritative `static_analysis_orchestration/v1` plus combined `static_analysis_evidence/v1` pair whose scope and report/finding ids agree. Use candidates only from executed profiles with `status: completed` and `result_accepted: true`. Preserve failed, timed-out, output-limited, invalid-output, invalidated, and not-run profiles as unavailable verification. A `partial` orchestration is never broad static-analysis coverage, and a `failed` orchestration supplies no accepted tool evidence.
+
+Keep findings from different executions independent even when rule ids, locations, messages, or fingerprints match. Every blocking or priority candidate still passes ordinary finding verification. Revalidate the final authoritative scope, manifest, every profile, and every executable before using orchestration evidence; it never marks review manifest units reviewed or replaces the final control-plane refresh.
+
+If a default helper invocation is persisted because it is too large and only returns a preview:
 
 - recover the structured control plane before reviewing code
 - either read/extract the saved output sections containing `Review Plan JSON`, `Review Manifest JSONL`, and `Coverage Ledger Template`, or rerun the helper with `--plan-only` / `--include-diff never`
@@ -308,6 +383,21 @@ For routine reviews, resolve the target language first, then load:
 For reviews with priority findings, blocking review limits, delegated/reducer findings, security/auth/privacy/data claims, negative or absolute claims, or framework/library behavior claims, additionally load:
 
 - `references/decision/finding-verification.md`
+
+When the user explicitly supplies SARIF or normalized static-analysis results, additionally load:
+
+- `references/decision/static-analysis-evidence.md`
+
+When the user explicitly authorizes controlled static-analysis execution, additionally load both execution and evidence contracts:
+
+- `references/decision/static-analysis-execution.md`
+- `references/decision/static-analysis-evidence.md`
+
+When the user explicitly authorizes a static-analysis orchestration manifest, additionally load the orchestration, execution, and evidence contracts:
+
+- `references/decision/static-analysis-orchestration.md`
+- `references/decision/static-analysis-execution.md`
+- `references/decision/static-analysis-evidence.md`
 
 For visual reviews, additionally load:
 

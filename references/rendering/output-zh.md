@@ -32,6 +32,8 @@ Loaded when the review is rendered in Chinese. This file defines only the concre
    - 置信度：<高 | 中 | 低> - <仅在非高置信度时说明原因>
    - 阻塞原因：<仅阻塞项包含此行>
 
+当绑定快照的静态分析证据对 finding 有实质支持时，在“证据”中写明工具、规则以及是否映射到新增行。受控执行的 provenance 与结论相关时，还要标明 `execution_id`。如果工具证据与模型证据具有相同根因和修复方式，不要拆成两个 finding。绝不能把工具 clean 描述成整个变更安全的证明。
+
 只有在没有任何达到重点发现门槛的阻断项、非阻断风险、测试缺口或审查限制时，才写：
 
 无。

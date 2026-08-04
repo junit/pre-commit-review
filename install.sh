@@ -9,7 +9,9 @@ mode='copy'
 force='no'
 dry_run='no'
 download_gitleaks='yes'
+with_rust_analyzer='no'
 doctor='no'
+doctor_target=''
 host=''
 skills_dir=''
 install_scope='global'
@@ -29,6 +31,7 @@ Usage:
   ./install.sh <agent> [--copy|--link] [--project|--dir PATH] [--force] [--dry-run] [--no-download]
   ./install.sh --agent AGENT [--copy|--link] [--project|--dir PATH] [--force] [--dry-run] [--no-download]
   ./install.sh --doctor
+  ./install.sh --doctor-target /absolute/managed-skill
 
 Options:
   --agent NAME  Agent id to install for
@@ -40,7 +43,11 @@ Options:
   --dry-run    Print planned actions without changing the filesystem
   --no-download
                Skip optional Gitleaks download; review remains available without secret redaction
+  --with-rust-analyzer
+               Require the separately published rust-analyzer provider pack
   --doctor     Verify Gitleaks source, version, integrity, configuration, and stdin/JSON capability
+  --doctor-target PATH
+               Run read-only artifact doctor against one absolute managed target
   --list-agents
                List supported agent ids and default paths
   --help       Show this help text
@@ -324,6 +331,40 @@ resolve_gitleaks_platform() {
   printf '%s-%s\n' "$os_name" "$arch_name"
 }
 
+require_rust_analyzer_host() {
+  local platform="$1"
+  local observed=''
+  local probe_status=0
+  local version
+  local major
+  local minor
+
+  [ "$platform" = 'linux-amd64' ] || return 0
+  observed="$(LC_ALL=C getconf GNU_LIBC_VERSION 2>/dev/null)" || probe_status=$?
+  if [ "$probe_status" -ne 0 ] || [ "${#observed}" -gt 128 ]; then
+    observed=''
+  fi
+  case "$observed" in
+    'glibc '[0-9]*.[0-9]*)
+      version="${observed#glibc }"
+      ;;
+    *)
+      die 'rust-analyzer requires glibc 2.28 or newer on Linux; the host libc could not prove that prerequisite'
+      ;;
+  esac
+  case "$version" in
+    *[!0-9.]*|*.*.*|.*|*.)
+      die 'rust-analyzer requires glibc 2.28 or newer on Linux; the host libc version was not parseable'
+      ;;
+  esac
+  major="${version%%.*}"
+  minor="${version#*.}"
+  if [ "$((10#$major))" -lt 2 ] \
+    || { [ "$((10#$major))" -eq 2 ] && [ "$((10#$minor))" -lt 28 ]; }; then
+    die 'rust-analyzer requires glibc 2.28 or newer on Linux; upgrade the host before provisioning'
+  fi
+}
+
 gitleaks_binary_name() {
   local platform="$1"
   local suffix=''
@@ -331,6 +372,70 @@ gitleaks_binary_name() {
     windows-*) suffix='.exe' ;;
   esac
   printf 'gitleaks-%s%s\n' "$platform" "$suffix"
+}
+
+static_analysis_binary_name() {
+  local platform="$1"
+  local suffix=''
+  case "$platform" in
+    windows-*) suffix='.exe' ;;
+  esac
+  printf 'static_analysis-%s%s\n' "$platform" "$suffix"
+}
+
+repository_context_binary_name() {
+  local platform="$1"
+  local suffix=''
+  case "$platform" in
+    windows-*) suffix='.exe' ;;
+  esac
+  printf 'repository_context-%s%s\n' "$platform" "$suffix"
+}
+
+repository_context_provider_binary_name() {
+  local platform="$1"
+  local suffix=''
+  case "$platform" in
+    windows-*) suffix='.exe' ;;
+  esac
+  printf 'repository_context_provider-%s%s\n' "$platform" "$suffix"
+}
+
+provision_rust_binary() {
+  local runtime_root="$1"
+  local binary_name="$2"
+  local local_executable="$3"
+  local display_label="$4"
+  local installed_path="$runtime_root/scripts/bin/$binary_name"
+  local local_suffix=''
+  local local_release
+
+  case "$binary_name" in
+    *.exe) local_suffix='.exe' ;;
+  esac
+  local_release="$source_dir/collect-diff-context-cli/target/release/${local_executable}${local_suffix}"
+
+  if [ "$dry_run" = 'yes' ]; then
+    if [ -x "$source_dir/scripts/bin/$binary_name" ] || [ -x "$local_release" ]; then
+      log "$display_label: DRY RUN include $binary_name"
+    else
+      log "$display_label: bundled binary unavailable; wrappers remain installed"
+    fi
+    return 0
+  fi
+
+  if [ -x "$installed_path" ]; then
+    log "$display_label: installed bundled $binary_name"
+    return 0
+  fi
+  if [ -x "$local_release" ]; then
+    mkdir -p "$runtime_root/scripts/bin"
+    cp "$local_release" "$installed_path"
+    chmod +x "$installed_path"
+    log "$display_label: installed local release as $binary_name"
+    return 0
+  fi
+  log "$display_label: bundled binary unavailable; wrappers remain installed"
 }
 
 gitleaks_is_compatible() {
@@ -364,6 +469,18 @@ provision_gitleaks() {
   local binary_name="$3"
   local bundled_path="$runtime_root/scripts/bin/$binary_name"
 
+  if [ "$dry_run" = 'no' ] && [ "$download_gitleaks" = 'yes' ]; then
+    local artifact_status=0
+    gitleaks_artifact_provision "$runtime_root" "$platform" || artifact_status=$?
+    if [ "$artifact_status" -eq 0 ]; then
+      log "Gitleaks: provisioned target-owned artifact for $platform"
+      return 0
+    elif [ "$artifact_status" -eq 2 ]; then
+      log "Warning: target-owned Gitleaks artifact was rejected; review will continue without secret redaction"
+      return 0
+    fi
+  fi
+
   if [ "$dry_run" = 'yes' ] && [ "$download_gitleaks" = 'yes' ]; then
     if [ -x "$bundled_path" ]; then
       log "DRY RUN validate bundled $binary_name and replace it if version, integrity, or capability checks fail"
@@ -371,6 +488,14 @@ provision_gitleaks() {
       log "DRY RUN fetch pinned Gitleaks for $platform into $runtime_root/scripts/bin"
     fi
     return 0
+  fi
+  if [ "$dry_run" = 'no' ] && [ "$download_gitleaks" = 'no' ]; then
+    local cache_status=0
+    gitleaks_artifact_provision "$runtime_root" "$platform" yes || cache_status=$?
+    if [ "$cache_status" -eq 0 ]; then
+      log "Gitleaks: provisioned verified cache entry for $platform (--no-download)"
+      return 0
+    fi
   fi
   if [ "$dry_run" = 'yes' ]; then
     log "DRY RUN skip optional Gitleaks download (--no-download)"
@@ -408,10 +533,101 @@ provision_gitleaks() {
   fi
 }
 
+provision_rust_analyzer() {
+  local runtime_root="$1"
+  local platform="$2"
+  local manager
+  local manifest
+  local -a provision_args
+  local report
+
+  if [ "$dry_run" = 'yes' ]; then
+    log "DRY RUN provision required rust-analyzer provider for $platform"
+    return 0
+  fi
+
+  manager="$(gitleaks_artifact_manager "$runtime_root" "$platform" 2>/dev/null || true)"
+  [ -n "$manager" ] || die 'rust-analyzer artifact manager is unavailable'
+  manifest="$(gitleaks_artifact_manifest "$runtime_root" 2>/dev/null || true)"
+  [ -n "$manifest" ] || die 'rust-analyzer distribution manifest is unavailable'
+
+  provision_args=(
+    artifacts provision
+    --manifest "$manifest"
+    --artifact-id rust-analyzer
+    --platform-id "$platform"
+    --target-root "$runtime_root"
+  )
+  if [ "$download_gitleaks" = 'no' ]; then
+    provision_args+=(--no-download)
+  fi
+  if ! report="$(
+    PRE_COMMIT_REVIEW_FETCH_PROGRESS="${PRE_COMMIT_REVIEW_FETCH_PROGRESS:-auto}" \
+      "$manager" "${provision_args[@]}" 2>&1
+  )"; then
+    printf '%s\n' "$report" >&2
+    die "rust-analyzer provisioning failed for $platform"
+  fi
+  printf '%s\n' "$report" >&2
+  log "rust-analyzer: provisioned required provider for $platform"
+}
+
+copy_core_distribution() {
+  local staging_dir="$1"
+  local distribution="$source_dir/runtime/distribution"
+
+  if [ ! -d "$distribution" ]; then
+    return 0
+  fi
+  for required in \
+    manifest.json \
+    revocations.json \
+    core-pack-manifest.json \
+    core-sbom.cdx.json; do
+    [ -f "$distribution/$required" ] \
+      || die "core distribution is missing $required"
+  done
+  if [ -e "$source_dir/runtime/artifact-receipts" ]; then
+    die 'core payload must not contain generated target receipts'
+  fi
+  mkdir -p "$staging_dir/runtime"
+  cp -R "$distribution" "$staging_dir/runtime/"
+}
+
+commit_staged_target() {
+  local staging_dir="$1"
+  local target="$2"
+  local backup="${target}.previous.$$"
+  local had_target='no'
+
+  if [ -e "$backup" ] || [ -L "$backup" ]; then
+    die "refusing to overwrite an existing installer backup: $backup"
+  fi
+  if [ -e "$target" ] || [ -L "$target" ]; then
+    mv -- "$target" "$backup" || die "could not stage the existing target for replacement: $target"
+    had_target='yes'
+  fi
+  if mv -- "$staging_dir" "$target"; then
+    if [ "$had_target" = 'yes' ]; then
+      rm -rf -- "$backup" || log "Warning: previous target backup could not be removed: $backup"
+    fi
+    return 0
+  fi
+
+  if [ "$had_target" = 'yes' ]; then
+    mv -- "$backup" "$target" \
+      || die "target replacement failed and the previous target could not be restored: $target"
+  fi
+  die "could not commit staged installation: $target"
+}
+
 copy_payload() {
   local target="$1"
   local platform="$2"
   local binary_name="$3"
+  local static_binary_name="$4"
+  local repository_binary_name="$5"
+  local provider_binary_name="$6"
   local staging_dir="${target}.tmp.$$"
 
   if [ "$dry_run" = 'yes' ]; then
@@ -421,7 +637,16 @@ copy_payload() {
     fi
     prepare_target "$target"
     log "DRY RUN copy runtime payload $source_dir -> $target"
+    provision_rust_binary "$plan_root" "$static_binary_name" \
+      'static-analysis-cli' 'Static analysis'
+    provision_rust_binary "$plan_root" "$repository_binary_name" \
+      'repository-context-cli' 'Repository context'
+    provision_rust_binary "$plan_root" "$provider_binary_name" \
+      'repository-context-provider-cli' 'Repository context provider'
     provision_gitleaks "$plan_root" "$platform" "$binary_name"
+    if [ "$with_rust_analyzer" = 'yes' ]; then
+      provision_rust_analyzer "$plan_root" "$platform"
+    fi
     return 0
   fi
 
@@ -431,17 +656,33 @@ copy_payload() {
 
   cp "$source_dir/SKILL.md" "$staging_dir/"
   cp "$source_dir/LICENSE" "$staging_dir/"
+  cp "$source_dir/install.sh" "$staging_dir/"
   cp -R "$source_dir/agents" "$staging_dir/"
   cp -R "$source_dir/references" "$staging_dir/"
   cp -R "$source_dir/scripts" "$staging_dir/"
+  if [ -d "$source_dir/docs" ]; then
+    cp -R "$source_dir/docs" "$staging_dir/"
+  fi
+  mkdir -p "$staging_dir/collect-diff-context-cli"
+  cp -R "$source_dir/collect-diff-context-cli/schemas" "$staging_dir/collect-diff-context-cli/"
   if [ -d "$source_dir/THIRD_PARTY_LICENSES" ]; then
     cp -R "$source_dir/THIRD_PARTY_LICENSES" "$staging_dir/"
   fi
 
-  provision_gitleaks "$staging_dir" "$platform" "$binary_name"
+  copy_core_distribution "$staging_dir"
 
-  prepare_target "$target"
-  mv "$staging_dir" "$target"
+  provision_rust_binary "$staging_dir" "$static_binary_name" \
+    'static-analysis-cli' 'Static analysis'
+  provision_rust_binary "$staging_dir" "$repository_binary_name" \
+    'repository-context-cli' 'Repository context'
+  provision_rust_binary "$staging_dir" "$provider_binary_name" \
+    'repository-context-provider-cli' 'Repository context provider'
+  provision_gitleaks "$staging_dir" "$platform" "$binary_name"
+  if [ "$with_rust_analyzer" = 'yes' ]; then
+    provision_rust_analyzer "$staging_dir" "$platform"
+  fi
+
+  commit_staged_target "$staging_dir" "$target"
   active_staging_dir=''
 }
 
@@ -497,8 +738,17 @@ while [ "$#" -gt 0 ]; do
     --no-download)
       download_gitleaks='no'
       ;;
+    --with-rust-analyzer)
+      with_rust_analyzer='yes'
+      ;;
     --doctor)
       doctor='yes'
+      ;;
+    --doctor-target)
+      shift
+      [ "$#" -gt 0 ] || die "--doctor-target requires an absolute target path"
+      [ -z "$doctor_target" ] || die "--doctor-target specified more than once"
+      doctor_target="$1"
       ;;
     --list-agents)
       list_agents
@@ -524,7 +774,15 @@ source "$source_dir/scripts/lib/gitleaks_integrity.sh"
 
 if [ "$doctor" = 'yes' ]; then
   [ -z "$host" ] || die '--doctor does not accept an agent argument'
+  [ -z "$doctor_target" ] || die '--doctor and --doctor-target are mutually exclusive'
   exec "$source_dir/scripts/check_gitleaks.sh"
+fi
+
+if [ -n "$doctor_target" ]; then
+  [ -z "$host" ] || die '--doctor-target does not accept an agent argument'
+  gitleaks_path_is_absolute "$doctor_target" \
+    || die '--doctor-target requires an absolute target path'
+  exec "$source_dir/scripts/check_artifacts.sh" "$doctor_target"
 fi
 
 [ -n "$host" ] || {
@@ -545,12 +803,23 @@ skills_dir="$(expand_home "$skills_dir")"
 target_dir="${skills_dir%/}/$skill_name"
 gitleaks_platform="$(resolve_gitleaks_platform)"
 gitleaks_binary="$(gitleaks_binary_name "$gitleaks_platform")"
+static_analysis_binary="$(static_analysis_binary_name "$gitleaks_platform")"
+repository_context_binary="$(repository_context_binary_name "$gitleaks_platform")"
+repository_context_provider_binary="$(repository_context_provider_binary_name "$gitleaks_platform")"
 
+if [ "$with_rust_analyzer" = 'yes' ] && [ "$mode" = 'link' ]; then
+  die '--with-rust-analyzer cannot be combined with --link'
+fi
+if [ "$with_rust_analyzer" = 'yes' ]; then
+  require_rust_analyzer_host "$gitleaks_platform"
+fi
 validate_target "$target_dir"
 ensure_parent_dir "$skills_dir"
 
 case "$mode" in
-  copy) copy_payload "$target_dir" "$gitleaks_platform" "$gitleaks_binary" ;;
+  copy) copy_payload "$target_dir" "$gitleaks_platform" "$gitleaks_binary" \
+    "$static_analysis_binary" "$repository_context_binary" \
+    "$repository_context_provider_binary" ;;
   link) link_payload "$target_dir" "$gitleaks_platform" "$gitleaks_binary" ;;
   *) die "unsupported mode: $mode" ;;
 esac

@@ -5,6 +5,25 @@ SCRIPT_DIR="$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd -P)"
 # shellcheck source=scripts/lib/gitleaks_integrity.sh
 source "$SCRIPT_DIR/lib/gitleaks_integrity.sh"
 
+target_root="$(CDPATH='' cd -- "$SCRIPT_DIR/.." && pwd -P)"
+if [ -f "$target_root/runtime/distribution/manifest.json" ]; then
+  target_platform=''
+  case "$(uname -s | tr '[:upper:]' '[:lower:]')" in
+    darwin) target_platform='darwin' ;;
+    linux) target_platform='linux' ;;
+    msys*|mingw*|cygwin*) target_platform='windows' ;;
+  esac
+  case "$(uname -m)" in
+    arm64|aarch64) target_platform="${target_platform}-arm64" ;;
+    x86_64|amd64) target_platform="${target_platform}-amd64" ;;
+  esac
+  target_manager="$(gitleaks_artifact_manager "$target_root" "$target_platform" 2>/dev/null || true)"
+  if [ -n "$target_manager" ]; then
+    exec "$target_manager" artifacts doctor \
+      --target-root "$target_root" --artifact-id gitleaks
+  fi
+fi
+
 VERSION_FILE="$SCRIPT_DIR/gitleaks.version"
 BINARY_MANIFEST="$SCRIPT_DIR/gitleaks-binaries.sha256"
 CONFIG="${PRE_COMMIT_REVIEW_GITLEAKS_CONFIG:-$SCRIPT_DIR/../references/security/gitleaks.toml}"

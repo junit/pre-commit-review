@@ -1,0 +1,69 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "third-party-artifact-receipt.schema.json",
+  "title": "ThirdPartyArtifactReceipt",
+  "type": "object",
+  "required": [
+    "schema_version", "kind", "distribution_manifest_sha256", "artifact_id", "tool_version",
+    "pack_version", "platform_id", "pack_sha256", "pack_manifest_sha256", "sbom_sha256",
+    "installed_files", "license_files", "probes", "lifecycle_state"
+  ],
+  "properties": {
+    "schema_version": { "type": "integer", "const": 1 },
+    "kind": { "type": "string", "const": "third_party_artifact_receipt" },
+    "distribution_manifest_sha256": { "$ref": "third-party-artifacts.schema.json#/$defs/sha256" },
+    "artifact_id": { "$ref": "third-party-artifacts.schema.json#/$defs/identifier" },
+    "tool_version": { "$ref": "third-party-artifacts.schema.json#/$defs/text" },
+    "pack_version": { "$ref": "third-party-artifacts.schema.json#/$defs/text" },
+    "platform_id": { "$ref": "third-party-artifacts.schema.json#/$defs/platformId" },
+    "pack_sha256": { "$ref": "third-party-artifacts.schema.json#/$defs/sha256" },
+    "pack_manifest_sha256": { "$ref": "third-party-artifacts.schema.json#/$defs/sha256" },
+    "sbom_sha256": { "$ref": "third-party-artifacts.schema.json#/$defs/sha256" },
+    "installed_files": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "third-party-artifacts.schema.json#/$defs/fileBinding" }
+    },
+    "license_files": {
+      "type": "array",
+      "minItems": 1,
+      "items": { "$ref": "third-party-artifacts.schema.json#/$defs/fileBinding" }
+    },
+    "probes": {
+      "type": "array",
+      "minItems": 2,
+      "maxItems": 2,
+      "uniqueItems": true,
+      "items": { "$ref": "#/$defs/probeResult" }
+    },
+    "lifecycle_state": { "$ref": "third-party-artifacts.schema.json#/$defs/artifactState" }
+  },
+  "$defs": {
+    "probeResult": {
+      "type": "object",
+      "required": ["probe_id", "success", "observed_version"],
+      "properties": {
+        "probe_id": { "$ref": "third-party-artifacts.schema.json#/$defs/probeId" },
+        "success": { "type": "boolean", "const": true },
+        "observed_version": {
+          "anyOf": [
+            { "$ref": "third-party-artifacts.schema.json#/$defs/text" },
+            { "type": "null" }
+          ]
+        }
+      },
+      "allOf": [
+        {
+          "if": { "properties": { "probe_id": { "enum": ["gitleaks-version-v1", "rust-analyzer-version-v1"] } } },
+          "then": { "properties": { "observed_version": { "$ref": "third-party-artifacts.schema.json#/$defs/text" } } }
+        },
+        {
+          "if": { "properties": { "probe_id": { "enum": ["gitleaks-stdin-json-v1", "rust-analyzer-stdio-v1"] } } },
+          "then": { "properties": { "observed_version": { "type": "null" } } }
+        }
+      ],
+      "additionalProperties": false
+    }
+  },
+  "additionalProperties": false
+}

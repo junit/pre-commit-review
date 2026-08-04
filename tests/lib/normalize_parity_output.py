@@ -3,11 +3,43 @@ import json
 import sys
 
 
-def strip_secret_scan_sections(lines):
+def normalize_static_value(value):
+    if isinstance(value, dict):
+        if {
+            "schema_version",
+            "source",
+            "manifest_units",
+            "review_groups",
+            "groups",
+            "coverage_validation",
+        }.issubset(value):
+            value.pop("schema_version", None)
+            value.pop("semantic_context_section", None)
+            value.pop("impact_context", None)
+        if "duration_ms" in value:
+            value["duration_ms"] = 0
+        forbidden = {"pid", "process_id", "snapshot_path", "runtime_path"}
+        unexpected = forbidden.intersection(value)
+        if unexpected:
+            raise ValueError(f"serialized runtime-only fields: {sorted(unexpected)}")
+        for child in value.values():
+            normalize_static_value(child)
+    elif isinstance(value, list):
+        for child in value:
+            normalize_static_value(child)
+
+
+def strip_non_parity_sections(lines):
+    excluded_headers = {
+        "## Dependency Summary",
+        "## Semantic Context Queries",
+        "## Test Selection Hints",
+    }
     stripped = []
     index = 0
     while index < len(lines):
-        if lines[index].strip() != "## Secret Scan":
+        header = lines[index].strip()
+        if header != "## Secret Scan" and header not in excluded_headers:
             stripped.append(lines[index])
             index += 1
             continue
@@ -15,10 +47,12 @@ def strip_secret_scan_sections(lines):
         index += 1
         while index < len(lines):
             line = lines[index]
-            if line.strip() == "":
+            if line.startswith("## "):
+                break
+            if header == "## Secret Scan" and line.strip() == "":
                 index += 1
                 break
-            if line.lstrip().startswith("#"):
+            if header == "## Secret Scan" and line.lstrip().startswith("#"):
                 break
             index += 1
     return stripped
@@ -30,9 +64,11 @@ def normalize_json_buffer(json_buffer):
         return []
     try:
         data = json.loads(text)
-        return [json.dumps(data, indent=2, sort_keys=True) + "\n"]
-    except Exception:
+    except json.JSONDecodeError:
         pass
+    else:
+        normalize_static_value(data)
+        return [json.dumps(data, indent=2, sort_keys=True) + "\n"]
 
     decoder = json.JSONDecoder()
     pos = 0
@@ -44,10 +80,11 @@ def normalize_json_buffer(json_buffer):
             break
         try:
             obj, idx = decoder.raw_decode(text, pos)
-            objects.append(obj)
-            pos = idx
-        except Exception:
+        except json.JSONDecodeError:
             return json_buffer
+        normalize_static_value(obj)
+        objects.append(obj)
+        pos = idx
 
     def get_sort_key(obj):
         if isinstance(obj, dict):
@@ -65,7 +102,7 @@ def normalize_json_buffer(json_buffer):
 
 
 def main():
-    lines = strip_secret_scan_sections(sys.stdin.readlines())
+    lines = strip_non_parity_sections(sys.stdin.readlines())
     output = []
     in_json = False
     json_buffer = []

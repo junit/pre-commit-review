@@ -1,0 +1,165 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "repository-index-report.schema.json",
+  "title": "RepositoryIndexReportV1",
+  "description": "Bounded operational report for persistent repository index actions.",
+  "type": "object",
+  "required": [
+    "schema_version",
+    "kind",
+    "action",
+    "status",
+    "scope_fingerprint",
+    "repository_id",
+    "generation_key",
+    "metrics",
+    "limitations"
+  ],
+  "properties": {
+    "schema_version": { "type": "integer", "const": 1 },
+    "kind": { "type": "string", "const": "repository_index_report" },
+    "action": {
+      "type": "string",
+      "enum": ["build", "doctor", "inspect", "clean"]
+    },
+    "status": {
+      "type": "string",
+      "enum": ["completed", "partial", "unavailable", "invalidated", "failed"]
+    },
+    "scope_fingerprint": {
+      "oneOf": [
+        { "$ref": "#/$defs/fingerprint" },
+        { "type": "null" }
+      ]
+    },
+    "repository_id": { "$ref": "#/$defs/sha256" },
+    "generation_key": {
+      "oneOf": [
+        { "$ref": "#/$defs/sha256" },
+        { "type": "null" }
+      ]
+    },
+    "metrics": { "$ref": "#/$defs/metrics" },
+    "limitations": {
+      "type": "array",
+      "maxItems": 1000,
+      "items": { "$ref": "#/$defs/limitation" }
+    }
+  },
+  "allOf": [
+    {
+      "if": {
+        "properties": { "action": { "const": "build" } },
+        "required": ["action"]
+      },
+      "then": {
+        "properties": {
+          "scope_fingerprint": { "$ref": "#/$defs/fingerprint" }
+        }
+      }
+    },
+    {
+      "if": {
+        "properties": {
+          "action": { "const": "build" },
+          "status": { "const": "completed" }
+        },
+        "required": ["action", "status"]
+      },
+      "then": {
+        "properties": {
+          "generation_key": { "$ref": "#/$defs/sha256" }
+        }
+      }
+    }
+  ],
+  "additionalProperties": false,
+  "$defs": {
+    "sha256": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{64}$"
+    },
+    "fingerprint": {
+      "type": "string",
+      "pattern": "^[0-9a-f]{40}([0-9a-f]{24})?$"
+    },
+    "path": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 4096,
+      "pattern": "^(?!/)(?![A-Za-z]:)(?!.*(?:^|/)\\.\\.(?:/|$))(?!.*\\\\)[^\\u0000]+$"
+    },
+    "boundedText": {
+      "type": "string",
+      "minLength": 1,
+      "maxLength": 1000,
+      "pattern": "^[^\\u0000]+$"
+    },
+    "metrics": {
+      "type": "object",
+      "required": [
+        "elapsed_ms",
+        "manifest_files",
+        "manifest_bytes",
+        "file_fact_hits",
+        "file_fact_misses",
+        "file_fact_writes",
+        "parsed_files",
+        "parsed_bytes",
+        "symbols",
+        "edges",
+        "query_rows",
+        "generation_bytes",
+        "output_bytes"
+      ],
+      "properties": {
+        "elapsed_ms": { "type": "integer", "minimum": 0, "maximum": 60000 },
+        "manifest_files": { "type": "integer", "minimum": 0, "maximum": 100000 },
+        "manifest_bytes": { "type": "integer", "minimum": 0, "maximum": 33554432 },
+        "file_fact_hits": { "type": "integer", "minimum": 0, "maximum": 100000 },
+        "file_fact_misses": { "type": "integer", "minimum": 0, "maximum": 100000 },
+        "file_fact_writes": { "type": "integer", "minimum": 0, "maximum": 100000 },
+        "parsed_files": { "type": "integer", "minimum": 0, "maximum": 100000 },
+        "parsed_bytes": { "type": "integer", "minimum": 0, "maximum": 536870912 },
+        "symbols": { "type": "integer", "minimum": 0, "maximum": 1000000 },
+        "edges": { "type": "integer", "minimum": 0, "maximum": 5000000 },
+        "query_rows": { "type": "integer", "minimum": 0, "maximum": 50000 },
+        "generation_bytes": { "type": "integer", "minimum": 0, "maximum": 2147483648 },
+        "output_bytes": { "type": "integer", "minimum": 0, "maximum": 1048576 }
+      },
+      "additionalProperties": false
+    },
+    "limitation": {
+      "type": "object",
+      "required": ["code", "path", "symbol_id", "reason", "interpretation"],
+      "properties": {
+        "code": {
+          "type": "string",
+          "minLength": 1,
+          "maxLength": 100,
+          "pattern": "^[^\\u0000]+$"
+        },
+        "path": {
+          "oneOf": [
+            { "$ref": "#/$defs/path" },
+            { "type": "null" }
+          ]
+        },
+        "symbol_id": {
+          "oneOf": [
+            {
+              "type": "string",
+              "minLength": 1,
+              "maxLength": 4096,
+              "pattern": "^[^\\u0000]+$"
+            },
+            { "type": "null" }
+          ]
+        },
+        "reason": { "$ref": "#/$defs/boundedText" },
+        "interpretation": { "$ref": "#/$defs/boundedText" }
+      },
+      "additionalProperties": false
+    }
+  }
+}

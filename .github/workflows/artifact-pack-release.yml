@@ -1,0 +1,615 @@
+name: Artifact Pack Release
+
+on:
+  workflow_call:
+    inputs:
+      artifact:
+        description: Reviewed artifact pack kind
+        required: false
+        default: gitleaks
+        type: string
+      release_tag:
+        description: Immutable project release tag that owns the pack assets
+        required: true
+        type: string
+  workflow_dispatch:
+    inputs:
+      artifact:
+        description: Reviewed artifact pack kind
+        required: true
+        default: gitleaks
+        type: choice
+        options:
+          - gitleaks
+          - rust-analyzer
+      release_tag:
+        description: Immutable project release tag that owns the pack assets
+        required: true
+        type: string
+  push:
+    tags:
+      - artifact-rust-analyzer-2026.07.27-pcr.3
+
+permissions:
+  contents: write
+  id-token: write
+  attestations: write
+
+env:
+  RUST_TOOLCHAIN: 1.95.0
+  PACK_VERSION: 8.30.1-pcr.1
+  RUST_ANALYZER_PACK_VERSION: 2026.07.27-pcr.3
+
+jobs:
+  build:
+    name: Build Gitleaks pack (${{ matrix.platform }})
+    if: inputs.artifact == 'gitleaks'
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            target: x86_64-unknown-linux-musl
+            platform: linux-amd64
+          - os: macos-latest
+            target: aarch64-apple-darwin
+            platform: darwin-arm64
+          - os: macos-15-intel
+            target: x86_64-apple-darwin
+            platform: darwin-amd64
+          - os: windows-latest
+            target: x86_64-pc-windows-msvc
+            platform: windows-amd64
+    steps:
+      - name: Checkout reviewed source
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+
+      - name: Install Rust 1.95.0
+        uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c
+        with:
+          toolchain: 1.95.0
+          targets: ${{ matrix.target }}
+
+      - name: Install musl-tools
+        if: matrix.platform == 'linux-amd64'
+        run: sudo apt-get update && sudo apt-get install -y musl-tools
+
+      - name: Build locked pack writer
+        run: cargo +1.95.0 build --release --locked --bin artifact-pack-writer
+        working-directory: collect-diff-context-cli
+
+      - name: Fetch the reviewed upstream asset
+        shell: bash
+        run: ./scripts/fetch_gitleaks.sh --platform "${{ matrix.platform }}" --dest "$RUNNER_TEMP/gitleaks"
+
+      - name: Build normalized provider pack
+        shell: bash
+        run: |
+          set -euo pipefail
+          suffix=''
+          writer="$PWD/collect-diff-context-cli/target/release/artifact-pack-writer"
+          if [ "${{ matrix.platform }}" = 'windows-amd64' ]; then
+            suffix='.exe'
+            writer="$writer.exe"
+          fi
+          mkdir -p dist
+          PRE_COMMIT_REVIEW_PACK_WRITER="$writer" \
+            ./scripts/build_artifact_pack.sh \
+              --kind gitleaks \
+              --platform-id "${{ matrix.platform }}" \
+              --pack-version "$PACK_VERSION" \
+              --source-root "$PWD" \
+              --manifest "$PWD/third_party_artifacts/manifest.json" \
+              --source-lock "$PWD/third_party_artifacts/sources/gitleaks-8.30.1.json" \
+              --binary "$RUNNER_TEMP/gitleaks/gitleaks-${{ matrix.platform }}$suffix" \
+              --output "$PWD/dist/pre-commit-review-gitleaks-$PACK_VERSION-${{ matrix.platform }}.tar.gz" \
+              --record-output "$PWD/dist/gitleaks-${{ matrix.platform }}.record.json"
+          sha256sum "dist/pre-commit-review-gitleaks-$PACK_VERSION-${{ matrix.platform }}.tar.gz" \
+            > "dist/pre-commit-review-gitleaks-$PACK_VERSION-${{ matrix.platform }}.tar.gz.sha256"
+
+      - name: Generate fixed-scope composition evidence
+        shell: bash
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+
+          root = Path('dist')
+          platform = os.environ['PLATFORM']
+          pack_version = os.environ['PACK_VERSION']
+          source_lock = Path('third_party_artifacts/sources/gitleaks-8.30.1.json')
+          archive = root / f'pre-commit-review-gitleaks-{pack_version}-{platform}.tar.gz'
+          record = json.loads((root / f'gitleaks-{platform}.record.json').read_text(encoding='utf-8'))
+          digest = lambda path: hashlib.sha256(path.read_bytes()).hexdigest()
+          lock = json.loads(source_lock.read_text(encoding='utf-8'))
+          asset = next(item for item in lock['assets'] if item['platform_id'] == platform)
+          evidence = {
+              'predicateType': 'pre-commit-review.artifact-pack/v1',
+              'subject': [{'name': archive.name, 'digest': {'sha256': digest(archive)}}],
+              'signer': {
+                  'repository': 'junit/pre-commit-review',
+                  'workflow': '.github/workflows/artifact-pack-release.yml',
+                  'ref': os.environ['GITHUB_REF'],
+                  'commit': os.environ['GITHUB_SHA'],
+                  'issuer': 'https://token.actions.githubusercontent.com',
+              },
+              'predicate': {
+                  'composition': {
+                      'source_lock_sha256': digest(source_lock),
+                      'upstream_archive_sha256': asset['archive_sha256'],
+                      'manifest_sha256': record['pack_manifest_sha256'],
+                      'sbom_sha256': record['sbom_sha256'],
+                      'generator_sha256': digest(Path('scripts/build_artifact_pack.sh')),
+                  }
+              },
+          }
+          (root / f'{archive.name}.attestation.json').write_text(
+              json.dumps(evidence, separators=(',', ':')), encoding='utf-8'
+          )
+          PY
+        env:
+          PLATFORM: ${{ matrix.platform }}
+          PACK_VERSION: ${{ env.PACK_VERSION }}
+
+      - name: Attest the pack subject
+        uses: actions/attest-build-provenance@96b4a1ef7235a096b17240c259729fdd70c83d45
+        with:
+          subject-path: dist/pre-commit-review-gitleaks-${{ env.PACK_VERSION }}-${{ matrix.platform }}.tar.gz
+
+      - name: Upload pack and trust material
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: gitleaks-pack-${{ matrix.platform }}
+          path: dist/*
+
+  build-rust-analyzer:
+    name: Build rust-analyzer pack (${{ matrix.platform }})
+    if: (inputs.artifact == 'rust-analyzer' && inputs.release_tag == 'artifact-rust-analyzer-2026.07.27-pcr.3') || github.ref == 'refs/tags/artifact-rust-analyzer-2026.07.27-pcr.3'
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: ubuntu-latest
+            platform: linux-amd64
+          - os: macos-latest
+            platform: darwin-arm64
+          - os: macos-15-intel
+            platform: darwin-amd64
+          - os: windows-latest
+            platform: windows-amd64
+    steps:
+      - name: Checkout reviewed pack builder
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+
+      - name: Checkout pinned rust-analyzer license sources
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+        with:
+          repository: rust-lang/rust-analyzer
+          ref: 12c3381f0b17b8eec21075d1c72fd010996a9bda
+          path: upstream-rust-analyzer
+          persist-credentials: false
+
+      - name: Install Rust 1.95.0
+        uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c
+        with:
+          toolchain: 1.95.0
+
+      - name: Build locked pack writer
+        run: cargo +1.95.0 build --release --locked --bin artifact-pack-writer
+        working-directory: collect-diff-context-cli
+
+      - name: Fetch, verify, and extract the reviewed upstream asset
+        shell: bash
+        env:
+          PLATFORM: ${{ matrix.platform }}
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/rust-analyzer-input"
+          python3 - <<'PY'
+          import gzip
+          import hashlib
+          import json
+          import os
+          import shutil
+          import stat
+          import subprocess
+          import urllib.parse
+          import urllib.request
+          import zipfile
+          from io import BytesIO
+          from pathlib import Path
+
+          root = Path.cwd()
+          output = Path(os.environ['RUNNER_TEMP']) / 'rust-analyzer-input'
+          lock_path = root / 'third_party_artifacts/sources/rust-analyzer-2026-07-27.json'
+          lock = json.loads(lock_path.read_text(encoding='utf-8'))
+          asset = next(item for item in lock['assets'] if item['platform_id'] == os.environ['PLATFORM'])
+          shutil.copy2(lock_path, output / lock_path.name)
+          for license_name in ['LICENSE-APACHE', 'LICENSE-MIT']:
+              source = root / 'upstream-rust-analyzer' / license_name
+              shutil.copy2(source, output / license_name)
+          generator_config = {
+              'compression': 'gzip-level-9', 'gzip_mtime': 0, 'gzip_os': 255,
+              'pack_version': os.environ['RUST_ANALYZER_PACK_VERSION'],
+              'platform_id': os.environ['PLATFORM'], 'rust_toolchain': '1.95.0',
+              'tar_format': 'posix-ustar'
+          }
+          (output / 'generator-config.json').write_text(
+              json.dumps(generator_config, separators=(',', ':')), encoding='utf-8'
+          )
+
+          class Redirects(urllib.request.HTTPRedirectHandler):
+              def __init__(self):
+                  self.count = 0
+              def redirect_request(self, req, fp, code, msg, headers, newurl):
+                  self.count += 1
+                  parsed = urllib.parse.urlsplit(newurl)
+                  allowed = parsed.hostname == 'github.com' or parsed.hostname.endswith('.githubusercontent.com')
+                  if self.count > 5 or parsed.scheme != 'https' or not allowed:
+                      raise RuntimeError('upstream redirect is outside the reviewed policy')
+                  return super().redirect_request(req, fp, code, msg, headers, newurl)
+
+          opener = urllib.request.build_opener(Redirects())
+          with opener.open(asset['url'], timeout=30) as response:
+              archive = response.read(asset['archive_size'] + 1)
+          if len(archive) != asset['archive_size']:
+              raise RuntimeError('upstream archive size does not match the source lock')
+          if hashlib.sha256(archive).hexdigest() != asset['archive_sha256']:
+              raise RuntimeError('upstream archive digest does not match the source lock')
+          archive_path = output / asset['archive_name']
+          archive_path.write_bytes(archive)
+
+          if asset['archive_name'].endswith('.gz'):
+              executable = gzip.decompress(archive)
+          elif asset['archive_name'].endswith('.zip'):
+              with zipfile.ZipFile(BytesIO(archive)) as zipped:
+                  matches = [name for name in zipped.namelist() if Path(name).name == asset['executable_name']]
+                  if len(matches) != 1:
+                      raise RuntimeError('upstream zip does not contain one reviewed executable')
+                  executable = zipped.read(matches[0])
+          else:
+              raise RuntimeError('upstream archive format is not reviewed')
+          if len(executable) != asset['executable_size']:
+              raise RuntimeError('provider executable size does not match the source lock')
+          if hashlib.sha256(executable).hexdigest() != asset['executable_sha256']:
+              raise RuntimeError('provider executable digest does not match the source lock')
+          executable_path = output / asset['executable_name']
+          executable_path.write_bytes(executable)
+          executable_path.chmod(executable_path.stat().st_mode | stat.S_IXUSR)
+          completed = subprocess.run(
+              [str(executable_path), '--version'], check=False, stdin=subprocess.DEVNULL,
+              stdout=subprocess.PIPE, stderr=subprocess.PIPE, timeout=15, env={}
+          )
+          if completed.returncode != 0 or len(completed.stdout) > 4096 or len(completed.stderr) > 4096:
+              raise RuntimeError('provider version probe failed or exceeded its output budget')
+          observed = completed.stdout.decode('utf-8').rstrip('\r\n')
+          if observed != asset['expected_version_output']:
+              raise RuntimeError('provider version probe does not match the source lock')
+          (output / 'version-output.txt').write_bytes(completed.stdout)
+          PY
+
+      - name: Build normalized rust-analyzer pack
+        shell: bash
+        env:
+          PLATFORM: ${{ matrix.platform }}
+        run: |
+          set -euo pipefail
+          writer="$PWD/collect-diff-context-cli/target/release/artifact-pack-writer"
+          if [ "$PLATFORM" = 'windows-amd64' ]; then
+            writer="$writer.exe"
+          fi
+          mkdir -p dist
+          "$writer" rust-analyzer \
+            --platform-id "$PLATFORM" \
+            --pack-version "$RUST_ANALYZER_PACK_VERSION" \
+            --source-lock "$RUNNER_TEMP/rust-analyzer-input/rust-analyzer-2026-07-27.json" \
+            --generator-config "$RUNNER_TEMP/rust-analyzer-input/generator-config.json" \
+            --output "$PWD/dist/pre-commit-review-rust-analyzer-$RUST_ANALYZER_PACK_VERSION-$PLATFORM.tar.gz" \
+            --manifest-output "$PWD/dist/rust-analyzer-$PLATFORM.pack-manifest.json" \
+            --sbom-output "$PWD/dist/rust-analyzer-$PLATFORM.sbom.cdx.json" \
+            >"$PWD/dist/rust-analyzer-$PLATFORM.metadata.json"
+
+      - name: Generate composition evidence
+        shell: bash
+        env:
+          PLATFORM: ${{ matrix.platform }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import hashlib
+          import json
+          import os
+          import shutil
+          from pathlib import Path
+
+          root = Path('dist')
+          platform = os.environ['PLATFORM']
+          metadata = json.loads((root / f'rust-analyzer-{platform}.metadata.json').read_text(encoding='utf-8'))
+          prepared = Path(os.environ['RUNNER_TEMP']) / 'rust-analyzer-input'
+          config_path = prepared / 'generator-config.json'
+          published_config = root / f'rust-analyzer-{platform}.generator-config.json'
+          shutil.copy2(config_path, published_config)
+          digest = lambda path: hashlib.sha256(path.read_bytes()).hexdigest()
+          pack = root / metadata['project_asset_name']
+          manifest = root / f'rust-analyzer-{platform}.pack-manifest.json'
+          sbom = root / f'rust-analyzer-{platform}.sbom.cdx.json'
+          composition = {
+              'source_lock_sha256': metadata['source_lock_sha256'],
+              'upstream_archive_sha256': metadata['upstream_archive_sha256'],
+              'pack_builder_commit': os.environ['GITHUB_SHA'],
+              'pack_manifest_sha256': digest(manifest),
+              'sbom_sha256': digest(sbom),
+              'generator_configuration_sha256': digest(config_path),
+          }
+          verify_root = Path(os.environ['RUNNER_TEMP']) / 'provider-release-evidence'
+          verify_root.mkdir(parents=True, exist_ok=True)
+          signer = {
+              'repository': 'junit/pre-commit-review',
+              'workflow': '.github/workflows/artifact-pack-release.yml',
+              'ref': os.environ['GITHUB_REF'], 'commit': os.environ['GITHUB_SHA'],
+              'issuer': 'https://token.actions.githubusercontent.com'
+          }
+          for subject in [pack, manifest, sbom]:
+              attestation = {
+                  'predicateType': 'pre-commit-review.artifact-pack/v1',
+                  'subject': [{'name': subject.name, 'digest': {'sha256': digest(subject)}}],
+                  'signer': signer,
+                  'predicate': {'composition': composition},
+              }
+              (verify_root / f'{subject.name}.attestation.json').write_text(
+                  json.dumps(attestation, separators=(',', ':')), encoding='utf-8'
+              )
+              (root / f'{subject.name}.sha256').write_text(
+                  f'{digest(subject)}  {subject.name}\n', encoding='ascii'
+              )
+          lock_path = prepared / 'rust-analyzer-2026-07-27.json'
+          lock = json.loads(lock_path.read_text(encoding='utf-8'))
+          asset = next(item for item in lock['assets'] if item['platform_id'] == platform)
+          upstream = prepared / asset['archive_name']
+          predicate_path = root / f'rust-analyzer-{platform}.composition-predicate.json'
+          predicate_path.write_text(
+              json.dumps({'composition': composition}, separators=(',', ':')), encoding='utf-8'
+          )
+          for path in [pack, manifest, sbom]:
+              shutil.copy2(path, verify_root / path.name)
+          shutil.copy2(config_path, verify_root / config_path.name)
+          shutil.copy2(upstream, verify_root / upstream.name)
+          release = {
+              'schema_version': 1,
+              'kind': 'pre_commit_review_provider_release',
+              'repository': 'junit/pre-commit-review',
+              'workflow': '.github/workflows/artifact-pack-release.yml',
+              'ref': os.environ['GITHUB_REF'],
+              'commit': os.environ['GITHUB_SHA'],
+              'issuer': 'https://token.actions.githubusercontent.com',
+              'materials': {
+                  'source_lock': {'path': lock_path.name, 'sha256': digest(lock_path)},
+                  'upstream_archive': {'path': upstream.name, 'sha256': digest(upstream)},
+                  'generator_configuration': {'path': config_path.name, 'sha256': digest(config_path)},
+              },
+              'composition': composition,
+              'subjects': [
+                  {'role': role, 'path': subject.name, 'sha256': digest(subject),
+                   'attestation': f'{subject.name}.attestation.json'}
+                  for role, subject in [('pack', pack), ('manifest', manifest), ('sbom', sbom)]
+              ],
+          }
+          (verify_root / 'release.json').write_text(
+              json.dumps(release, separators=(',', ':')), encoding='utf-8'
+          )
+          signed_release = {
+              **release,
+              'materials': {
+                  'source_lock': {'path': lock_path.name, 'sha256': digest(lock_path)},
+                  'upstream_archive': {
+                      'path': upstream.name, 'sha256': digest(upstream)
+                  },
+                  'generator_configuration': {
+                      'path': published_config.name, 'sha256': digest(published_config)
+                  },
+              },
+          }
+          (root / f'rust-analyzer-{platform}.release.json').write_text(
+              json.dumps(signed_release, separators=(',', ':')), encoding='utf-8'
+          )
+          PY
+
+      - name: Verify generated provider composition before upload
+        shell: bash
+        run: ./scripts/verify_provider_release.sh --fixture "$RUNNER_TEMP/provider-release-evidence"
+
+      - name: Attest provider pack subject
+        id: attest-pack
+        uses: actions/attest@daf44fb950173508f38bd2406030372c1d1162b1
+        with:
+          subject-path: dist/pre-commit-review-rust-analyzer-${{ env.RUST_ANALYZER_PACK_VERSION }}-${{ matrix.platform }}.tar.gz
+          predicate-type: pre-commit-review.artifact-pack/v1
+          predicate-path: dist/rust-analyzer-${{ matrix.platform }}.composition-predicate.json
+
+      - name: Attest provider manifest subject
+        id: attest-manifest
+        uses: actions/attest@daf44fb950173508f38bd2406030372c1d1162b1
+        with:
+          subject-path: dist/rust-analyzer-${{ matrix.platform }}.pack-manifest.json
+          predicate-type: pre-commit-review.artifact-pack/v1
+          predicate-path: dist/rust-analyzer-${{ matrix.platform }}.composition-predicate.json
+
+      - name: Attest provider SBOM subject
+        id: attest-sbom
+        uses: actions/attest@daf44fb950173508f38bd2406030372c1d1162b1
+        with:
+          subject-path: dist/rust-analyzer-${{ matrix.platform }}.sbom.cdx.json
+          predicate-type: pre-commit-review.artifact-pack/v1
+          predicate-path: dist/rust-analyzer-${{ matrix.platform }}.composition-predicate.json
+
+      - name: Persist subject-bound provider attestation bundles
+        shell: bash
+        env:
+          PACK_BUNDLE_PATH: ${{ steps.attest-pack.outputs.bundle-path }}
+          MANIFEST_BUNDLE_PATH: ${{ steps.attest-manifest.outputs.bundle-path }}
+          SBOM_BUNDLE_PATH: ${{ steps.attest-sbom.outputs.bundle-path }}
+          PLATFORM: ${{ matrix.platform }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import os
+          import shutil
+          from pathlib import Path
+
+          root = Path('dist')
+          platform = os.environ['PLATFORM']
+          version = os.environ['RUST_ANALYZER_PACK_VERSION']
+          subjects = [
+              (os.environ['PACK_BUNDLE_PATH'], root / f'pre-commit-review-rust-analyzer-{version}-{platform}.tar.gz'),
+              (os.environ['MANIFEST_BUNDLE_PATH'], root / f'rust-analyzer-{platform}.pack-manifest.json'),
+              (os.environ['SBOM_BUNDLE_PATH'], root / f'rust-analyzer-{platform}.sbom.cdx.json'),
+          ]
+          for bundle_path, subject in subjects:
+              shutil.copy2(Path(bundle_path), root / f'{subject.name}.attestation.json')
+          PY
+
+      - name: Upload provider pack and trust material
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: rust-analyzer-pack-${{ matrix.platform }}
+          path: dist/*
+
+  verify:
+    name: Verify pack trust material
+    needs: build
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout verifier
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+
+      - name: Download all platform packs
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          path: dist
+
+      - name: Verify external sidecars before inspection
+        shell: bash
+        run: |
+          set -euo pipefail
+          find dist -name '*.tar.gz.sha256' -print0 | while IFS= read -r -d '' sidecar; do
+            (cd "$(dirname "$sidecar")" && sha256sum -c "$(basename "$sidecar")")
+          done
+
+      - name: Run build-only trust fixture
+        run: ./scripts/verify_release_artifacts.sh --fixture tests/fixtures/release
+
+  verify-rust-analyzer:
+    name: Verify rust-analyzer pack trust material
+    needs: build-rust-analyzer
+    if: (inputs.artifact == 'rust-analyzer' && inputs.release_tag == 'artifact-rust-analyzer-2026.07.27-pcr.3') || github.ref == 'refs/tags/artifact-rust-analyzer-2026.07.27-pcr.3'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout verifier
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+
+      - name: Download all provider packs
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Verify all external subject sidecars
+        shell: bash
+        run: |
+          set -euo pipefail
+          find dist -name '*.sha256' -print0 | while IFS= read -r -d '' sidecar; do
+            (cd "$(dirname "$sidecar")" && sha256sum -c "$(basename "$sidecar")")
+          done
+
+      - name: Verify signed provider composition statements
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: ./scripts/verify_provider_release.sh --signed-release-root dist
+
+      - name: Run provider composition rejection fixtures
+        run: ./tests/provider_release_verifier_test.sh
+
+  provider-real-release:
+    name: Verify published rust-analyzer provider as a clean consumer
+    needs: publish-rust-analyzer
+    if: (inputs.artifact == 'rust-analyzer' && inputs.release_tag == 'artifact-rust-analyzer-2026.07.27-pcr.3') || github.ref == 'refs/tags/artifact-rust-analyzer-2026.07.27-pcr.3'
+    uses: ./.github/workflows/provider-real-server.yml
+    secrets: inherit
+
+  provider-fuzz-release:
+    name: Run rust-analyzer release fuzz tier
+    if: (inputs.artifact == 'rust-analyzer' && inputs.release_tag == 'artifact-rust-analyzer-2026.07.27-pcr.3') || github.ref == 'refs/tags/artifact-rust-analyzer-2026.07.27-pcr.3'
+    uses: ./.github/workflows/provider-fuzz-scheduled.yml
+    with:
+      release_gate: true
+
+  publish:
+    name: Publish immutable provider assets
+    needs: verify
+    if: inputs.artifact == 'gitleaks' && (startsWith(github.ref, 'refs/tags/') || github.event_name == 'workflow_dispatch')
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download verified platform packs
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          path: dist
+
+      - name: Require GitHub release immutability
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_ADMIN_TOKEN }}
+        run: |
+          set -euo pipefail
+          : "${GH_TOKEN:?RELEASE_ADMIN_TOKEN is required to verify release immutability}"
+          immutable="$(gh api "repos/$GITHUB_REPOSITORY/immutable-releases" --jq '.enabled')"
+          [ "$immutable" = 'true' ] || {
+            echo 'GitHub release immutability is not enabled' >&2
+            exit 1
+          }
+
+      - name: Publish provider release assets
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65
+        with:
+          tag_name: ${{ inputs.release_tag || github.ref_name }}
+          files: dist/**/*.tar.gz*
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+
+  publish-rust-analyzer:
+    name: Publish immutable rust-analyzer assets
+    needs: [verify-rust-analyzer, provider-fuzz-release]
+    if: (inputs.artifact == 'rust-analyzer' && inputs.release_tag == 'artifact-rust-analyzer-2026.07.27-pcr.3' && github.event_name == 'workflow_dispatch') || github.ref == 'refs/tags/artifact-rust-analyzer-2026.07.27-pcr.3'
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download verified provider packs
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093
+        with:
+          path: dist
+          merge-multiple: true
+
+      - name: Require GitHub release immutability
+        shell: bash
+        env:
+          GH_TOKEN: ${{ secrets.RELEASE_ADMIN_TOKEN }}
+        run: |
+          set -euo pipefail
+          : "${GH_TOKEN:?RELEASE_ADMIN_TOKEN is required to verify release immutability}"
+          immutable="$(gh api "repos/$GITHUB_REPOSITORY/immutable-releases" --jq '.enabled')"
+          [ "$immutable" = 'true' ] || {
+            echo 'GitHub release immutability is not enabled' >&2
+            exit 1
+          }
+
+      - name: Publish provider pack subjects and evidence
+        uses: softprops/action-gh-release@3bb12739c298aeb8a4eeaf626c5b8d85266b0e65
+        with:
+          tag_name: ${{ inputs.release_tag || github.ref_name }}
+          files: dist/**/*
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}

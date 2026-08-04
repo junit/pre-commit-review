@@ -86,6 +86,7 @@ The following conditions are blocking by default unless there is strong, specifi
 | Performance | A hot path gains an N+1 pattern, unbounded loop, unbounded memory growth, or other concrete regression likely to move a real metric |
 | Testing | High-risk logic lacks tests and there is no sufficient manual or existing coverage to reduce the uncertainty |
 | Review scope | A high-risk or material unit remains unreviewed and could change the final verdict |
+| Static analysis | Snapshot-bound, completed tool evidence identifies a high-confidence material failure on an added line and independent verification confirms the trigger and impact |
 
 ## Normally Non-blocking Matrix
 
@@ -145,6 +146,16 @@ For coverage-led reviews:
 - full-review wording is allowed only when coverage validation is empty
 - any unreviewed material high-risk unit makes the verdict `DO_NOT_COMMIT`
 - advisory fallback must not present sampled coverage as commit-safe coverage
+
+### Static analysis evidence
+
+Static analyzer output is evidence, not an automatic verdict. A normalized `blocking-candidate` must pass the finding verification gate before it becomes a blocker. Confirmed build/type failures and reachable security, privacy, correctness, data, compatibility, or reliability failures introduced on added lines are blocking under the corresponding main categories.
+
+For controlled execution, only `static_analysis_execution/v1` with `status: completed`, `result_accepted: true`, and linked controlled evidence may support a successful tool claim. `failed`, `timeout`, `output-limit`, or `invalid-output` is unavailable verification; it is never a clean result. Execution provenance does not bypass finding verification or manifest coverage.
+
+For multi-analyzer orchestration, only executed profiles with completed accepted reports may supply candidates. `partial` means at least one declared profile did not produce accepted evidence; preserve that missing analyzer/rule coverage as a bounded review limitation. `failed` means the orchestration supplied no accepted tool evidence. Invalidated and not-run profiles cannot support clean or broad static-analysis claims, and similar findings from separate executions remain independently verified candidates rather than automatic corroboration.
+
+Historical findings, unbaselined findings on unchanged lines, maintainability-only findings, failed-report output, scope-mismatched evidence, and findings outside the selected manifest cannot force `DO_NOT_COMMIT` by themselves. Tool success does not prove absence of defects outside the tool's actual rules and analyzed scope.
 
 ## Output Quality Gate
 

@@ -4,6 +4,9 @@ set -euo pipefail
 script_dir="$(CDPATH='' cd -- "$(dirname -- "$0")" && pwd -P)"
 repo_root="$(CDPATH='' cd -- "$script_dir/.." && pwd -P)"
 helper="$repo_root/scripts/collect_diff_context.sh"
+impact_helper="$repo_root/scripts/collect_impact_context.sh"
+rust_bin="$repo_root/collect-diff-context-cli/target/release/collect-diff-context-cli"
+context_bin="$repo_root/collect-diff-context-cli/target/release/repository-context-cli"
 tmp_dir="$(mktemp -d)"
 trap 'rm -rf "$tmp_dir"' EXIT
 
@@ -20,6 +23,46 @@ run_helper() {
     cd "$workdir"
     "$helper"
   ) >"$output_file" 2>&1
+}
+
+run_impact_context() {
+  local workdir="$1"
+  local output_file="$2"
+  local mode="${3:-fast}"
+  local control_file="$tmp_dir/impact-control.json"
+  local fingerprint
+  local impact_status=0
+  local -a impact_args
+
+  (
+    cd "$workdir"
+    PRE_COMMIT_REVIEW_SECRET_SCAN=off \
+    PRE_COMMIT_REVIEW_RUST_BIN="$rust_bin" \
+      "$helper" --source staged --control-plane
+  ) >"$control_file"
+  fingerprint="$(python3 - "$control_file" <<'PY'
+import json
+import pathlib
+import sys
+
+lines = pathlib.Path(sys.argv[1]).read_text(encoding='utf-8').splitlines()
+print(json.loads(lines[lines.index('## Review Control Plane JSON') + 1])['scope_fingerprint'])
+PY
+)"
+  impact_args=(--source staged --expect-scope "$fingerprint" --mode "$mode")
+  if [ "$mode" = 'deep' ]; then
+    impact_args+=(--deadline-ms 5000)
+  fi
+  (
+    cd "$workdir"
+    PRE_COMMIT_REVIEW_SECRET_SCAN=off \
+    PRE_COMMIT_REVIEW_REPOSITORY_CONTEXT_BIN="$context_bin" \
+      "$impact_helper" "${impact_args[@]}"
+  ) >"$output_file" 2>&1 || impact_status=$?
+  if [ "$impact_status" -ne 0 ]; then
+    cat "$output_file" >&2
+    fail "impact context helper exited with status $impact_status"
+  fi
 }
 
 assert_contains() {
@@ -287,11 +330,11 @@ class UserServiceTest {
 EOF_TEST
 git -C "$test_hint_repo" add src/test/java/com/example/UserServiceTest.java
 test_hint_output="$tmp_dir/test-hints.out"
-run_helper "$test_hint_repo" "$test_hint_output"
-assert_contains "$test_hint_output" '## Test Selection Hints'
-assert_contains "$test_hint_output" $'path\trule_id\tconfidence\ttest_kind\tenvironment_dependency\thint'
-assert_contains "$test_hint_output" $'src/test/java/com/example/UserServiceTest.java\tspring-boot-context\thigh\tspring-boot-integration\tspring-context'
-assert_contains "$test_hint_output" 'Loads a Spring Boot application context; may require local profiles, DB, middleware, or CI-provided services.'
+run_impact_context "$test_hint_repo" "$test_hint_output"
+assert_contains "$test_hint_output" '## Impact Context JSON'
+assert_contains "$test_hint_output" 'spring-boot-context'
+assert_contains "$test_hint_output" 'spring-boot-integration'
+assert_contains "$test_hint_output" 'spring-context'
 
 custom_test_hint_repo="$tmp_dir/custom-test-hints"
 mkdir -p "$custom_test_hint_repo/.pre-commit-review" "$custom_test_hint_repo/tests/e2e"
@@ -303,9 +346,10 @@ EOF_HINTS
 printf 'test("login", async ({ page }) => { await page.goto("/login"); });\n' >"$custom_test_hint_repo/tests/e2e/login.spec.ts"
 git -C "$custom_test_hint_repo" add .pre-commit-review/test-hints tests/e2e/login.spec.ts
 custom_test_hint_output="$tmp_dir/custom-test-hints.out"
-run_helper "$custom_test_hint_repo" "$custom_test_hint_output"
-assert_contains "$custom_test_hint_output" $'tests/e2e/login.spec.ts\tplaywright-e2e\thigh\tfrontend-e2e\tbrowser-runtime'
-assert_contains "$custom_test_hint_output" 'Requires browser runtime and app server; run in CI or a prepared local environment.'
+run_impact_context "$custom_test_hint_repo" "$custom_test_hint_output"
+assert_contains "$custom_test_hint_output" 'playwright-e2e'
+assert_contains "$custom_test_hint_output" 'frontend-e2e'
+assert_contains "$custom_test_hint_output" 'browser-runtime'
 
 popular_test_hint_repo="$tmp_dir/popular-test-hints"
 mkdir -p \
@@ -386,22 +430,27 @@ fn payment_flow() {}
 EOF_RUST
 git -C "$popular_test_hint_repo" add .
 popular_test_hint_output="$tmp_dir/popular-test-hints.out"
-run_helper "$popular_test_hint_repo" "$popular_test_hint_output"
-assert_contains "$popular_test_hint_output" $'src/integrationTest/java/com/example/OrderIT.java\tjvm-integration-naming\tmedium\tjvm-integration-by-convention\tmaven-failsafe-or-gradle-integration-profile'
-assert_contains "$popular_test_hint_output" $'src/test/java/com/example/TaggedTest.java\tjunit-integration-tag\thigh\ttagged-jvm-integration\tjunit-tag-or-category-selection'
-assert_contains "$popular_test_hint_output" $'src/test/java/com/example/QuarkusResourceTest.java\tquarkus-test-context\thigh\tquarkus-integration\tquarkus-test-runtime'
-assert_contains "$popular_test_hint_output" $'src/test/java/com/example/MicronautResourceTest.java\tmicronaut-test-context\thigh\tmicronaut-integration\tmicronaut-test-runtime'
-assert_contains "$popular_test_hint_output" $'src/test/java/com/example/ContractTest.java\tspring-cloud-contract\thigh\tcontract-integration\tspring-cloud-contract-runtime'
-assert_contains "$popular_test_hint_output" $'src/test/java/com/example/WireMockTest.java\twiremock-test\thigh\thttp-stub-integration\twiremock-runtime'
-assert_contains "$popular_test_hint_output" $'src/test/java/com/example/MockServerTest.java\tmockserver-test\thigh\thttp-stub-integration\tmockserver-runtime'
-assert_contains "$popular_test_hint_output" $'src/test/java/com/example/ComposeTest.java\tdocker-compose-test\thigh\tcompose-backed-integration\tdocker-compose-runtime'
-assert_contains "$popular_test_hint_output" $'src/test/java/com/example/ExternalServiceTest.java\texternal-service-config\thigh\tservice-backed-integration\tdatabase-cache-broker-or-search-service'
-assert_contains "$popular_test_hint_output" $'tests/test_payments.py\tpytest-env-marker\thigh\tpytest-marked-integration\tpytest-marker-or-service-runtime'
-assert_contains "$popular_test_hint_output" $'e2e/login.spec.ts\tplaywright-e2e\thigh\tbrowser-e2e\tbrowser-runtime-and-app-server'
-assert_contains "$popular_test_hint_output" $'cypress/e2e/login.cy.ts\tcypress-e2e\thigh\tbrowser-e2e\tbrowser-runtime-and-app-server'
-assert_contains "$popular_test_hint_output" $'e2e/api.e2e.ts\tnode-e2e-or-integration\tmedium\tnode-e2e-or-integration\tnode-runtime-and-possibly-app-server'
-assert_contains "$popular_test_hint_output" $'pkg/service/service_test.go\tgo-integration-build-tag\thigh\tgo-tagged-integration\tgo-build-tags-and-service-runtime'
-assert_contains "$popular_test_hint_output" $'tests/rust/payment.rs\trust-ignored-test\tmedium\trust-ignored-or-slow-test\tcargo-test-ignored-selection'
+# This fixture exercises many independent hint rules; it does not assert that
+# 15 per-file Git bindings fit inside the separate 750 ms Fast contract.
+run_impact_context "$popular_test_hint_repo" "$popular_test_hint_output" deep
+for rule_id in \
+  jvm-integration-naming \
+  junit-integration-tag \
+  quarkus-test-context \
+  micronaut-test-context \
+  spring-cloud-contract \
+  wiremock-test \
+  mockserver-test \
+  docker-compose-test \
+  external-service-config \
+  pytest-env-marker \
+  playwright-e2e \
+  cypress-e2e \
+  node-e2e-or-integration \
+  go-integration-build-tag \
+  rust-ignored-test; do
+  assert_contains "$popular_test_hint_output" "$rule_id"
+done
 
 plan_first_repo="$tmp_dir/plan-first"
 mkdir -p "$plan_first_repo/src/auth"
@@ -477,10 +526,10 @@ assert_contains "$content_risk_output" '"files":["src/service.py"]'
 assert_jsonl_section_valid "$content_risk_output" 'Review Manifest JSONL'
 assert_jsonl_section_valid "$content_risk_output" 'Review Groups JSONL'
 assert_contains "$content_risk_output" '## Review Plan JSON'
-assert_contains "$content_risk_output" '"schema_version":1'
+assert_contains "$content_risk_output" '"schema_version":2'
 assert_contains "$content_risk_output" '"context_mode":"group"'
 assert_contains "$content_risk_output" '"state_snapshot_section":"Reducer State Snapshot Template"'
-assert_contains "$content_risk_output" '"semantic_context_section":"Semantic Context Queries"'
+assert_contains "$content_risk_output" '"impact_context":{"contract":"impact_context/v1","retrieval":"review_control_plane.command_templates.impact_context","coverage_credit":"none"}'
 assert_contains "$content_risk_output" '"context_command":"'"$repo_root"'/scripts/collect_diff_context.sh --source staged --group high-risk-src"'
 assert_json_section_valid "$content_risk_output" 'Review Plan JSON'
 assert_contains "$content_risk_output" '## Coverage Ledger Template'
@@ -516,8 +565,9 @@ assert_contains "$content_risk_output" '"coverage_validation":"required"'
 assert_contains "$content_risk_output" '"cross_file_reduction":"required_after_coverage_validation"'
 assert_contains "$content_risk_output" '"final_verdict":"blocked_until_coverage_validation_passes"'
 assert_contains "$content_risk_output" '"residual_risks":[]'
-assert_contains "$content_risk_output" '## Semantic Context Queries'
-assert_contains "$content_risk_output" $'none\tnone\t0\tno context queries configured'
+assert_not_contains "$content_risk_output" '## Dependency Summary'
+assert_not_contains "$content_risk_output" '## Semantic Context Queries'
+assert_not_contains "$content_risk_output" '## Test Selection Hints'
 
 space_path_repo="$tmp_dir/space-path"
 mkdir -p "$space_path_repo/docs"
@@ -566,9 +616,7 @@ assert_contains "$comma_risk_output" $'high-risk\thigh-risk-src'
 assert_contains "$comma_risk_output" $'generated-like\tconsistency-snapshots'
 assert_contains "$comma_risk_output" '"path":"src/needs,review.py"'
 assert_contains "$comma_risk_output" '"path":"snapshots/value,with,comma.snap"'
-assert_contains "$comma_risk_output" '## Dependency Summary'
-assert_contains "$comma_risk_output" $'src/needs,review.py\tadded\tsignature\tdef allowed(request):'
-assert_not_contains "$comma_risk_output" 'src/needs,review.py,added,signature'
+assert_not_contains "$comma_risk_output" '## Dependency Summary'
 assert_jsonl_section_valid "$comma_risk_output" 'Review Manifest JSONL'
 assert_json_section_valid "$comma_risk_output" 'Review Plan JSON'
 
@@ -616,9 +664,11 @@ printf 'def validate_token(token):\n    return token\n' >"$context_query_repo/sr
 git -C "$context_query_repo" add src/auth.py
 context_query_output="$tmp_dir/context-query.out"
 run_helper "$context_query_repo" "$context_query_output"
-assert_contains "$context_query_output" '## Semantic Context Queries'
-assert_contains "$context_query_output" $'query\tfile\tline\tmatch'
-assert_contains "$context_query_output" $'validate_token\tsrc/auth.py\t1\tdef validate_token(token):'
+assert_not_contains "$context_query_output" '## Semantic Context Queries'
+context_query_impact_output="$tmp_dir/context-query-impact.out"
+run_impact_context "$context_query_repo" "$context_query_impact_output"
+assert_contains "$context_query_impact_output" 'text-query-match'
+assert_contains "$context_query_impact_output" 'validate_token'
 
 space_path_specific_output="$tmp_dir/space-path-specific.out"
 (
@@ -861,12 +911,9 @@ printf 'import { getUser } from "./api";\nexport function renderUser(id: string)
 git -C "$dependency_repo" add src/api.ts src/client.ts
 dependency_output="$tmp_dir/dependency-summary.out"
 run_helper "$dependency_repo" "$dependency_output"
-assert_contains "$dependency_output" '## Dependency Summary'
-assert_contains "$dependency_output" $'file\tchange\tkind\tdetail'
-assert_contains "$dependency_output" $'src/api.ts\tadded\texport\texport function getUser(id: string) {'
-assert_contains "$dependency_output" $'src/api.ts\tadded\tsignature\texport function getUser(id: string) {'
-assert_contains "$dependency_output" $'src/client.ts\tadded\timport\timport { getUser } from "./api";'
-assert_contains "$dependency_output" $'src/client.ts\tadded\texport\texport function renderUser(id: string) {'
-assert_not_contains "$dependency_output" 'file,change,kind,detail'
+assert_not_contains "$dependency_output" '## Dependency Summary'
+dependency_impact_output="$tmp_dir/dependency-impact.out"
+run_impact_context "$dependency_repo" "$dependency_impact_output"
+assert_contains "$dependency_impact_output" 'unsupported-language'
 
 printf 'collect_diff_context tests passed\n'

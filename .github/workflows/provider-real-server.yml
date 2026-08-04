@@ -1,0 +1,291 @@
+name: Provider Real Server
+
+on:
+  pull_request:
+  schedule:
+    - cron: '17 3 * * 2'
+  workflow_dispatch:
+  workflow_call:
+
+permissions:
+  contents: read
+
+env:
+  PROVIDER_RELEASE_TAG: artifact-rust-analyzer-2026.07.27-pcr.3
+  PROVIDER_PACK_VERSION: 2026.07.27-pcr.3
+
+jobs:
+  provider-pull-request:
+    name: Provider PR real server (${{ matrix.platform }})
+    if: github.event_name == 'pull_request'
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 90
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-15-intel
+            platform: darwin-amd64
+          - os: macos-14
+            platform: darwin-arm64
+          - os: ubuntu-24.04
+            platform: linux-amd64
+          - os: windows-2025
+            platform: windows-amd64
+    steps:
+      - name: Checkout reviewed provider harness
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+      - name: Install Rust 1.95.0
+        uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c
+        with:
+          toolchain: 1.95.0
+      - name: Exercise exact published provider pack
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: bash tests/provider_real_server_test.sh
+
+  provider-real-server:
+    name: Provider hosted measurement (${{ matrix.platform }})
+    if: github.event_name != 'pull_request'
+    runs-on: ${{ matrix.os }}
+    timeout-minutes: 120
+    permissions:
+      contents: read
+      id-token: write
+      attestations: write
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - os: macos-15-intel
+            platform: darwin-amd64
+            runner_class: github-hosted-macos-15-intel
+          - os: macos-14
+            platform: darwin-arm64
+            runner_class: github-hosted-macos-14-arm64
+          - os: ubuntu-24.04
+            platform: linux-amd64
+            runner_class: github-hosted-ubuntu-24-x64
+          - os: windows-2025
+            platform: windows-amd64
+            runner_class: github-hosted-windows-2025-x64
+    steps:
+      - name: Checkout reviewed provider harness
+        uses: actions/checkout@11d5960a326750d5838078e36cf38b85af677262
+
+      - name: Install Rust 1.95.0
+        uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c
+        with:
+          toolchain: 1.95.0
+
+      - name: Verify exact published candidate harness
+        shell: bash
+        run: |
+          set -euo pipefail
+          grep -Fq "release_tag='$PROVIDER_RELEASE_TAG'" tests/provider_real_server_test.sh
+          grep -Fq "pack_version='$PROVIDER_PACK_VERSION'" tests/provider_real_server_test.sh
+          grep -Fq 'candidate-manifest.json' tests/provider_real_server_test.sh
+
+      - name: Record locked toolchain inputs
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p "$RUNNER_TEMP/provider-evidence"
+          rustc +1.95.0 -Vv >"$RUNNER_TEMP/provider-evidence/rust-toolchain.txt"
+          python3 - <<'PY'
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+
+          lock = Path('collect-diff-context-cli/Cargo.lock')
+          evidence = {
+              'schema_version': 1,
+              'kind': 'provider_ci_toolchain_evidence',
+              'rust_toolchain': 'rust-1.95.0-locked',
+              'cargo_lock_sha256': hashlib.sha256(lock.read_bytes()).hexdigest(),
+              'runner_image': os.environ['ImageOS'],
+              'runner_os': os.environ['RUNNER_OS'],
+              'runner_arch': os.environ['RUNNER_ARCH'],
+          }
+          output = Path(os.environ['RUNNER_TEMP']) / 'provider-evidence/toolchain.json'
+          output.write_bytes(json.dumps(evidence, separators=(',', ':'), sort_keys=True).encode())
+          PY
+
+      - name: Build the baseline sample runner
+        id: provider-runner
+        shell: bash
+        run: |
+          set -euo pipefail
+          cargo +1.95.0 build --locked --features test-fixture --bin provider-baseline-sample-runner
+          suffix=''
+          if [ '${{ matrix.platform }}' = 'windows-amd64' ]; then
+            suffix='.exe'
+          fi
+          runner="$GITHUB_WORKSPACE/collect-diff-context-cli/target/debug/provider-baseline-sample-runner${suffix}"
+          if ! { [ -f "$runner" ] && [ ! -L "$runner" ]; }; then
+            echo 'Cargo did not emit the expected baseline runner' >&2
+            exit 1
+          fi
+          runner_copy="$RUNNER_TEMP/provider-evidence/runner-bin/provider-baseline-sample-runner${suffix}"
+          python3 - "$runner" "$runner_copy" <<'PY'
+          import os
+          import sys
+          from pathlib import Path
+
+          source = Path(sys.argv[1])
+          destination = Path(sys.argv[2])
+          if not source.is_file() or source.is_symlink():
+              raise SystemExit('Cargo runner output is absent or unsafe')
+          destination.parent.mkdir(mode=0o700)
+          with source.open('rb') as input_file, destination.open('xb') as output_file:
+              while chunk := input_file.read(64 * 1024):
+                  output_file.write(chunk)
+              output_file.flush()
+              os.fsync(output_file.fileno())
+          if os.name != 'nt':
+              os.chmod(destination, 0o500)
+          PY
+          echo "CARGO_BIN_EXE_provider-baseline-sample-runner=$runner_copy" >>"$GITHUB_OUTPUT"
+        working-directory: collect-diff-context-cli
+
+      - name: Hash the exact Cargo runner output
+        id: runner-digest
+        shell: bash
+        env:
+          CARGO_RUNNER: ${{ steps.provider-runner.outputs['CARGO_BIN_EXE_provider-baseline-sample-runner'] }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+
+          runner = Path(os.environ['CARGO_RUNNER'])
+          digest = hashlib.sha256(runner.read_bytes()).hexdigest()
+          print(f'sha256={digest}', file=open(os.environ['GITHUB_OUTPUT'], 'a', encoding='utf-8'))
+          output = Path(os.environ['RUNNER_TEMP']) / 'provider-evidence/runner.json'
+          output.write_bytes(json.dumps({
+              'schema_version': 1,
+              'kind': 'provider_baseline_runner_build',
+              'runner_sha256': digest,
+              'toolchain': 'rust-1.95.0-locked',
+          }, separators=(',', ':'), sort_keys=True).encode())
+          PY
+
+      - name: Exercise provider and collect hosted measurement
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          bash tests/provider_real_server_test.sh \
+            --baseline-runner "${{ steps.provider-runner.outputs['CARGO_BIN_EXE_provider-baseline-sample-runner'] }}" \
+            --baseline-runner-class "${{ matrix.runner_class }}" \
+            --baseline-evidence-output "${{ runner.temp }}/provider-evidence/provider-baseline-${{ matrix.platform }}.json" \
+            --baseline-runner-sha256 "${{ steps.runner-digest.outputs.sha256 }}"
+
+      - name: Verify runner contract cannot declare its trusted digest
+        shell: bash
+        run: test -f "${{ runner.temp }}/provider-evidence/provider-baseline-${{ matrix.platform }}.json"
+
+      - name: Bind measurement evidence to the runner build
+        shell: bash
+        env:
+          EVIDENCE: ${{ runner.temp }}/provider-evidence/provider-baseline-${{ matrix.platform }}.json
+          EXPECTED_RUNNER_SHA256: ${{ steps.runner-digest.outputs.sha256 }}
+          EXPECTED_PLATFORM: ${{ matrix.platform }}
+          EXPECTED_RUNNER_CLASS: ${{ matrix.runner_class }}
+        run: |
+          set -euo pipefail
+          python3 - <<'PY'
+          import hashlib
+          import json
+          import os
+          from pathlib import Path
+
+          path = Path(os.environ['EVIDENCE'])
+          raw = path.read_bytes()
+          measurement = json.loads(raw)
+          if json.dumps(measurement, separators=(',', ':'), sort_keys=True).encode() != raw:
+              raise SystemExit('hosted measurement is not canonical')
+          if measurement.get('kind') == 'provider_baseline_local_evidence':
+              raise SystemExit('hosted workflow emitted local-only evidence')
+          if measurement['platform_id'] != os.environ['EXPECTED_PLATFORM']:
+              raise SystemExit('hosted measurement platform differs')
+          if measurement['runner_class'] != os.environ['EXPECTED_RUNNER_CLASS']:
+              raise SystemExit('hosted measurement runner class differs')
+          if measurement["runner_sha256"] != os.environ['EXPECTED_RUNNER_SHA256']:
+              raise SystemExit('hosted measurement runner digest differs from the Cargo build')
+          if measurement['provisioning_included'] is not False:
+              raise SystemExit('hosted measurement includes provisioning')
+          samples = measurement.get('samples_ms', [])
+          if len(samples) < 20 or any(
+              not isinstance(sample, int) or isinstance(sample, bool) or not 1 <= sample <= 30_000
+              for sample in samples
+          ):
+              raise SystemExit('provider baseline samples are outside the reviewed bounds')
+          ordered = sorted(samples)
+          nearest_rank = (len(ordered) * 95 + 99) // 100
+          if measurement.get('p95_ms') != ordered[nearest_rank - 1]:
+              raise SystemExit('provider baseline nearest-rank p95 differs')
+          if not 1 <= measurement['p95_ms'] <= 30_000:
+              raise SystemExit('provider baseline p95 exceeds the sample deadline')
+
+          baseline_path = Path(
+              'third_party_artifacts/baselines/rust-analyzer-2026.07.27-pcr.3.json'
+          )
+          if baseline_path.exists():
+              baseline = json.loads(baseline_path.read_text(encoding='utf-8'))
+              candidates = [
+                  item for item in baseline.get('measurements', [])
+                  if item.get('platform_id') == measurement['platform_id']
+              ]
+              if len(candidates) != 1:
+                  raise SystemExit('reviewed provider baseline platform binding differs')
+              reviewed = candidates[0]
+              identity_fields = (
+                  'pack_sha256', 'executable_sha256', 'profile_sha256',
+                  'fixture_id', 'fixture_sha256', 'request_sha256', 'runner_class',
+                  'toolchain', 'timing_scope', 'provisioning_included',
+              )
+              if any(reviewed.get(name) != measurement.get(name) for name in identity_fields):
+                  raise SystemExit('reviewed provider baseline identity differs')
+              reviewed_p95 = reviewed.get('p95_ms')
+              if not isinstance(reviewed_p95, int) or isinstance(reviewed_p95, bool) or reviewed_p95 < 1:
+                  raise SystemExit('reviewed provider baseline p95 is invalid')
+              threshold = (reviewed_p95 * 5 + 3) // 4 + 250
+              if measurement['p95_ms'] > threshold:
+                  raise SystemExit('provider baseline p95 exceeds the reviewed threshold')
+          predicate = {
+              'schema_version': 1,
+              'kind': 'provider_baseline_attestation_predicate',
+              'measurement_sha256': hashlib.sha256(raw).hexdigest(),
+              'runner_sha256': measurement['runner_sha256'],
+              'repository': os.environ['GITHUB_REPOSITORY'],
+              'workflow': '.github/workflows/provider-real-server.yml',
+              'ref': os.environ['GITHUB_REF'],
+              'commit': os.environ['GITHUB_SHA'],
+              'runner_image': os.environ['ImageOS'],
+              'runner_os': os.environ['RUNNER_OS'],
+              'runner_arch': os.environ['RUNNER_ARCH'],
+              'toolchain': measurement['toolchain'],
+          }
+          output = path.with_name(f'{path.stem}.predicate.json')
+          output.write_bytes(json.dumps(predicate, separators=(',', ':'), sort_keys=True).encode())
+          PY
+
+      - name: Attest hosted provider measurement
+        uses: actions/attest@daf44fb950173508f38bd2406030372c1d1162b1
+        with:
+          subject-path: ${{ runner.temp }}/provider-evidence/provider-baseline-${{ matrix.platform }}.json
+          predicate-type: pre-commit-review.provider-baseline/v1
+          predicate-path: ${{ runner.temp }}/provider-evidence/provider-baseline-${{ matrix.platform }}.predicate.json
+
+      - name: Upload provider CI evidence
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02
+        with:
+          name: provider-real-server-${{ matrix.platform }}
+          path: ${{ runner.temp }}/provider-evidence/*
+          if-no-files-found: error

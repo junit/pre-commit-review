@@ -10,6 +10,10 @@ skill_file="$repo_root/SKILL.md"
 decision_verdict_file="$repo_root/references/decision/verdict-rules.md"
 decision_risk_file="$repo_root/references/decision/risk-taxonomy.md"
 decision_finding_verification_file="$repo_root/references/decision/finding-verification.md"
+decision_static_analysis_file="$repo_root/references/decision/static-analysis-evidence.md"
+decision_static_execution_file="$repo_root/references/decision/static-analysis-execution.md"
+decision_static_orchestration_file="$repo_root/references/decision/static-analysis-orchestration.md"
+static_orchestration_doc_file="$repo_root/docs/static-analysis-orchestration.md"
 
 render_output_en_file="$repo_root/references/rendering/output-en.md"
 render_output_zh_file="$repo_root/references/rendering/output-zh.md"
@@ -37,6 +41,10 @@ for required_file in \
   "$decision_verdict_file" \
   "$decision_risk_file" \
   "$decision_finding_verification_file" \
+  "$decision_static_analysis_file" \
+  "$decision_static_execution_file" \
+  "$decision_static_orchestration_file" \
+  "$static_orchestration_doc_file" \
   "$render_output_en_file" \
   "$render_output_zh_file" \
   "$render_visual_file" \
@@ -75,6 +83,48 @@ grep -Fq 'references/decision/risk-taxonomy.md' "$skill_file" \
   || fail 'SKILL.md must route finding taxonomy to references/decision/risk-taxonomy.md'
 grep -Fq 'references/decision/finding-verification.md' "$skill_file" \
   || fail 'SKILL.md must route strong finding verification to references/decision/finding-verification.md'
+grep -Fq 'references/decision/static-analysis-evidence.md' "$skill_file" \
+  || fail 'SKILL.md must route explicit SARIF/JSON evidence through the static-analysis contract'
+grep -Fq 'references/decision/static-analysis-execution.md' "$skill_file" \
+  || fail 'SKILL.md must route authorized analyzer execution through the controlled-execution contract'
+grep -Fq 'references/decision/static-analysis-orchestration.md' "$skill_file" \
+  || fail 'SKILL.md must route authorized analyzer manifests through the orchestration contract'
+grep -Fq 'When the user explicitly authorizes controlled static-analysis execution, additionally load both execution and evidence contracts:' "$skill_file" \
+  || fail 'SKILL.md reference loading must route controlled execution through both contracts'
+grep -Fq 'Never auto-discover result files and never execute a repository-provided analyzer' "$skill_file" \
+  || fail 'SKILL.md must prohibit implicit static report discovery and analyzer execution'
+grep -Fq 'Never discover or select a profile, executable, argument, configuration, plugin, package script, or build target on the user'\''s behalf.' "$skill_file" \
+  || fail 'SKILL.md must prohibit implicit controlled-execution selection'
+grep -Fq 'Run orchestration only when the user or trusted CI policy explicitly authorizes an absolute manifest path and the exact lowercase SHA256 of those manifest bytes.' "$skill_file" \
+  || fail 'SKILL.md must require exact manifest path and hash authorization'
+grep -Fq 'Never discover or select an orchestration manifest, profile, analyzer, configuration, plugin, package script, build target, or dependency preparation step.' "$skill_file" \
+  || fail 'SKILL.md must prohibit orchestration and analyzer discovery'
+grep -Fq 'This is controlled execution for a trusted tool, not an operating-system hostile-code sandbox.' "$skill_file" \
+  || fail 'SKILL.md must state the controlled-execution threat boundary'
+grep -Fq 'Only `completed` with `result_accepted: true` is accepted tool evidence.' "$skill_file" \
+  || fail 'SKILL.md must reject incomplete controlled execution as clean evidence'
+grep -Fq 'An orchestration with any failed, timed-out, invalidated, or not-run profile is `partial` unless no profile produced accepted evidence, in which case it is `failed`.' "$decision_static_orchestration_file" \
+  || fail 'orchestration reference must preserve honest partial and failed states'
+grep -Fq 'Supported analyzers are self-contained source-only offline tools that need no build, dependency installation, generated resources, daemon, or repository-owned executable configuration.' "$decision_static_orchestration_file" \
+  || fail 'orchestration reference must define the supported analyzer class'
+grep -Fq 'Route build-coupled tools through explicitly supplied precomputed evidence instead of orchestration.' "$decision_static_orchestration_file" \
+  || fail 'orchestration reference must route build-coupled tools to precomputed evidence'
+grep -Fq 'Findings from different executions remain independent candidates even when rule ids, locations, messages, or fingerprints match.' "$decision_static_orchestration_file" \
+  || fail 'orchestration reference must keep cross-analyzer findings independent'
+grep -Fq 'Revalidate the authoritative scope, manifest bytes, every profile, and every executable before accepting the final orchestration and combined evidence.' "$decision_static_orchestration_file" \
+  || fail 'orchestration reference must require final scope and authorization revalidation'
+if grep -Fq 'static_analysis_input/v2' \
+  "$skill_file" "$decision_static_orchestration_file" "$static_orchestration_doc_file"; then
+  fail 'orchestration policy must not introduce static_analysis_input/v2'
+fi
+grep -Fq 'Pass `--allow-repository-configuration` only when the authorized profile says `repository_configuration: explicitly-trusted`' "$skill_file" \
+  || fail 'SKILL.md must require a separate repository-configuration authorization gate'
+grep -Fq 'Proxy poisoning is only a best-effort network guard' "$decision_static_execution_file" \
+  || fail 'controlled execution reference must not overclaim network isolation'
+grep -Fq 'Git blobs are read without checkout/smudge filters.' "$decision_static_execution_file" \
+  || fail 'controlled execution reference must preserve filter-free snapshot materialization'
+grep -Fq '`blocking-candidate` and `priority-candidate` as hypotheses' "$skill_file" \
+  || fail 'SKILL.md must keep static tool dispositions subject to finding verification'
 grep -Fq 'references/rendering/output-en.md' "$skill_file" \
   || fail 'SKILL.md must route English output through references/rendering/output-en.md'
 grep -Fq 'references/rendering/output-zh.md' "$skill_file" \
@@ -156,8 +206,16 @@ grep -Fq 'Before writing `Unreviewed changes: none` / `未审查变更：无`, r
   || fail 'SKILL.md must require scope honesty before claiming no unreviewed changes'
 grep -Fq 'Verification recommendations must preserve the specific behavioral assertion that makes the concern meaningful.' "$skill_file" \
   || fail 'SKILL.md must preserve specific behavioral verification assertions'
-grep -Fq 'If the helper emits `Test Selection Hints`, use them only as read-only guidance for verification planning.' "$skill_file" \
-  || fail 'SKILL.md must treat helper test hints as read-only verification guidance'
+grep -Fq 'Treat `test-selection` domain summaries from `impact_context/v1` only as read-only guidance for verification planning.' "$skill_file" \
+  || fail 'SKILL.md must treat impact-context test hints as read-only verification guidance'
+grep -Fq 'invoke the control plane command template at `command_templates.impact_context` with the same `scope_fingerprint`' "$skill_file" \
+  || fail 'SKILL.md must bind impact-context retrieval to the authoritative scope'
+grep -Fq 'When the control plane provides a fingerprint-bound Fast repository-index command, the skill may consume its compatible read-only context.' "$skill_file" \
+  || fail 'SKILL.md must permit only fingerprint-bound Fast repository-index context'
+grep -Fq 'Never automatically run `repository-context-cli index build`, `collect --mode deep`, `index doctor`, `index clean`, rust-analyzer, or any other cache-writing operation during ordinary review.' "$skill_file" \
+  || fail 'SKILL.md must prohibit automatic Deep, index, and semantic-provider execution'
+grep -Fq 'Impact context never marks a manifest unit reviewed and has no coverage credit.' "$skill_file" \
+  || fail 'SKILL.md must deny impact-context coverage credit'
 grep -Fq 'Treat `no-known-env-heavy-marker` as "no known marker matched", not as proof that the test is a pure unit test.' "$skill_file" \
   || fail 'SKILL.md must keep no-known test hints conservative'
 if grep -Fq 'prefer `scripts/collect_diff_context.sh`' "$skill_file"; then
@@ -184,6 +242,14 @@ grep -Fq 'Each priority finding must use exactly one primary marker.' "$decision
   || fail 'risk-taxonomy.md must define primary finding markers'
 grep -Fq 'Finding verification exists to prevent false confidence in the final report.' "$decision_finding_verification_file" \
   || fail 'finding-verification.md must define the purpose of finding verification'
+grep -Fq 'A deterministic tool result can raise confidence in the reported pattern.' "$decision_finding_verification_file" \
+  || fail 'finding-verification.md must bound deterministic static tool claims'
+grep -Fq 'Static analysis is an optional deterministic evidence lane.' "$decision_static_analysis_file" \
+  || fail 'static-analysis-evidence.md must define the optional evidence lane'
+grep -Fq 'Static evidence never marks a unit reviewed' "$decision_static_analysis_file" \
+  || fail 'static-analysis-evidence.md must keep static findings separate from manifest coverage'
+grep -Fq 'scripts/collect_static_evidence.sh' "$decision_static_analysis_file" \
+  || fail 'static-analysis-evidence.md must define the collector entrypoint'
 grep -Fq 'Negative or exhaustive claims require broader evidence than positive claims.' "$decision_finding_verification_file" \
   || fail 'finding-verification.md must guard negative and exhaustive claims'
 grep -Fq 'Security, auth, authorization, privacy, and injection findings must be traced to the execution point.' "$decision_finding_verification_file" \
@@ -401,6 +467,8 @@ grep -Fq 'readme_host_entrypoints_test.sh' "$readme_file" \
   || fail 'README.md must document the README host entrypoints surface test'
 grep -Fq '.pre-commit-review/test-hints' "$readme_file" \
   || fail 'README.md must document project-specific test selection hints'
+grep -Fq 'scripts/collect_impact_context.sh' "$readme_file" \
+  || fail 'README.md must document on-demand impact-context retrieval'
 grep -Fq 'no-known-env-heavy-marker' "$readme_file" \
   || fail 'README.md must document conservative no-known test hint semantics'
 grep -Fq 'Playwright/Cypress/Node e2e' "$readme_file" \
@@ -419,6 +487,8 @@ grep -Fq 'readme_host_entrypoints_test.sh' "$readme_zh_file" \
   || fail 'README.zh-CN.md must document the README host entrypoints surface test'
 grep -Fq '.pre-commit-review/test-hints' "$readme_zh_file" \
   || fail 'README.zh-CN.md must document project-specific test selection hints'
+grep -Fq 'scripts/collect_impact_context.sh' "$readme_zh_file" \
+  || fail 'README.zh-CN.md must document on-demand impact-context retrieval'
 grep -Fq 'no-known-env-heavy-marker' "$readme_zh_file" \
   || fail 'README.zh-CN.md must document conservative no-known test hint semantics'
 grep -Fq 'Playwright/Cypress/Node e2e' "$readme_zh_file" \
@@ -435,5 +505,27 @@ grep -Fq '默认 shadow mode 不会把 diff 内容写入 `/tmp`。' "$readme_zh_
   || fail 'README.zh-CN.md must document shadow mode diff logging as opt-in'
 grep -Fq 'default_prompt: "Use $pre-commit-review' "$repo_root/agents/openai.yaml" \
   || fail 'agents/openai.yaml default_prompt must explicitly mention $pre-commit-review'
+
+python_suffix='py'
+for removed_python_runtime in \
+  "$repo_root/scripts/collect_static_evidence.$python_suffix" \
+  "$repo_root/scripts/run_static_analysis.$python_suffix"; do
+  [ ! -e "$removed_python_runtime" ] \
+    || fail "Python static-analysis product runtime must be removed: $removed_python_runtime"
+done
+grep -Fq 'The static-analysis product runtime is Rust-only.' "$readme_file" \
+  || fail 'README.md must declare the Rust-only static-analysis product runtime'
+grep -Fq '静态分析产品运行时仅使用 Rust。' "$readme_zh_file" \
+  || fail 'README.zh-CN.md must declare the Rust-only static-analysis product runtime'
+grep -Fq '`static-analysis-cli collect`' "$repo_root/docs/static-analysis-evidence.md" \
+  || fail 'static-analysis-evidence.md must document the Rust collect subcommand'
+grep -Fq '`static-analysis-cli run`' "$repo_root/docs/static-analysis-execution.md" \
+  || fail 'static-analysis-execution.md must document the Rust run subcommand'
+grep -Fq '`PRE_COMMIT_REVIEW_STATIC_ANALYSIS_BIN`' "$repo_root/docs/helper-capabilities.md" \
+  || fail 'helper-capabilities.md must document the explicit Rust binary override'
+grep -Fq '`static_analysis-<platform>`' "$readme_file" \
+  || fail 'README.md must document bundled static-analysis release assets'
+grep -Fq '`static_analysis-<platform>`' "$readme_zh_file" \
+  || fail 'README.zh-CN.md must document bundled static-analysis release assets'
 
 printf 'skill contract tests passed\n'

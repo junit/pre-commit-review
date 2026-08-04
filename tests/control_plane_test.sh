@@ -21,7 +21,7 @@ git -C "$fixture" config user.name A
 printf 'base\n' >"$fixture/README.md"
 printf '*.dat diff=review-fixture\n' >"$fixture/.gitattributes"
 printf 'old binary-ish content\n' >"$fixture/sample.dat"
-printf '#!/bin/sh\nprintf "TEXTCONV_MARKER\\n"\ncat -- "$1"\n' >"$tmp_dir/textconv.sh"
+printf "#!/bin/sh\nprintf \"TEXTCONV_MARKER\\n\"\ncat -- \"\$1\"\n" >"$tmp_dir/textconv.sh"
 chmod +x "$tmp_dir/textconv.sh"
 git -C "$fixture" config diff.review-fixture.textconv "$tmp_dir/textconv.sh"
 git -C "$fixture" add README.md .gitattributes sample.dat
@@ -51,6 +51,26 @@ for impl in rust legacy; do
     fail "$impl control plane must not emit raw diff"
   fi
 done
+
+python3 - "$tmp_dir/rust.out" <<'PY' || fail 'Rust control plane omitted impact context retrieval template'
+import json
+import os
+import sys
+
+lines = open(sys.argv[1], encoding='utf-8').read().splitlines()
+payload = json.loads(lines[lines.index('## Review Control Plane JSON') + 1])
+template = payload['command_templates']['impact_context']
+if not os.path.isabs(template['helper']):
+    raise SystemExit('impact context helper is not absolute')
+if template['args'] != [
+    '--source', 'staged',
+    '--expect-scope', '{scope_fingerprint}',
+    '--mode', 'fast',
+]:
+    raise SystemExit('impact context arguments are not fingerprint-bound')
+if template['contract'] != 'impact_context/v1' or template['coverage_credit'] != 'none':
+    raise SystemExit('impact context contract metadata is invalid')
+PY
 
 for impl in rust legacy; do
   output="$tmp_dir/$impl-scan-disabled.out"

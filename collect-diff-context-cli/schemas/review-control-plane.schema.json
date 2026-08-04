@@ -46,7 +46,31 @@
         "source_args": { "type": "array", "items": { "type": "string" } },
         "refresh_args": { "type": "array", "items": { "type": "string" } },
         "group_args": { "type": "array", "items": { "type": "string" } },
-        "path_args": { "type": "array", "items": { "type": "string" } }
+        "path_args": { "type": "array", "items": { "type": "string" } },
+        "impact_context": {
+          "type": "object",
+          "required": ["helper", "args", "contract", "coverage_credit"],
+          "properties": {
+            "helper": { "type": "string", "minLength": 1 },
+            "args": {
+              "type": "array",
+              "prefixItems": [
+                { "const": "--source" },
+                { "enum": ["staged", "unstaged", "branch"] },
+                { "const": "--expect-scope" },
+                { "const": "{scope_fingerprint}" },
+                { "const": "--mode" },
+                { "const": "fast" }
+              ],
+              "items": false,
+              "minItems": 6,
+              "maxItems": 6
+            },
+            "contract": { "const": "impact_context/v1" },
+            "coverage_credit": { "const": "none" }
+          },
+          "additionalProperties": false
+        }
       },
       "additionalProperties": false
     },

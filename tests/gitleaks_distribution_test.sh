@@ -94,6 +94,12 @@ if grep -Fq 'PathBuf::from("gitleaks")' \
 fi
 grep -Fq 'review_continued: yes' "$repo_root/scripts/collect_diff_context.sh" \
   || fail 'runtime wrapper must report that review continues when redaction is unavailable'
+grep -Fq 'gitleaks_artifact_provision' "$repo_root/install.sh" \
+  || fail 'installer must delegate target-owned Gitleaks provisioning to the artifact manager'
+grep -Fq 'gitleaks_artifact_provision' "$repo_root/scripts/fetch_gitleaks.sh" \
+  || fail 'fetch wrapper must delegate managed-target provisioning to the artifact manager'
+grep -Fq 'artifacts doctor' "$repo_root/scripts/check_gitleaks.sh" \
+  || fail 'Gitleaks doctor must delegate target-owned diagnostics to the artifact manager'
 if grep -Eq 'diff_release_allowed: no|secret_scan: blocked' \
   "$repo_root/scripts/collect_diff_context.sh"; then
   fail 'optional secret scanning must not withhold review output'
