@@ -129,6 +129,14 @@ jobs:
           components: llvm-tools-preview
       - name: Install pinned cargo-llvm-cov
         run: cargo +1.95.0 install --locked --version 0.8.7 cargo-llvm-cov
+      - name: Set up Python for schema validation
+        uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1
+        with:
+          python-version: '3.13'
+      - name: Install schema validator
+        run: |
+          python3 -m pip install --disable-pip-version-check 'jsonschema==4.25.1'
+          python3 -c 'import jsonschema; from referencing import Registry, Resource'
       - name: Enforce 80 percent line coverage
         shell: bash
         run: |

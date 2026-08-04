@@ -25,6 +25,14 @@ grep -Fq 'components: llvm-tools-preview' <<<"$job" \
   || fail 'coverage job does not install llvm-tools-preview'
 grep -Fq 'cargo +1.95.0 install --locked --version 0.8.7 cargo-llvm-cov' <<<"$job" \
   || fail 'coverage job does not install pinned cargo-llvm-cov 0.8.7'
+grep -Fq 'uses: actions/setup-python@ece7cb06caefa5fff74198d8649806c4678c61a1' <<<"$job" \
+  || fail 'coverage job does not use the pinned Python setup action'
+grep -Fq "python-version: '3.13'" <<<"$job" \
+  || fail 'coverage job does not pin Python 3.13'
+grep -Fq "python3 -m pip install --disable-pip-version-check 'jsonschema==4.25.1'" <<<"$job" \
+  || fail 'coverage job does not install pinned jsonschema 4.25.1'
+grep -Fq "python3 -c 'import jsonschema; from referencing import Registry, Resource'" <<<"$job" \
+  || fail 'coverage job does not verify the schema validator imports'
 grep -Fq 'source <(cargo +1.95.0 llvm-cov show-env --sh)' <<<"$job" \
   || fail 'coverage job does not export LLVM coverage instrumentation'
 grep -Fq 'cargo +1.95.0 llvm-cov clean --workspace' <<<"$job" \
