@@ -237,7 +237,9 @@ jobs:
       - name: Run install_gitleaks_test.sh
         run: ./tests/install_gitleaks_test.sh
       - name: Install Python schema validator
-        run: python3 -m pip install jsonschema
+        run: |
+          python3 -m pip install --disable-pip-version-check 'jsonschema==4.25.1'
+          python3 -c 'import jsonschema; from referencing import Registry, Resource'
       - name: Run static-analysis evidence integration
         run: ./tests/static_analysis_evidence_test.sh
       - name: Run controlled static-analysis execution integration
