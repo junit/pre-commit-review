@@ -22,6 +22,9 @@ use std::time::Duration;
 #[cfg(unix)]
 use tempfile::TempDir;
 
+#[cfg(unix)]
+const NON_TIMEOUT_TEST_BUDGET: Duration = Duration::from_secs(30);
+
 fn valid_profile() -> serde_json::Value {
     json!({
         "schema_version": 1,
@@ -466,7 +469,7 @@ printf '%s' '{"schema_version":1,"kind":"static_analysis_input","scope_fingerpri
         collect_diff_context_cli::review_scope::ReviewSource::Staged,
         "0123456789abcdef0123456789abcdef01234567",
         ExecutionLimits {
-            timeout: Duration::from_secs(2),
+            timeout: NON_TIMEOUT_TEST_BUDGET,
             max_stream_output_bytes: 4096,
             max_combined_output_bytes: 8192,
         },
@@ -496,7 +499,7 @@ fn executor_classifies_non_success_exit() {
         collect_diff_context_cli::review_scope::ReviewSource::Staged,
         "0123456789abcdef0123456789abcdef01234567",
         ExecutionLimits {
-            timeout: Duration::from_secs(2),
+            timeout: NON_TIMEOUT_TEST_BUDGET,
             max_stream_output_bytes: 4096,
             max_combined_output_bytes: 8192,
         },
@@ -520,7 +523,7 @@ fn executor_enforces_output_limit_with_bounded_prefix() {
         collect_diff_context_cli::review_scope::ReviewSource::Staged,
         "0123456789abcdef0123456789abcdef01234567",
         ExecutionLimits {
-            timeout: Duration::from_secs(2),
+            timeout: NON_TIMEOUT_TEST_BUDGET,
             max_stream_output_bytes: 1024,
             max_combined_output_bytes: 2048,
         },
@@ -548,7 +551,7 @@ fn executor_enforces_stderr_output_limit() {
         collect_diff_context_cli::review_scope::ReviewSource::Staged,
         "0123456789abcdef0123456789abcdef01234567",
         ExecutionLimits {
-            timeout: Duration::from_secs(2),
+            timeout: NON_TIMEOUT_TEST_BUDGET,
             max_stream_output_bytes: 1024,
             max_combined_output_bytes: 2048,
         },
@@ -608,7 +611,7 @@ fn executor_rejects_prepared_artifact_replacement_before_spawn() {
         collect_diff_context_cli::review_scope::ReviewSource::Staged,
         "0123456789abcdef0123456789abcdef01234567",
         ExecutionLimits {
-            timeout: Duration::from_secs(2),
+            timeout: NON_TIMEOUT_TEST_BUDGET,
             max_stream_output_bytes: 4096,
             max_combined_output_bytes: 8192,
         },
@@ -636,7 +639,7 @@ fn executor_rejects_prepared_artifact_replacement_before_spawn() {
         collect_diff_context_cli::review_scope::ReviewSource::Staged,
         "0123456789abcdef0123456789abcdef01234567",
         ExecutionLimits {
-            timeout: Duration::from_secs(2),
+            timeout: NON_TIMEOUT_TEST_BUDGET,
             max_stream_output_bytes: 4096,
             max_combined_output_bytes: 8192,
         },
@@ -663,7 +666,7 @@ fn executor_runs_a_private_pinned_executable_copy() {
         collect_diff_context_cli::review_scope::ReviewSource::Staged,
         "0123456789abcdef0123456789abcdef01234567",
         ExecutionLimits {
-            timeout: Duration::from_secs(2),
+            timeout: NON_TIMEOUT_TEST_BUDGET,
             max_stream_output_bytes: 4096,
             max_combined_output_bytes: 8192,
         },

@@ -7,6 +7,9 @@ use std::path::{Path, PathBuf};
 use std::process::{Child, Command, ExitStatus};
 use tempfile::TempDir;
 
+#[cfg(target_os = "linux")]
+use std::time::Duration;
+
 const COPY_BUFFER_BYTES: usize = 1024 * 1024;
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -168,7 +171,7 @@ impl ManagedChild {
                 format!("cannot configure child process group: {error}"),
             )
         })?;
-        let mut child = command.spawn().map_err(|error| {
+        let mut child = spawn_child(&mut command).map_err(|error| {
             TrustedRuntimeError::new(
                 "trusted-runtime-child-spawn",
                 format!("cannot start trusted child: {error}"),
@@ -235,6 +238,31 @@ impl ManagedChild {
         self.process_group.terminate(&mut child);
         child.wait().map(Some).map_err(child_wait_error)
     }
+}
+
+fn spawn_child(command: &mut Command) -> std::io::Result<Child> {
+    #[cfg(target_os = "linux")]
+    {
+        const ETXTBSY: i32 = 26;
+        const MAX_ATTEMPTS: usize = 20;
+        const RETRY_DELAY: Duration = Duration::from_millis(10);
+
+        for attempt in 0..MAX_ATTEMPTS {
+            match command.spawn() {
+                // Linux can briefly report ETXTBSY while a just-created executable is still open for writing.
+                Err(error)
+                    if error.raw_os_error() == Some(ETXTBSY) && attempt + 1 < MAX_ATTEMPTS =>
+                {
+                    std::thread::sleep(RETRY_DELAY);
+                }
+                result => return result,
+            }
+        }
+        unreachable!("the bounded child-spawn retry loop always returns");
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    command.spawn()
 }
 
 impl Drop for ManagedChild {
@@ -481,6 +509,36 @@ mod tests {
             std::thread::sleep(Duration::from_millis(10));
         }
         assert!(!process_exists(process_id));
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn managed_child_retries_transient_text_file_busy() {
+        use super::ManagedChild;
+        use std::fs::{self, OpenOptions};
+        use std::os::unix::fs::PermissionsExt;
+        use std::process::{Command, Stdio};
+        use std::thread;
+        use std::time::Duration;
+
+        let directory = tempfile::tempdir().unwrap();
+        let executable = directory.path().join("busy.sh");
+        fs::write(&executable, "#!/bin/sh\nexit 0\n").unwrap();
+        fs::set_permissions(&executable, fs::Permissions::from_mode(0o755)).unwrap();
+        let writer = OpenOptions::new().write(true).open(&executable).unwrap();
+        let release_writer = thread::spawn(move || {
+            thread::sleep(Duration::from_millis(50));
+            drop(writer);
+        });
+
+        let mut command = Command::new(&executable);
+        command
+            .stdin(Stdio::null())
+            .stdout(Stdio::null())
+            .stderr(Stdio::null());
+        let mut child = ManagedChild::spawn(command).unwrap();
+        assert!(child.wait().unwrap().success());
+        release_writer.join().unwrap();
     }
 
     #[cfg(unix)]
