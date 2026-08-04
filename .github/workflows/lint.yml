@@ -49,6 +49,8 @@ jobs:
           cache: false
       - name: Validate GitHub Actions workflows
         run: go run github.com/rhysd/actionlint/cmd/actionlint@v1.7.7 -oneline
+      - name: Verify coverage workflow contract
+        run: ./tests/coverage_workflow_test.sh
 
   rust-checks:
     runs-on: ubuntu-latest
@@ -114,6 +116,22 @@ jobs:
           cargo +nightly-2026-07-29 fuzz run repository_graph_row --fuzz-dir collect-diff-context-cli/fuzz -- -runs=256 -timeout=5
           cargo +nightly-2026-07-29 fuzz run repository_overlay --fuzz-dir collect-diff-context-cli/fuzz -- -runs=256 -timeout=5
           cargo +nightly-2026-07-29 fuzz run repository_traversal --fuzz-dir collect-diff-context-cli/fuzz -- -runs=256 -timeout=5
+
+  rust-coverage:
+    name: Rust line coverage (80 percent gate)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1
+      - name: Set up Rust with LLVM coverage tools
+        uses: dtolnay/rust-toolchain@2c7215f132e9ebf062739d9130488b56d53c060c
+        with:
+          toolchain: 1.95.0
+          components: llvm-tools-preview
+      - name: Install pinned cargo-llvm-cov
+        run: cargo +1.95.0 install --locked --version 0.8.7 cargo-llvm-cov
+      - name: Enforce 80 percent line coverage
+        run: cargo +1.95.0 llvm-cov --locked --all-features --fail-under-lines 80
+        working-directory: collect-diff-context-cli
 
   rust-1-95:
     name: Rust 1.95 locked provider gates
