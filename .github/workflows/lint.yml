@@ -145,7 +145,7 @@ jobs:
           # shellcheck disable=SC1090 # cargo-llvm-cov emits shell exports for this workspace.
           source <(cargo +1.95.0 llvm-cov show-env --sh)
           cargo +1.95.0 llvm-cov clean --workspace
-          cargo +1.95.0 test --release --locked
+          cargo +1.95.0 test --release --locked --features test-fixture
           cargo +1.95.0 build --release --locked --bins
           cd "$GITHUB_WORKSPACE"
           export PRE_COMMIT_REVIEW_RUST_BIN="$GITHUB_WORKSPACE/collect-diff-context-cli/target/release/collect-diff-context-cli"

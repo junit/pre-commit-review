@@ -37,8 +37,8 @@ grep -Fq 'source <(cargo +1.95.0 llvm-cov show-env --sh)' <<<"$job" \
   || fail 'coverage job does not export LLVM coverage instrumentation'
 grep -Fq 'cargo +1.95.0 llvm-cov clean --workspace' <<<"$job" \
   || fail 'coverage job does not clean stale profiles'
-grep -Fq 'cargo +1.95.0 test --release --locked' <<<"$job" \
-  || fail 'coverage job does not run instrumented Rust tests'
+grep -Fq 'cargo +1.95.0 test --release --locked --features test-fixture' <<<"$job" \
+  || fail 'coverage job does not run instrumented Rust tests with provider fixtures'
 grep -Fq 'cargo +1.95.0 build --release --locked --bins' <<<"$job" \
   || fail 'coverage job does not build instrumented production binaries'
 grep -Fq './scripts/fetch_gitleaks.sh --platform linux-amd64' <<<"$job" \
