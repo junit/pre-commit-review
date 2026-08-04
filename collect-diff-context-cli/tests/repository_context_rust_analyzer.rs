@@ -19,7 +19,8 @@ use collect_diff_context_cli::repository_context_provider::{
     run_repository_context_provider, run_repository_context_provider_measured,
     run_repository_context_provider_with_postflight_and_finalization_hooks,
     run_repository_context_provider_with_postflight_elapsed_ms,
-    run_repository_context_provider_with_postflight_snapshot_hook, ProviderInvocation,
+    run_repository_context_provider_with_postflight_snapshot_hook,
+    run_repository_context_provider_with_preflight_and_finalization_hooks, ProviderInvocation,
 };
 use collect_diff_context_cli::review_scope::ReviewSource;
 use serde_json::json;
@@ -919,23 +920,32 @@ fn public_runner_timing_excludes_regular_file_preflight() {
     )
     .unwrap();
 
-    let started = Instant::now();
-    let report = run_repository_context_provider(ProviderInvocation {
-        snapshot: &fixture.snapshot,
-        model: &fixture.model,
-        request: &request,
-        profile: &profile,
-        cancellation: Arc::new(AtomicBool::new(false)),
-    })
+    let preflight_completed = Arc::new(std::sync::Mutex::new(None));
+    let preflight_completed_for_hook = Arc::clone(&preflight_completed);
+    let preflight_hook = move || {
+        *preflight_completed_for_hook.lock().unwrap() = Some(Instant::now());
+    };
+    let finalization_hook = move |started: Instant| {
+        let preflight_completed = preflight_completed.lock().unwrap().unwrap();
+        assert!(
+            started >= preflight_completed,
+            "provider timer started before regular-file preflight completed"
+        );
+    };
+    let report = run_repository_context_provider_with_preflight_and_finalization_hooks(
+        ProviderInvocation {
+            snapshot: &fixture.snapshot,
+            model: &fixture.model,
+            request: &request,
+            profile: &profile,
+            cancellation: Arc::new(AtomicBool::new(false)),
+        },
+        &preflight_hook,
+        &finalization_hook,
+    )
     .unwrap();
-    let wall_elapsed_ms = u64::try_from(started.elapsed().as_millis()).unwrap();
 
     assert_eq!(report.status, RepositoryContextProviderStatus::Completed);
-    assert!(
-        wall_elapsed_ms >= report.metrics.elapsed_ms.saturating_add(20),
-        "preflight leaked into provider timing: wall={wall_elapsed_ms}ms report={}ms",
-        report.metrics.elapsed_ms
-    );
     assert_eq!(
         report.metrics.report_bytes,
         serde_json::to_vec(&report).unwrap().len()

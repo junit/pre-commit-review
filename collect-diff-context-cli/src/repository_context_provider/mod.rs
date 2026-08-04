@@ -130,6 +130,7 @@ pub fn run_repository_context_provider_with_postflight_snapshot_hook(
         ProviderResourcePolicy::production(),
         PositionEncodingPreference::default(),
         None,
+        None,
         Some(hook),
         None,
     )
@@ -147,9 +148,28 @@ pub fn run_repository_context_provider_with_postflight_and_finalization_hooks(
         ProviderResourcePolicy::production(),
         PositionEncodingPreference::default(),
         None,
+        None,
         Some(postflight_hook),
         Some(finalization_hook),
     )
+}
+
+#[cfg(feature = "test-fixture")]
+pub fn run_repository_context_provider_with_preflight_and_finalization_hooks(
+    invocation: ProviderInvocation<'_>,
+    preflight_hook: &dyn Fn(),
+    finalization_hook: &dyn Fn(Instant),
+) -> Result<RepositoryContextProviderReport, ProviderError> {
+    run_repository_context_provider_with_policy_and_position_encoding_preference(
+        invocation,
+        ProviderResourcePolicy::production(),
+        PositionEncodingPreference::default(),
+        Some(preflight_hook),
+        None,
+        None,
+        Some(finalization_hook),
+    )
+    .map(|measurement| measurement.report)
 }
 
 #[cfg(feature = "test-fixture")]
@@ -161,6 +181,7 @@ pub fn run_repository_context_provider_with_position_encoding_preference(
         invocation,
         ProviderResourcePolicy::production(),
         PositionEncodingPreference::preferred(preferred_encoding),
+        None,
         None,
         None,
         None,
@@ -186,6 +207,7 @@ fn run_repository_context_provider_with_policy(
         invocation,
         policy,
         PositionEncodingPreference::default(),
+        None,
         postflight_elapsed_floor_ms,
         None,
         None,
@@ -196,6 +218,7 @@ fn run_repository_context_provider_with_policy_and_position_encoding_preference(
     invocation: ProviderInvocation<'_>,
     policy: ProviderResourcePolicy,
     position_encoding_preference: PositionEncodingPreference,
+    preflight_hook: Option<&dyn Fn()>,
     postflight_elapsed_floor_ms: Option<u64>,
     postflight_snapshot_hook: Option<&dyn Fn()>,
     finalization_hook: Option<&dyn Fn(Instant)>,
@@ -230,6 +253,9 @@ fn run_repository_context_provider_with_policy_and_position_encoding_preference(
     .map_err(|_| ProviderError::StaleBinding)?;
     preflight_files(invocation.request, invocation.profile, invocation.snapshot)?;
     check_cancelled(&invocation.cancellation)?;
+    if let Some(hook) = preflight_hook {
+        hook();
+    }
 
     let limits = &invocation.request.limits;
     let launch = SessionLaunch {
