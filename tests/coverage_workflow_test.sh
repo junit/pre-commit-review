@@ -54,7 +54,7 @@ for integration_test in \
     || fail "coverage job does not run $integration_test"
 done
 fixture_ignore_regex='(^|/)(bin/(repository_context_provider_fixture|static_analysis_fixture)\.rs|repository_context_provider/baseline_fixture(\.rs|/fixture_tree\.rs))$'
-grep -Fq "cargo +1.95.0 llvm-cov report --release --ignore-filename-regex '$fixture_ignore_regex' --fail-under-lines 80" <<<"$job" \
+grep -Fq "cargo +1.95.0 llvm-cov report --release --failure-mode all --ignore-filename-regex '$fixture_ignore_regex' --fail-under-lines 80" <<<"$job" \
   || fail 'coverage job does not exclude only test-fixture sources while enforcing 80 percent line coverage'
 for fixture_source in \
   src/bin/repository_context_provider_fixture.rs \

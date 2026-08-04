@@ -163,7 +163,8 @@ jobs:
           ./tests/repository_context_test.sh
           ./tests/repository_context_provider_cli_test.sh
           cd collect-diff-context-cli
-          cargo +1.95.0 llvm-cov report --release --ignore-filename-regex '(^|/)(bin/(repository_context_provider_fixture|static_analysis_fixture)\.rs|repository_context_provider/baseline_fixture(\.rs|/fixture_tree\.rs))$' --fail-under-lines 80
+          # Forced-exit tests may leave one unusable raw profile; fail if none can be merged.
+          cargo +1.95.0 llvm-cov report --release --failure-mode all --ignore-filename-regex '(^|/)(bin/(repository_context_provider_fixture|static_analysis_fixture)\.rs|repository_context_provider/baseline_fixture(\.rs|/fixture_tree\.rs))$' --fail-under-lines 80
 
   rust-1-95:
     name: Rust 1.95 locked provider gates
